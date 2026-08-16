@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useMemo, useState } from "react";
+import type { AuthUser } from "../lib/auth";
 
 type Section = "dashboard" | "crm" | "clients" | "orders" | "objects" | "finance" | "tasks" | "team" | "contractors" | "docs";
 type ObjectTab = "overview" | "estimate" | "finance" | "stages" | "photos" | "docs";
@@ -58,7 +59,11 @@ function Brand() {
   return <div className="brand" aria-label="ДЕПА СТРОЙ"><span>ДЕПА</span><b>СТРОЙ</b><i>OS</i></div>;
 }
 
-function Sidebar({ section, onChange, open, onClose }: { section: Section; onChange: (s: Section) => void; open: boolean; onClose: () => void }) {
+function initials(name: string) {
+  return name.split(" ").map((part) => part[0]).join("").slice(0, 2).toLocaleUpperCase("ru-RU");
+}
+
+function Sidebar({ section, onChange, open, onClose, user, onProfile }: { section: Section; onChange: (s: Section) => void; open: boolean; onClose: () => void; user: AuthUser; onProfile: () => void }) {
   return <aside className={`sidebar ${open ? "open" : ""}`}>
     <div className="side-head"><Brand /><button className="icon-btn mobile-only" onClick={onClose} aria-label="Закрыть меню">×</button></div>
     <nav>
@@ -69,9 +74,9 @@ function Sidebar({ section, onChange, open, onClose }: { section: Section; onCha
         </button>)}
       </div>)}
     </nav>
-    <div className="side-footer">
-      <div className="avatar">ДП</div><div><strong>Денис Попов</strong><span>Владелец</span></div><button aria-label="Настройки">•••</button>
-    </div>
+    <button className="side-footer" onClick={onProfile} aria-label="Открыть профиль">
+      <span className="avatar">{initials(user.name)}</span><span className="side-user"><strong>{user.name}</strong><span>{user.role}</span></span><span className="side-more">•••</span>
+    </button>
   </aside>;
 }
 
@@ -91,9 +96,9 @@ function Metric({ label, value, detail, tone }: { label: string; value: string; 
   return <div className="metric"><div className="metric-top"><span>{label}</span><i className={tone || ""}>↗</i></div><strong>{value}</strong><small>{detail}</small></div>;
 }
 
-function Dashboard({ onObject, onSection }: { onObject: () => void; onSection: (s: Section) => void }) {
+function Dashboard({ onObject, onSection, user }: { onObject: () => void; onSection: (s: Section) => void; user: AuthUser }) {
   return <>
-    <section className="welcome"><div><span className="eyebrow">ВОСКРЕСЕНЬЕ, 16 АВГУСТА</span><h2>Добрый день, Денис.</h2><p>В фокусе 4 вопроса. Один из них влияет на срок сдачи.</p></div><div className="weather"><span>Владивосток</span><b>+23°</b><small>ясно · рабочий день</small></div></section>
+    <section className="welcome"><div><span className="eyebrow">ВОСКРЕСЕНЬЕ, 16 АВГУСТА</span><h2>Добрый день, {user.name.split(" ")[0]}.</h2><p>В фокусе 4 вопроса. Один из них влияет на срок сдачи.</p></div><div className="weather"><span>Владивосток</span><b>+23°</b><small>ясно · рабочий день</small></div></section>
     <section className="metrics-grid">
       <Metric label="ОБЪЕКТЫ В РАБОТЕ" value="7" detail="2 завершатся в сентябре" />
       <Metric label="ОБОРОТ · АВГУСТ" value="2,84 млн ₽" detail="+18% к июлю" />
@@ -209,25 +214,67 @@ function AddModal({ onClose }: { onClose: () => void }) {
   return <div className="modal-wrap" onMouseDown={e=>{if(e.target===e.currentTarget)onClose()}}><div className="modal"><div className="modal-head"><div><span className="eyebrow">НОВАЯ ЗАПИСЬ</span><h3>Добавить расход</h3></div><button onClick={onClose}>×</button></div>{saved?<div className="success"><i>✓</i><h3>Расход сохранён</h3><p>Баланс кассы и объекта пересчитан.</p></div>:<form onSubmit={submit}><div className="form-grid"><label><span>Сумма</span><div className="amount-input"><input required defaultValue="38 500" inputMode="numeric"/><b>₽</b></div></label><label><span>Дата</span><input type="date" defaultValue="2026-08-16"/></label><label><span>Касса</span><select defaultValue="Паша"><option>Касса Паши</option><option>Касса Дениса</option><option>Общая касса</option></select></label><label><span>Категория</span><select><option>Материалы</option><option>Работа / подряд</option><option>Доставка и логистика</option></select></label><label className="wide"><span>Объект</span><select><option>ЖК Море · квартира 128</option><option>ЖК Атмосфера · квартира 42</option></select></label><label className="wide"><span>Комментарий</span><textarea defaultValue="Сухие смеси, профиль, крепёж"/></label></div><div className="upload"><i>＋</i><span><b>Прикрепить чек</b><small>PDF, JPG или PNG до 20 МБ</small></span></div><label className="toggle-row"><span><b>Показывать клиенту</b><small>Расход появится в клиентском кабинете</small></span><button type="button" className={`toggle ${clientVisible?"on":""}`} onClick={()=>setClientVisible(!clientVisible)}><i/></button></label><div className="warning"><b>После проведения</b><span>Касса Паши</span><strong>−38 000 ₽</strong><span>Баланс материалов</span><strong>109 500 ₽</strong></div><div className="modal-actions"><button type="button" onClick={onClose}>Отмена</button><button type="submit" className="primary">Сохранить расход</button></div></form>}</div></div>;
 }
 
+function ProfileModal({ user, onClose }: { user: AuthUser; onClose: () => void }) {
+  const [mode, setMode] = useState<"profile" | "password">("profile");
+  const [visible, setVisible] = useState({ current: false, next: false, confirm: false });
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+
+  async function changePassword(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError(""); setSuccess(""); setLoading(true);
+    const form = new FormData(event.currentTarget);
+    try {
+      const response = await fetch("/api/auth/password", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ currentPassword: form.get("currentPassword"), newPassword: form.get("newPassword"), confirmPassword: form.get("confirmPassword") }) });
+      const result = await response.json() as { error?: string };
+      if (!response.ok) { setError(result.error ?? "Не удалось изменить пароль."); setLoading(false); return; }
+      event.currentTarget.reset(); setSuccess("Пароль изменён. Остальные ваши сессии завершены."); setLoading(false);
+    } catch { setError("Нет связи с системой. Повторите попытку."); setLoading(false); }
+  }
+
+  async function signOut() {
+    setLoading(true);
+    try { await fetch("/api/auth/logout", { method: "POST" }); } finally { window.location.assign("/login"); }
+  }
+
+  return <div className="modal-wrap profile-wrap" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+    <section className="profile-modal" role="dialog" aria-modal="true" aria-labelledby="profile-title">
+      <header className="profile-head"><button className="profile-back" onClick={mode === "password" ? () => { setMode("profile"); setError(""); setSuccess(""); } : onClose} aria-label={mode === "password" ? "Вернуться в профиль" : "Закрыть профиль"}>{mode === "password" ? "←" : "×"}</button><div><span className="eyebrow">АККАУНТ</span><h2 id="profile-title">{mode === "profile" ? "Профиль" : "Смена пароля"}</h2></div><span className="profile-protected">Защищён</span></header>
+      {mode === "profile" ? <>
+        <div className="profile-identity"><span className="avatar profile-avatar">{initials(user.name)}</span><div><h3>{user.name}</h3><p>{user.username}</p></div></div>
+        <div className="profile-facts"><div><span>Роль</span><b>{user.role}</b><small>Максимальный доступ</small></div><div><span>Статус</span><b className="success-text">Активен</b><small>Защищённый владелец</small></div></div>
+        <div className="owner-notice"><i>i</i><p><b>Равноправный Owner</b><span>Роль и основные права владельца нельзя изменить из профиля.</span></p></div>
+        <div className="profile-actions"><button onClick={() => setMode("password")}><span><b>Сменить пароль</b><small>Только для текущего аккаунта</small></span><em>→</em></button><button className="logout-action" onClick={signOut} disabled={loading}><span><b>Выйти из DEPA OS</b><small>Завершить текущую сессию</small></span><em>→</em></button></div>
+      </> : <form className="password-form" onSubmit={changePassword}>
+        <p>После смены пароля все другие активные сессии этого аккаунта будут завершены.</p>
+        {[{name:"currentPassword",label:"Текущий пароль",key:"current" as const,auto:"current-password"},{name:"newPassword",label:"Новый пароль",key:"next" as const,auto:"new-password"},{name:"confirmPassword",label:"Повторите новый пароль",key:"confirm" as const,auto:"new-password"}].map((field) => <label key={field.name}><span>{field.label}</span><div className="password-control"><input name={field.name} type={visible[field.key] ? "text" : "password"} autoComplete={field.auto} required minLength={field.key === "current" ? undefined : 8} /><button type="button" onClick={() => setVisible((state) => ({ ...state, [field.key]: !state[field.key] }))}>{visible[field.key] ? "Скрыть" : "Показать"}</button></div>{field.key === "next" && <small>Минимум 8 символов</small>}</label>)}
+        {error && <div className="auth-error" role="alert"><i>!</i><span>{error}</span></div>}{success && <div className="auth-success" role="status"><i>✓</i><span>{success}</span></div>}
+        <button className="primary password-submit" type="submit" disabled={loading}>{loading ? "Изменяем…" : "Изменить пароль"}</button>
+      </form>}
+    </section>
+  </div>;
+}
+
 function SearchModal({ onClose }: { onClose: () => void }) {
   const [q,setQ]=useState("");
   const results=useMemo(()=>["ЖК Море · квартира 128","Александр Иванов","Сухие смеси, профиль, крепёж"].filter(x=>x.toLowerCase().includes(q.toLowerCase())),[q]);
   return <div className="modal-wrap search-wrap" onMouseDown={e=>{if(e.target===e.currentTarget)onClose()}}><div className="search-modal"><div className="search-input"><span>⌕</span><input autoFocus value={q} onChange={e=>setQ(e.target.value)} placeholder="Поиск по DEPA OS"/><kbd>ESC</kbd></div><div className="search-results"><small>БЫСТРЫЕ РЕЗУЛЬТАТЫ</small>{results.map((r,i)=><button key={r}><i>{i===0?"◇":i===1?"◎":"₽"}</i><span><b>{r}</b><small>{i===0?"Объект · В работе":i===1?"Клиент · 2 заказа":"Операция · 38 500 ₽"}</small></span><em>↗</em></button>)}</div></div></div>;
 }
 
-export function DepaOS() {
+export function DepaOS({ currentUser }: { currentUser: AuthUser }) {
   const [section, setSection] = useState<Section>("dashboard");
   const [objectOpen, setObjectOpen] = useState(false);
-  const [modal, setModal] = useState<"add"|"search"|null>(null);
+  const [modal, setModal] = useState<"add"|"search"|"profile"|null>(null);
   const [menuOpen,setMenuOpen]=useState(false);
   const title = nav.flatMap(g=>g.items).find(i=>i.id===section)?.label || "Обзор";
   function select(s:Section){setSection(s);setObjectOpen(false)}
   return <div className="app-shell">
-    <Sidebar section={section} onChange={select} open={menuOpen} onClose={()=>setMenuOpen(false)}/>
+    <Sidebar section={section} onChange={select} open={menuOpen} onClose={()=>setMenuOpen(false)} user={currentUser} onProfile={()=>setModal("profile")}/>
     {menuOpen&&<button className="scrim" onClick={()=>setMenuOpen(false)} aria-label="Закрыть меню"/>}
     <main className="main"><Topbar title={objectOpen?"Объект":title} onMenu={()=>setMenuOpen(true)} onAdd={()=>setModal("add")} onSearch={()=>setModal("search")}/><div className="content">
-      {objectOpen?<ObjectDetail onBack={()=>setObjectOpen(false)}/>:section==="dashboard"?<Dashboard onObject={()=>setObjectOpen(true)} onSection={select}/>:section==="objects"?<ObjectsScreen onObject={()=>setObjectOpen(true)}/>:section==="crm"?<CrmScreen/>:section==="finance"?<FinanceScreen/>:<GenericScreen section={section as keyof typeof genericData}/>} 
+      {objectOpen?<ObjectDetail onBack={()=>setObjectOpen(false)}/>:section==="dashboard"?<Dashboard onObject={()=>setObjectOpen(true)} onSection={select} user={currentUser}/>:section==="objects"?<ObjectsScreen onObject={()=>setObjectOpen(true)}/>:section==="crm"?<CrmScreen/>:section==="finance"?<FinanceScreen/>:<GenericScreen section={section as keyof typeof genericData}/>}
     </div></main>
-    {modal==="add"&&<AddModal onClose={()=>setModal(null)}/>} {modal==="search"&&<SearchModal onClose={()=>setModal(null)}/>} 
+    {modal==="add"&&<AddModal onClose={()=>setModal(null)}/>} {modal==="search"&&<SearchModal onClose={()=>setModal(null)}/>} {modal==="profile"&&<ProfileModal user={currentUser} onClose={()=>setModal(null)}/>}
   </div>;
 }
