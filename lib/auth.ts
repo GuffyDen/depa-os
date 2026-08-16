@@ -1,9 +1,9 @@
-import { env } from "cloudflare:workers";
 import { cookies } from "next/headers";
+import { first, query, transaction } from "./postgres";
 
 const SESSION_COOKIE = "depa_session";
 const SESSION_SECONDS = 60 * 60 * 24 * 30;
-// Cloudflare Workers caps Web Crypto PBKDF2 at 100,000 iterations.
+// Conservative cross-runtime work factor for Web Crypto on Vercel and local Node.
 const PASSWORD_ITERATIONS = 100_000;
 const encoder = new TextEncoder();
 
@@ -79,13 +79,13 @@ function publicUser(row: UserRow): AuthUser {
 }
 
 function runtimeValue(key: string) {
-  const value = (env as unknown as Record<string, unknown>)[key];
+  const value = process.env[key];
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
 export async function ensureBootstrapOwners() {
-  const existing = await env.DB.prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'OWNER' AND is_protected_owner = 1").first<{ count: number }>();
-  if ((existing?.count ?? 0) >= 2) return;
+  const existing = await first<{ count: string | number }>("SELECT COUNT(*) AS count FROM users WHERE role = 'OWNER' AND is_protected_owner = 1");
+  if (Number(existing?.count ?? 0) >= 2) return;
 
   const owners = [
     { id: "user_owner_denis", employeeId: "employee_owner_denis", name: runtimeValue("DEPA_OWNER_DENIS_NAME"), username: runtimeValue("DEPA_OWNER_DENIS_USERNAME"), password: runtimeValue("DEPA_OWNER_DENIS_PASSWORD") },
@@ -94,22 +94,21 @@ export async function ensureBootstrapOwners() {
   if (owners.some((owner) => !owner.name || !owner.username || !owner.password)) return;
 
   const timestamp = nowSeconds();
-  const statements = [];
+  const statements: { text: string; params: unknown[] }[] = [];
   for (const owner of owners) {
     const password = await makePasswordHash(owner.password!);
     statements.push(
-      env.DB.prepare("INSERT OR IGNORE INTO employees (id, full_name, position, status, created_at, updated_at) VALUES (?, ?, 'Владелец', 'ACTIVE', ?, ?)").bind(owner.employeeId, owner.name, timestamp, timestamp),
-      env.DB.prepare("INSERT OR IGNORE INTO users (id, auth_provider, username, username_normalized, display_name, role, employee_id, status, is_protected_owner, password_hash, password_salt, password_iterations, created_at, updated_at) VALUES (?, 'LOCAL', ?, ?, ?, 'OWNER', ?, 'ACTIVE', 1, ?, ?, ?, ?, ?)").bind(owner.id, owner.username, owner.username!.toLocaleLowerCase("ru-RU"), owner.name, owner.employeeId, password.hash, password.salt, password.iterations, timestamp, timestamp),
+      { text: "INSERT INTO employees (id, full_name, position, status, created_at, updated_at) VALUES ($1, $2, 'Владелец', 'ACTIVE', $3, $4) ON CONFLICT (id) DO NOTHING", params: [owner.employeeId, owner.name, timestamp, timestamp] },
+      { text: "INSERT INTO users (id, auth_provider, username, username_normalized, display_name, role, employee_id, status, is_protected_owner, password_hash, password_salt, password_iterations, created_at, updated_at) VALUES ($1, 'LOCAL', $2, $3, $4, 'OWNER', $5, 'ACTIVE', 1, $6, $7, $8, $9, $10) ON CONFLICT (id) DO NOTHING", params: [owner.id, owner.username, owner.username!.toLocaleLowerCase("ru-RU"), owner.name, owner.employeeId, password.hash, password.salt, password.iterations, timestamp, timestamp] },
     );
   }
-  await env.DB.batch(statements);
+  await transaction(statements);
 }
 
 async function audit(actorUserId: string, action: string, entityType: string, entityId: string, metadata: Record<string, unknown> = {}) {
   const unsafe = /password|token|secret|credential/i;
   if (Object.keys(metadata).some((key) => unsafe.test(key))) throw new Error("Sensitive fields are forbidden in audit metadata");
-  await env.DB.prepare("INSERT INTO audit_logs (id, actor_user_id, action, entity_type, entity_id, occurred_at, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?)")
-    .bind(crypto.randomUUID(), actorUserId, action, entityType, entityId, nowSeconds(), JSON.stringify(metadata)).run();
+  await query("INSERT INTO audit_logs (id, actor_user_id, action, entity_type, entity_id, occurred_at, metadata_json) VALUES ($1, $2, $3, $4, $5, $6, $7)", [crypto.randomUUID(), actorUserId, action, entityType, entityId, nowSeconds(), JSON.stringify(metadata)]);
 }
 
 async function rateLimitKey(username: string, request: Request) {
@@ -122,23 +121,22 @@ export async function login(username: string, password: string, request: Request
   const normalized = username.trim().toLocaleLowerCase("ru-RU");
   const identifierHash = await rateLimitKey(normalized, request);
   const windowStart = nowSeconds() - 15 * 60;
-  const failures = await env.DB.prepare("SELECT COUNT(*) AS count FROM auth_attempts WHERE identifier_hash = ? AND succeeded = 0 AND attempted_at >= ?").bind(identifierHash, windowStart).first<{ count: number }>();
-  if ((failures?.count ?? 0) >= 5) return { ok: false as const, status: 429, message: "Слишком много попыток. Повторите через 15 минут." };
+  const failures = await first<{ count: string | number }>("SELECT COUNT(*) AS count FROM auth_attempts WHERE identifier_hash = $1 AND succeeded = 0 AND attempted_at >= $2", [identifierHash, windowStart]);
+  if (Number(failures?.count ?? 0) >= 5) return { ok: false as const, status: 429, message: "Слишком много попыток. Повторите через 15 минут." };
 
-  const row = await env.DB.prepare("SELECT id, employee_id, display_name, username, role, status, is_protected_owner, password_hash, password_salt, password_iterations FROM users WHERE username_normalized = ? LIMIT 1")
-    .bind(normalized).first<UserRow>();
+  const row = await first<UserRow>("SELECT id, employee_id, display_name, username, role, status, is_protected_owner, password_hash, password_salt, password_iterations FROM users WHERE username_normalized = $1 LIMIT 1", [normalized]);
   const valid = Boolean(row && row.status === "ACTIVE" && await verifyPassword(password, row));
-  await env.DB.prepare("INSERT INTO auth_attempts (id, identifier_hash, attempted_at, succeeded) VALUES (?, ?, ?, ?)").bind(crypto.randomUUID(), identifierHash, nowSeconds(), valid ? 1 : 0).run();
+  await query("INSERT INTO auth_attempts (id, identifier_hash, attempted_at, succeeded) VALUES ($1, $2, $3, $4)", [crypto.randomUUID(), identifierHash, nowSeconds(), valid ? 1 : 0]);
   if (!valid || !row) return { ok: false as const, status: 401, message: "Неверный логин или пароль." };
 
   const token = randomToken();
   const tokenHash = await sha256(token);
   const timestamp = nowSeconds();
-  await env.DB.batch([
-    env.DB.prepare("INSERT INTO auth_sessions (id, user_id, token_hash, created_at, last_seen_at, expires_at, user_agent) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(crypto.randomUUID(), row.id, tokenHash, timestamp, timestamp, timestamp + SESSION_SECONDS, request.headers.get("user-agent")?.slice(0, 300) ?? null),
-    env.DB.prepare("UPDATE users SET last_login_at = ?, updated_at = ? WHERE id = ?").bind(timestamp, timestamp, row.id),
-    env.DB.prepare("DELETE FROM auth_attempts WHERE identifier_hash = ?").bind(identifierHash),
-    env.DB.prepare("DELETE FROM auth_sessions WHERE expires_at < ? OR revoked_at IS NOT NULL").bind(timestamp - 86400),
+  await transaction([
+    { text: "INSERT INTO auth_sessions (id, user_id, token_hash, created_at, last_seen_at, expires_at, user_agent) VALUES ($1, $2, $3, $4, $5, $6, $7)", params: [crypto.randomUUID(), row.id, tokenHash, timestamp, timestamp, timestamp + SESSION_SECONDS, request.headers.get("user-agent")?.slice(0, 300) ?? null] },
+    { text: "UPDATE users SET last_login_at = $1, updated_at = $2 WHERE id = $3", params: [timestamp, timestamp, row.id] },
+    { text: "DELETE FROM auth_attempts WHERE identifier_hash = $1", params: [identifierHash] },
+    { text: "DELETE FROM auth_sessions WHERE expires_at < $1 OR revoked_at IS NOT NULL", params: [timestamp - 86400] },
   ]);
   await audit(row.id, "AUTH_LOGIN", "User", row.id);
   return { ok: true as const, user: publicUser(row), token };
@@ -157,10 +155,9 @@ export function expiredSessionCookie(requestUrl: string) {
 async function userFromToken(token: string | undefined | null) {
   if (!token) return null;
   const tokenHash = await sha256(token);
-  const row = await env.DB.prepare("SELECT u.id, u.employee_id, u.display_name, u.username, u.role, u.status, u.is_protected_owner, u.password_hash, u.password_salt, u.password_iterations FROM auth_sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ? AND s.revoked_at IS NULL AND s.expires_at > ? AND u.status = 'ACTIVE' LIMIT 1")
-    .bind(tokenHash, nowSeconds()).first<UserRow>();
+  const row = await first<UserRow>("SELECT u.id, u.employee_id, u.display_name, u.username, u.role, u.status, u.is_protected_owner, u.password_hash, u.password_salt, u.password_iterations FROM auth_sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > $2 AND u.status = 'ACTIVE' LIMIT 1", [tokenHash, nowSeconds()]);
   if (!row) return null;
-  await env.DB.prepare("UPDATE auth_sessions SET last_seen_at = ? WHERE token_hash = ?").bind(nowSeconds(), tokenHash).run();
+  await query("UPDATE auth_sessions SET last_seen_at = $1 WHERE token_hash = $2", [nowSeconds(), tokenHash]);
   return publicUser(row);
 }
 
@@ -182,8 +179,8 @@ export async function logout(request: Request) {
   const token = cookieFromRequest(request);
   if (!token) return;
   const tokenHash = await sha256(token);
-  const session = await env.DB.prepare("SELECT user_id FROM auth_sessions WHERE token_hash = ? AND revoked_at IS NULL LIMIT 1").bind(tokenHash).first<{ user_id: string }>();
-  await env.DB.prepare("UPDATE auth_sessions SET revoked_at = ? WHERE token_hash = ?").bind(nowSeconds(), tokenHash).run();
+  const session = await first<{ user_id: string }>("SELECT user_id FROM auth_sessions WHERE token_hash = $1 AND revoked_at IS NULL LIMIT 1", [tokenHash]);
+  await query("UPDATE auth_sessions SET revoked_at = $1 WHERE token_hash = $2", [nowSeconds(), tokenHash]);
   if (session) await audit(session.user_id, "AUTH_LOGOUT", "User", session.user_id);
 }
 
@@ -193,14 +190,14 @@ export async function changeOwnPassword(request: Request, currentPassword: strin
   if (!user || !token) return { ok: false as const, status: 401, message: "Сессия завершена. Войдите снова." };
   if (newPassword.length < 8) return { ok: false as const, status: 400, message: "Новый пароль должен содержать минимум 8 символов." };
   if (newPassword === currentPassword) return { ok: false as const, status: 400, message: "Новый пароль должен отличаться от текущего." };
-  const row = await env.DB.prepare("SELECT id, employee_id, display_name, username, role, status, is_protected_owner, password_hash, password_salt, password_iterations FROM users WHERE id = ? LIMIT 1").bind(user.id).first<UserRow>();
+  const row = await first<UserRow>("SELECT id, employee_id, display_name, username, role, status, is_protected_owner, password_hash, password_salt, password_iterations FROM users WHERE id = $1 LIMIT 1", [user.id]);
   if (!row || !(await verifyPassword(currentPassword, row))) return { ok: false as const, status: 400, message: "Текущий пароль указан неверно." };
   const next = await makePasswordHash(newPassword);
   const tokenHash = await sha256(token);
   const timestamp = nowSeconds();
-  await env.DB.batch([
-    env.DB.prepare("UPDATE users SET password_hash = ?, password_salt = ?, password_iterations = ?, password_changed_at = ?, updated_at = ? WHERE id = ?").bind(next.hash, next.salt, next.iterations, timestamp, timestamp, user.id),
-    env.DB.prepare("UPDATE auth_sessions SET revoked_at = ? WHERE user_id = ? AND token_hash <> ? AND revoked_at IS NULL").bind(timestamp, user.id, tokenHash),
+  await transaction([
+    { text: "UPDATE users SET password_hash = $1, password_salt = $2, password_iterations = $3, password_changed_at = $4, updated_at = $5 WHERE id = $6", params: [next.hash, next.salt, next.iterations, timestamp, timestamp, user.id] },
+    { text: "UPDATE auth_sessions SET revoked_at = $1 WHERE user_id = $2 AND token_hash <> $3 AND revoked_at IS NULL", params: [timestamp, user.id, tokenHash] },
   ]);
   await audit(user.id, "PASSWORD_CHANGED", "User", user.id);
   return { ok: true as const };
