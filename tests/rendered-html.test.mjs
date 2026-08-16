@@ -40,3 +40,13 @@ test("database migration enforces protected Owners and immutable audit records",
   assert.match(migration, /audit_logs_immutable_update/);
   assert.match(migration, /audit_logs_immutable_delete/);
 });
+
+test("financial UI uses personal cashboxes and separate operation scenarios", async () => {
+  const [client, financeUi, financeApi] = await Promise.all([read("app/depa-os.tsx"), read("app/finance-ui.tsx"), read("app/api/finance/route.ts")]);
+  assert.doesNotMatch(client, /Общая касса/);
+  assert.match(financeUi, /Переместить деньги/);
+  assert.match(financeUi, /Объектный расход/);
+  assert.match(financeUi, /Административный расход/);
+  assert.match(financeUi, /Оформить возврат/);
+  assert.match(financeApi, /createFinanceOperation/);
+});

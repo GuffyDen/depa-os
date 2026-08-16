@@ -2,6 +2,7 @@
 
 import { FormEvent, useMemo, useState } from "react";
 import type { AuthUser } from "../lib/auth";
+import { EmployeeObjectsScreen, FinanceOperationModal, FinanceScreen, OperationPickerModal, TeamFinanceScreen, type FinanceMode } from "./finance-ui";
 
 type Section = "dashboard" | "crm" | "clients" | "orders" | "objects" | "finance" | "tasks" | "team" | "contractors" | "docs";
 type ObjectTab = "overview" | "estimate" | "finance" | "stages" | "photos" | "docs";
@@ -64,10 +65,11 @@ function initials(name: string) {
 }
 
 function Sidebar({ section, onChange, open, onClose, user, onProfile }: { section: Section; onChange: (s: Section) => void; open: boolean; onClose: () => void; user: AuthUser; onProfile: () => void }) {
+  const visibleNav = user.role === "OWNER" ? nav : nav.map((group) => ({ ...group, items: group.items.filter((item) => ["objects", "tasks", "finance"].includes(item.id)) })).filter((group) => group.items.length > 0);
   return <aside className={`sidebar ${open ? "open" : ""}`}>
     <div className="side-head"><Brand /><button className="icon-btn mobile-only" onClick={onClose} aria-label="Закрыть меню">×</button></div>
     <nav>
-      {nav.map(group => <div className="nav-group" key={group.group}>
+      {visibleNav.map(group => <div className="nav-group" key={group.group}>
         <small>{group.group}</small>
         {group.items.map(item => <button key={item.id} className={section === item.id ? "active" : ""} onClick={() => { onChange(item.id); onClose(); }}>
           <span className="nav-icon">{item.icon}</span><span>{item.label}</span>{item.count ? <em>{item.count}</em> : null}
@@ -102,7 +104,7 @@ function Dashboard({ onObject, onSection, user }: { onObject: () => void; onSect
     <section className="metrics-grid">
       <Metric label="ОБЪЕКТЫ В РАБОТЕ" value="7" detail="2 завершатся в сентябре" />
       <Metric label="ОБОРОТ · АВГУСТ" value="2,84 млн ₽" detail="+18% к июлю" />
-      <Metric label="ДЕНЬГИ В КАССАХ" value="1,26 млн ₽" detail="Свободные: 310 000 ₽" />
+      <Metric label="ПЕРСОНАЛЬНЫЕ КАССЫ" value="2 кассы" detail="Физические деньги · не прибыль" />
       <Metric label="ПРОГНОЗ ПРИБЫЛИ" value="684 000 ₽" detail="Маржинальность 22,4%" tone="orange" />
     </section>
     <div className="dashboard-grid">
@@ -143,14 +145,17 @@ function Dashboard({ onObject, onSection, user }: { onObject: () => void; onSect
         <div className="funnel"><div style={{height:"88%"}}><b>4</b><span>Новые</span></div><div style={{height:"72%"}}><b>3</b><span>Связались</span></div><div style={{height:"50%"}}><b>2</b><span>Расчёт</span></div><div style={{height:"50%"}}><b>2</b><span>КП</span></div><div className="accent" style={{height:"28%"}}><b>1</b><span>Договор</span></div></div>
       </section>
       <section className="panel cash-panel">
-        <div className="panel-head"><div><span className="eyebrow">КАССЫ</span><h3>1 264 500 ₽</h3></div><button className="link" onClick={() => onSection("finance")}>Подробнее →</button></div>
-        <div className="cash-row"><span><i className="dot orange-bg" />Общая касса</span><b>714 500 ₽</b></div>
-        <div className="cash-row"><span><i className="dot" />Касса Дениса</span><b>422 000 ₽</b></div>
-        <div className="cash-row"><span><i className="dot gray" />Касса Паши</span><b>−38 000 ₽</b></div>
-        <div className="cash-note"><span>Средства клиентов</span><b>954 500 ₽</b><span>Свободные DEPA</span><b>310 000 ₽</b></div>
+        <div className="panel-head"><div><span className="eyebrow">КАССЫ</span><h3>Персональные</h3></div><button className="link" onClick={() => onSection("finance")}>Подробнее →</button></div>
+        <div className="cash-row"><span><i className="dot" />Касса Дениса</span><b>Открыть →</b></div>
+        <div className="cash-row"><span><i className="dot gray" />Касса Паши</span><b>Открыть →</b></div>
+        <div className="cash-note"><span>Баланс касс</span><b>Физическое расположение денег</b><span>Прибыль и клиентские средства</span><b>Считаются отдельно</b></div>
       </section>
     </div>
   </>;
+}
+
+function EmployeeDashboard({ user, onSection }: { user: AuthUser; onSection: (s: Section) => void }) {
+  return <><section className="welcome"><div><span className="eyebrow">ЛИЧНЫЙ КОНТУР</span><h2>Добрый день, {user.name.split(" ")[0]}.</h2><p>Здесь доступны только назначенные объекты, задачи и ваша персональная касса.</p></div></section><div className="metrics-grid"><Metric label="МОЯ КАССА" value="Открыть" detail="Баланс и личные операции" /><Metric label="ОБЪЕКТЫ" value="По доступу" detail="Назначаются Owner" /><Metric label="ФИНАНСЫ DEPA" value="Скрыты" detail="Прибыль и чужие кассы недоступны" /><Metric label="РОЛЬ" value="Сотрудник" detail="Ограниченный контур" /></div><div className="panel employee-start"><div><span className="eyebrow">БЫСТРЫЙ ДОСТУП</span><h3>Рабочее пространство</h3><p>Операции создаются только по вашей кассе и разрешённым объектам.</p></div><button className="secondary" onClick={() => onSection("objects")}>Мои объекты</button><button className="primary" onClick={() => onSection("finance")}>Моя касса</button></div></>;
 }
 
 function ObjectsScreen({ onObject }: { onObject: () => void }) {
@@ -167,13 +172,6 @@ function ObjectsScreen({ onObject }: { onObject: () => void }) {
 function CrmScreen() {
   return <section className="screen-section"><div className="screen-intro"><div><span className="eyebrow">ПРОДАЖИ</span><h2>CRM</h2><p>12 активных обращений · потенциал 18,4 млн ₽</p></div><div className="segmented"><button className="active">Воронка</button><button>Список</button></div></div>
     <div className="kanban">{crmColumns.map((col, i) => <div className="kanban-col" key={col.title}><div className="kanban-head"><span><i className={i === 4 ? "orange-bg" : ""} />{col.title}</span><b>{col.count}</b></div>{col.cards.map((name,j) => <article key={name}><span className="source">{j % 2 ? "AVITO" : "САЙТ"}</span><h4>{name}</h4><p>Ремонт · 62 м²</p><div><small>{i < 2 ? "Связаться сегодня" : "Следующее действие 18 авг"}</small><span className="avatar mini">{j%2 ? "ПС" : "ДП"}</span></div></article>)}<button className="kanban-add">＋ Добавить</button></div>)}</div>
-  </section>;
-}
-
-function FinanceScreen() {
-  return <section className="screen-section"><div className="screen-intro"><div><span className="eyebrow">ЕДИНЫЙ УЧЁТ</span><h2>Финансы</h2><p>Физические деньги, клиентские бюджеты и средства DEPA разделены.</p></div><div className="segmented"><button className="active">Операции</button><button>Кассы</button><button>Обязательства</button></div></div>
-    <div className="metrics-grid finance-metrics"><Metric label="ОСТАТОК В КАССАХ" value="1 264 500 ₽" detail="5 активных касс" /><Metric label="СРЕДСТВА КЛИЕНТОВ" value="954 500 ₽" detail="Не являются прибылью" /><Metric label="СВОБОДНЫЕ СРЕДСТВА" value="310 000 ₽" detail="Деньги DEPA" /><Metric label="ОБЯЗАТЕЛЬСТВА" value="126 000 ₽" detail="3 открытых" tone="orange" /></div>
-    <div className="panel table-panel"><div className="table-toolbar"><strong>Последние операции</strong><div><button>Фильтры</button><button>Экспорт</button></div></div>{financeRows.map(row => <div className="transaction" key={row.title}><span className={`transaction-icon ${row.tone}`}>{row.tone === "plus" ? "↓" : "↑"}</span><div><b>{row.title}</b><small>{row.meta}</small></div><span className="person-pill">{row.person}</span><strong className={row.tone}>{row.amount}</strong><button>•••</button></div>)}</div>
   </section>;
 }
 
@@ -205,13 +203,6 @@ function ObjectDetail({ onBack }: { onBack: () => void }) {
     {tab === "photos" && <div className="empty-state"><div>▧</div><h3>Строительный дневник</h3><p>24 фотоотчёта · последний загружен 14 августа</p><button className="primary">＋ Добавить фотоотчёт</button></div>}
     {tab === "docs" && <div className="empty-state"><div>▱</div><h3>Документы объекта</h3><p>Договор, 4 версии сметы и 6 закрывающих актов</p><button className="primary">＋ Загрузить документ</button></div>}
   </section>;
-}
-
-function AddModal({ onClose }: { onClose: () => void }) {
-  const [saved, setSaved] = useState(false);
-  const [clientVisible, setClientVisible] = useState(true);
-  function submit(e: FormEvent) { e.preventDefault(); setSaved(true); setTimeout(onClose, 1100); }
-  return <div className="modal-wrap" onMouseDown={e=>{if(e.target===e.currentTarget)onClose()}}><div className="modal"><div className="modal-head"><div><span className="eyebrow">НОВАЯ ЗАПИСЬ</span><h3>Добавить расход</h3></div><button onClick={onClose}>×</button></div>{saved?<div className="success"><i>✓</i><h3>Расход сохранён</h3><p>Баланс кассы и объекта пересчитан.</p></div>:<form onSubmit={submit}><div className="form-grid"><label><span>Сумма</span><div className="amount-input"><input required defaultValue="38 500" inputMode="numeric"/><b>₽</b></div></label><label><span>Дата</span><input type="date" defaultValue="2026-08-16"/></label><label><span>Касса</span><select defaultValue="Паша"><option>Касса Паши</option><option>Касса Дениса</option><option>Общая касса</option></select></label><label><span>Категория</span><select><option>Материалы</option><option>Работа / подряд</option><option>Доставка и логистика</option></select></label><label className="wide"><span>Объект</span><select><option>ЖК Море · квартира 128</option><option>ЖК Атмосфера · квартира 42</option></select></label><label className="wide"><span>Комментарий</span><textarea defaultValue="Сухие смеси, профиль, крепёж"/></label></div><div className="upload"><i>＋</i><span><b>Прикрепить чек</b><small>PDF, JPG или PNG до 20 МБ</small></span></div><label className="toggle-row"><span><b>Показывать клиенту</b><small>Расход появится в клиентском кабинете</small></span><button type="button" className={`toggle ${clientVisible?"on":""}`} onClick={()=>setClientVisible(!clientVisible)}><i/></button></label><div className="warning"><b>После проведения</b><span>Касса Паши</span><strong>−38 000 ₽</strong><span>Баланс материалов</span><strong>109 500 ₽</strong></div><div className="modal-actions"><button type="button" onClick={onClose}>Отмена</button><button type="submit" className="primary">Сохранить расход</button></div></form>}</div></div>;
 }
 
 function ProfileModal({ user, onClose }: { user: AuthUser; onClose: () => void }) {
@@ -265,16 +256,19 @@ function SearchModal({ onClose }: { onClose: () => void }) {
 export function DepaOS({ currentUser }: { currentUser: AuthUser }) {
   const [section, setSection] = useState<Section>("dashboard");
   const [objectOpen, setObjectOpen] = useState(false);
-  const [modal, setModal] = useState<"add"|"search"|"profile"|null>(null);
+  const [modal, setModal] = useState<"picker"|"finance"|"search"|"profile"|null>(null);
+  const [financeMode, setFinanceMode] = useState<FinanceMode>("EXPENSE");
+  const [financeRevision, setFinanceRevision] = useState(0);
   const [menuOpen,setMenuOpen]=useState(false);
   const title = nav.flatMap(g=>g.items).find(i=>i.id===section)?.label || "Обзор";
   function select(s:Section){setSection(s);setObjectOpen(false)}
+  function openFinance(mode: FinanceMode) { setFinanceMode(mode); setModal("finance"); }
   return <div className="app-shell">
     <Sidebar section={section} onChange={select} open={menuOpen} onClose={()=>setMenuOpen(false)} user={currentUser} onProfile={()=>setModal("profile")}/>
     {menuOpen&&<button className="scrim" onClick={()=>setMenuOpen(false)} aria-label="Закрыть меню"/>}
-    <main className="main"><Topbar title={objectOpen?"Объект":title} onMenu={()=>setMenuOpen(true)} onAdd={()=>setModal("add")} onSearch={()=>setModal("search")}/><div className="content">
-      {objectOpen?<ObjectDetail onBack={()=>setObjectOpen(false)}/>:section==="dashboard"?<Dashboard onObject={()=>setObjectOpen(true)} onSection={select} user={currentUser}/>:section==="objects"?<ObjectsScreen onObject={()=>setObjectOpen(true)}/>:section==="crm"?<CrmScreen/>:section==="finance"?<FinanceScreen/>:<GenericScreen section={section as keyof typeof genericData}/>}
+    <main className="main"><Topbar title={objectOpen?"Объект":title} onMenu={()=>setMenuOpen(true)} onAdd={()=>setModal("picker")} onSearch={()=>setModal("search")}/><div className="content">
+      {objectOpen?<ObjectDetail onBack={()=>setObjectOpen(false)}/>:section==="dashboard"?(currentUser.role==="OWNER"?<Dashboard onObject={()=>setObjectOpen(true)} onSection={select} user={currentUser}/>:<EmployeeDashboard user={currentUser} onSection={select}/>):section==="objects"?(currentUser.role==="OWNER"?<ObjectsScreen onObject={()=>setObjectOpen(true)}/>:<EmployeeObjectsScreen/>):section==="crm"?<CrmScreen/>:section==="finance"?<FinanceScreen key={financeRevision} onNew={openFinance}/>:section==="team"&&currentUser.role==="OWNER"?<TeamFinanceScreen/>:<GenericScreen section={section as keyof typeof genericData}/>}
     </div></main>
-    {modal==="add"&&<AddModal onClose={()=>setModal(null)}/>} {modal==="search"&&<SearchModal onClose={()=>setModal(null)}/>} {modal==="profile"&&<ProfileModal user={currentUser} onClose={()=>setModal(null)}/>}
+    {modal==="picker"&&<OperationPickerModal isOwner={currentUser.role==="OWNER"} onClose={()=>setModal(null)} onSelect={openFinance}/>} {modal==="finance"&&<FinanceOperationModal mode={financeMode} onClose={()=>setModal(null)} onSaved={()=>setFinanceRevision((value)=>value+1)}/>} {modal==="search"&&<SearchModal onClose={()=>setModal(null)}/>} {modal==="profile"&&<ProfileModal user={currentUser} onClose={()=>setModal(null)}/>}
   </div>;
 }

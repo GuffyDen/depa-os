@@ -5,7 +5,7 @@ const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) throw new Error("DATABASE_URL is not configured");
 
 const sql = neon(databaseUrl);
-const migrationFiles = ["drizzle/0000_clumsy_skrulls.sql", "drizzle/0001_lucky_dracula.sql"];
+const migrationFiles = ["drizzle/0000_clumsy_skrulls.sql", "drizzle/0001_lucky_dracula.sql", "drizzle/0002_personal_cashboxes.sql", "drizzle/0003_remove_finance_reference_mocks.sql"];
 
 await sql`CREATE TABLE IF NOT EXISTS depa_migrations (
   name text PRIMARY KEY,
@@ -26,7 +26,8 @@ for (const file of migrationFiles) {
     .map((statement) => statement
       .replaceAll("`", '"')
       .replace(/integer DEFAULT true/g, "integer DEFAULT 1")
-      .replace(/integer DEFAULT false/g, "integer DEFAULT 0"));
+      .replace(/integer DEFAULT false/g, "integer DEFAULT 0")
+      .replace(/CAST\(strftime\('%s','now'\) AS integer\)/g, "CAST(EXTRACT(EPOCH FROM NOW()) AS integer)"));
 
   await sql.transaction((tx) => [
     ...statements.map((statement) => tx.query(statement)),
