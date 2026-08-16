@@ -1,0 +1,13 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1786889560328,
+      "tag": "0004_postgres_integrity_and_blob",
+      "breakpoints": true
+    }
+  ]
+}

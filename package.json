@@ -13,11 +13,13 @@
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "typecheck": "tsc --noEmit",
     "db:generate": "drizzle-kit generate",
-    "db:migrate:vercel": "node scripts/migrate-postgres.mjs",
+    "db:migrate": "node scripts/migrate-postgres.mjs",
+    "db:migrate:local": "node --env-file=.env.local scripts/migrate-postgres.mjs",
     "build:cloudflare": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext build"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.1.0",
+    "@vercel/blob": "^2.8.0",
     "drizzle-orm": "0.45.2",
     "next": "16.2.6",
     "react": "19.2.6",

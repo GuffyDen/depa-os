@@ -12,7 +12,7 @@ type FinanceTransaction = {
   id: string; type: FinanceMode; expenseType: "PROJECT" | "ADMIN" | null; amountKopecks: number; transactionDate: number; cashboxId: string; cashboxName: string;
   destinationCashboxId: string | null; destinationCashboxName: string | null; originalTransactionId: string | null; projectId: string | null; projectName: string | null;
   clientId: string | null; category: string; source: string | null; purpose: string | null; title: string; comment: string | null; showToClient: boolean;
-  authorUserId: string; authorName: string; createdAt: number; attachmentCount: number;
+  authorUserId: string; authorName: string; createdAt: number; attachmentCount: number; attachmentId: string | null;
 };
 type FinanceData = {
   isOwner: boolean; cashboxes: Cashbox[]; transactions: FinanceTransaction[]; projects: { id: string; name: string; clientId: string; incomeKopecks: number; expenseKopecks: number; refundKopecks: number; actualExpenseKopecks: number; clientBalanceKopecks: number }[];
@@ -62,7 +62,7 @@ function TransactionRow({ transaction, cashboxId }: { transaction: FinanceTransa
   const amount = neutral ? money(transaction.amountKopecks) : money(positive ? transaction.amountKopecks : -transaction.amountKopecks, true);
   return <div className="transaction finance-transaction">
     <span className={`transaction-icon ${positive ? "plus" : transaction.type === "TRANSFER" ? "transfer" : "minus"}`}>{transaction.type === "TRANSFER" ? "⇄" : positive ? "↓" : "↑"}</span>
-    <div><b>{transaction.title}</b><small>{transactionLabel(transaction)}{transaction.projectName ? ` · ${transaction.projectName}` : ""}<br />{new Date(transaction.transactionDate * 1000).toLocaleDateString("ru-RU")} · {transaction.authorName}{transaction.attachmentCount ? " · чек приложен" : ""}</small></div>
+    <div><b>{transaction.title}</b><small>{transactionLabel(transaction)}{transaction.projectName ? ` · ${transaction.projectName}` : ""}<br />{new Date(transaction.transactionDate * 1000).toLocaleDateString("ru-RU")} · {transaction.authorName}{transaction.attachmentId ? <> · <a href={`/api/files/${transaction.attachmentId}`} target="_blank" rel="noreferrer">чек приложен</a></> : ""}</small></div>
     <span className="person-pill">{transaction.cashboxName}</span><strong className={positive ? "plus" : neutral ? "" : "minus"}>{amount}</strong>
   </div>;
 }
@@ -107,13 +107,25 @@ export function OperationPickerModal({ onClose, onSelect, isOwner }: { onClose: 
   </div></section></div>;
 }
 
-async function fileAttachment(file: File | undefined) {
+async function uploadReceipt(file: File | undefined, projectId: string | null) {
   if (!file) return null;
-  if (file.size > 2 * 1024 * 1024) throw new Error("Вложение должно быть не больше 2 МБ.");
-  const bytes = new Uint8Array(await file.arrayBuffer());
-  let binary = "";
-  for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
-  return { fileName: file.name, mimeType: file.type || "application/octet-stream", sizeBytes: file.size, contentBase64: btoa(binary) };
+  const mimeType = file.type.toLocaleLowerCase("en-US");
+  const extensions: Record<string, string> = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/heic": "heic", "image/heif": "heif", "application/pdf": "pdf" };
+  if (!extensions[mimeType]) throw new Error("Разрешены PDF, JPG, PNG, WebP и HEIC/HEIF.");
+  if (file.size > 10 * 1024 * 1024) throw new Error("Чек должен быть не больше 10 МБ.");
+  const attachmentId = crypto.randomUUID();
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", await file.arrayBuffer()));
+  const checksumSha256 = Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  const pathname = `depa-os/receipt/${attachmentId}.${extensions[mimeType]}`;
+  const { upload } = await import("@vercel/blob/client");
+  await upload(pathname, file, {
+    access: "private",
+    handleUploadUrl: "/api/files/upload",
+    contentType: mimeType,
+    multipart: file.size > 5 * 1024 * 1024,
+    clientPayload: JSON.stringify({ attachmentId, originalFilename: file.name, mimeType, sizeBytes: file.size, checksumSha256, category: "RECEIPT", visibility: "INTERNAL", entityType: "FINANCIAL_TRANSACTION", entityId: null, projectId }),
+  });
+  return attachmentId;
 }
 
 export function FinanceOperationModal({ mode, onClose, onSaved }: { mode: FinanceMode; onClose: () => void; onSaved: () => void }) {
@@ -128,6 +140,7 @@ export function FinanceOperationModal({ mode, onClose, onSaved }: { mode: Financ
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const [attachmentName, setAttachmentName] = useState("");
   useEffect(() => { readFinance().then((result) => { setData(result); const active = result.cashboxes.filter((box) => box.status === "ACTIVE"); setCashboxId(active[0]?.id ?? ""); setDestinationCashboxId(active[1]?.id ?? ""); }).catch((reason) => setError(reason instanceof Error ? reason.message : "Не удалось загрузить кассы.")); }, []);
   const activeCashboxes = data?.cashboxes.filter((box) => box.status === "ACTIVE") ?? [];
   const selectedCashbox = activeCashboxes.find((box) => box.id === cashboxId);
@@ -142,13 +155,14 @@ export function FinanceOperationModal({ mode, onClose, onSaved }: { mode: Financ
     event.preventDefault(); setError(""); setLoading(true);
     const form = new FormData(event.currentTarget);
     try {
-      const attachment = await fileAttachment(form.get("attachment") instanceof File ? form.get("attachment") as File : undefined);
+      const receiptProjectId = expenseType === "PROJECT" || mode !== "EXPENSE" ? projectId || null : null;
+      const attachmentId = await uploadReceipt(form.get("attachment") instanceof File && (form.get("attachment") as File).size > 0 ? form.get("attachment") as File : undefined, receiptProjectId);
       const effectiveCashboxId = mode === "REFUND" && selectedOriginal ? selectedOriginal.cashboxId : cashboxId;
       const response = await fetch("/api/finance", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
         type: mode, amount, date: form.get("date"), cashboxId: effectiveCashboxId, destinationCashboxId, expenseType,
         category: form.get("category"), projectId: expenseType === "PROJECT" || mode !== "EXPENSE" ? projectId || null : null,
         clientId: clientId || null, purpose: form.get("purpose"), source: form.get("source"), title: form.get("title"), comment: form.get("comment"),
-        showToClient: expenseType === "PROJECT" && form.get("showToClient") === "on", originalTransactionId: originalTransactionId || null, attachment,
+        showToClient: expenseType === "PROJECT" && form.get("showToClient") === "on", originalTransactionId: originalTransactionId || null, attachmentId,
       }) });
       const result = await response.json() as { error?: string; operation?: { warning?: string | null } };
       if (!response.ok) throw new Error(result.error ?? "Не удалось провести операцию.");
@@ -168,7 +182,7 @@ export function FinanceOperationModal({ mode, onClose, onSaved }: { mode: Financ
         {mode !== "TRANSFER" && <label className="wide"><span>{mode === "INCOME" ? "Назначение / название" : "Название"}</span><input name="title" placeholder={mode === "REFUND" ? "Возврат материалов" : mode === "EXPENSE" ? "Что оплачено" : "Оплата по договору"} /></label>}
         <label className="wide"><span>Комментарий</span><textarea name="comment" placeholder={mode === "TRANSFER" ? "Передал на закупки" : "Необязательно"} /></label>
       </div>
-      <label className="upload"><input name="attachment" type="file" accept="image/*,.pdf" /><i>＋</i><span><b>Прикрепить файл</b><small>PDF, JPG или PNG до 2 МБ · необязательно</small></span></label>
+      <label className="upload"><input name="attachment" type="file" accept=".jpg,.jpeg,.png,.webp,.heic,.heif,.pdf,image/jpeg,image/png,image/webp,image/heic,image/heif,application/pdf" onChange={(event) => setAttachmentName(event.target.files?.[0]?.name ?? "")} /><i>＋</i><span><b>{attachmentName || "Прикрепить чек"}</b><small>PDF, JPG, PNG, WebP или HEIC до 10 МБ · необязательно</small></span></label>
       {mode === "EXPENSE" && expenseType === "PROJECT" && <label className="toggle-row"><span><b>Показывать клиенту</b><small>Расход появится в клиентском кабинете</small></span><input name="showToClient" type="checkbox" defaultChecked /></label>}
       <div className={`warning after-posting ${sourceAfter < 0 ? "negative" : ""}`}><b>После проведения</b>{selectedCashbox && <><span>{selectedCashbox.name}</span><strong>{money(selectedCashbox.balanceKopecks)} → {money(sourceAfter)}</strong></>}{mode === "TRANSFER" && destinationCashbox && <><span>{destinationCashbox.name}</span><strong>{money(destinationCashbox.balanceKopecks)} → {money(destinationAfter)}</strong></>}{sourceAfter < 0 && <p>Баланс кассы станет отрицательным. Операция разрешена.</p>}</div>
       {error && <div className="auth-error" role="alert"><i>!</i><span>{error}</span></div>}

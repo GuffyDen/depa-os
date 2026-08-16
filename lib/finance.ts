@@ -1,9 +1,9 @@
 import type { AuthUser } from "./auth";
+import { confirmAttachmentUpload, FileError } from "./files";
 import { first, query, transaction } from "./postgres";
 import { INCOME_PURPOSES, parseAmountKopecks, projectLedgerTotals, transferPreview, validateExpense, type ExpenseKind, type FinanceOperationType } from "./finance-rules";
 
 const FINANCE_ACCESS = "FINANCE_ACCESS";
-const MAX_ATTACHMENT_BYTES = 2 * 1024 * 1024;
 
 type CashboxRow = {
   id: string;
@@ -41,6 +41,7 @@ type TransactionRow = {
   author_name: string;
   created_at: string | number;
   attachment_count: string | number;
+  attachment_id: string | null;
 };
 
 type ProjectEconomicsRow = {
@@ -135,7 +136,7 @@ function serializeTransaction(row: TransactionRow) {
     cashboxId: row.cashbox_id, cashboxName: row.cashbox_name, destinationCashboxId: row.destination_cashbox_id, destinationCashboxName: row.destination_cashbox_name,
     originalTransactionId: row.original_transaction_id, projectId: row.project_id, projectName: row.project_name, clientId: row.client_id,
     category: row.category, source: row.source, purpose: row.purpose, title: row.title, comment: row.comment, showToClient: Boolean(number(row.show_to_client)),
-    authorUserId: row.author_user_id, authorName: row.author_name, createdAt: number(row.created_at), attachmentCount: number(row.attachment_count),
+    authorUserId: row.author_user_id, authorName: row.author_name, createdAt: number(row.created_at), attachmentCount: number(row.attachment_count), attachmentId: row.attachment_id,
   };
 }
 
@@ -147,7 +148,10 @@ export async function getFinanceOverview(actor: AuthUser) {
   const transactionCondition = actor.role === "OWNER" ? "" : "WHERE source_box.owner_user_id = $1 OR destination_box.owner_user_id = $1";
   const [boxes, transactions, projects, clients, projectEconomics] = await Promise.all([
     query<CashboxRow>(`SELECT c.*, u.display_name AS owner_name FROM cashboxes c LEFT JOIN users u ON u.id = c.owner_user_id ${boxCondition} ORDER BY c.status ASC, c.created_at ASC`, params),
-    query<TransactionRow>(`SELECT ft.*, source_box.name AS cashbox_name, destination_box.name AS destination_cashbox_name, p.name AS project_name, u.display_name AS author_name, (SELECT COUNT(*) FROM attachments a WHERE a.transaction_id = ft.id) AS attachment_count FROM financial_transactions ft JOIN cashboxes source_box ON source_box.id = ft.cashbox_id LEFT JOIN cashboxes destination_box ON destination_box.id = ft.destination_cashbox_id LEFT JOIN projects p ON p.id = ft.project_id JOIN users u ON u.id = ft.author_user_id ${transactionCondition} ORDER BY ft.transaction_date DESC, ft.created_at DESC LIMIT 200`, params),
+    query<TransactionRow>(`SELECT ft.*, source_box.name AS cashbox_name, destination_box.name AS destination_cashbox_name, p.name AS project_name, u.display_name AS author_name,
+      (SELECT COUNT(*) FROM attachments a WHERE a.transaction_id = ft.id AND a.upload_status='LINKED' AND a.deleted_at IS NULL) AS attachment_count,
+      (SELECT a.id FROM attachments a WHERE a.transaction_id = ft.id AND a.upload_status='LINKED' AND a.deleted_at IS NULL ORDER BY a.created_at LIMIT 1) AS attachment_id
+      FROM financial_transactions ft JOIN cashboxes source_box ON source_box.id = ft.cashbox_id LEFT JOIN cashboxes destination_box ON destination_box.id = ft.destination_cashbox_id LEFT JOIN projects p ON p.id = ft.project_id JOIN users u ON u.id = ft.author_user_id ${transactionCondition} ORDER BY ft.transaction_date DESC, ft.created_at DESC LIMIT 200`, params),
     actor.role === "OWNER"
       ? query<{ id: string; name: string; client_id: string }>("SELECT id, name, client_id FROM projects WHERE status <> 'ARCHIVED' ORDER BY name")
       : query<{ id: string; name: string; client_id: string }>("SELECT p.id, p.name, p.client_id FROM projects p JOIN user_project_access a ON a.project_id = p.id WHERE a.user_id = $1 AND p.status <> 'ARCHIVED' ORDER BY p.name", [actor.id]),
@@ -184,11 +188,10 @@ export async function getFinanceOverview(actor: AuthUser) {
   };
 }
 
-type AttachmentInput = { fileName?: unknown; mimeType?: unknown; sizeBytes?: unknown; contentBase64?: unknown };
 export type CreateFinanceOperationInput = {
   type?: unknown; amount?: unknown; date?: unknown; cashboxId?: unknown; destinationCashboxId?: unknown; expenseType?: unknown;
   category?: unknown; projectId?: unknown; clientId?: unknown; purpose?: unknown; source?: unknown; title?: unknown; comment?: unknown;
-  showToClient?: unknown; originalTransactionId?: unknown; attachment?: AttachmentInput | null;
+  showToClient?: unknown; originalTransactionId?: unknown; attachmentId?: unknown;
 };
 
 export async function createFinanceOperation(actor: AuthUser, input: CreateFinanceOperationInput) {
@@ -253,23 +256,36 @@ export async function createFinanceOperation(actor: AuthUser, input: CreateFinan
     clientId = project.client_id;
   }
 
+  const attachmentId = cleanText(input.attachmentId, 100) || null;
+  if (attachmentId) {
+    try {
+      const attachment = await confirmAttachmentUpload(actor, attachmentId);
+      if ((attachment.project_id ?? null) !== projectId) throw new FinanceError("Файл был загружен для другого объекта.", 409);
+    } catch (error) {
+      if (error instanceof FinanceError) throw error;
+      if (error instanceof FileError) throw new FinanceError(error.message, error.status);
+      throw error;
+    }
+  }
+
   const id = crypto.randomUUID();
   const balanceBefore = number(sourceCashbox.balance_kopecks);
   const sourceDelta = type === "EXPENSE" || type === "TRANSFER" ? -amountKopecks : amountKopecks;
-  const statements: { text: string; params: unknown[] }[] = [
+  const statements: { text: string; params: unknown[] }[] = [];
+  if (attachmentId) statements.push(
+    { text: "SELECT pg_advisory_xact_lock(hashtext($1))", params: [attachmentId] },
+    { text: "SELECT 1 / COUNT(*)::int FROM attachments WHERE id=$1 AND uploaded_by_user_id=$2 AND upload_status='UPLOADED' AND transaction_id IS NULL AND deleted_at IS NULL", params: [attachmentId, actor.id] },
+  );
+  statements.push(
     { text: "INSERT INTO financial_transactions (id, amount_kopecks, transaction_date, type, expense_type, author_user_id, cashbox_id, destination_cashbox_id, original_transaction_id, client_id, project_id, category, source, purpose, title, comment, show_to_client, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)", params: [id, amountKopecks, transactionDate, type, expenseType || null, actor.id, sourceCashbox.id, destinationCashbox?.id ?? null, originalTransactionId, clientId, projectId, category, source, purpose, title, comment, showToClient ? 1 : 0, timestamp, timestamp] },
     { text: "UPDATE cashboxes SET balance_kopecks = balance_kopecks + $1, updated_at = $2 WHERE id = $3 AND status = 'ACTIVE'", params: [sourceDelta, timestamp, sourceCashbox.id] },
-  ];
+  );
   if (destinationCashbox) statements.push({ text: "UPDATE cashboxes SET balance_kopecks = balance_kopecks + $1, updated_at = $2 WHERE id = $3 AND status = 'ACTIVE'", params: [amountKopecks, timestamp, destinationCashbox.id] });
 
-  const attachment = input.attachment;
-  if (attachment && cleanText(attachment.fileName, 200)) {
-    const sizeBytes = number(typeof attachment.sizeBytes === "number" ? attachment.sizeBytes : 0);
-    const contentBase64 = cleanText(attachment.contentBase64, Math.ceil(MAX_ATTACHMENT_BYTES * 1.4));
-    if (sizeBytes <= 0 || sizeBytes > MAX_ATTACHMENT_BYTES || !contentBase64) throw new FinanceError("Вложение должно быть не больше 2 МБ.");
-    const attachmentId = crypto.randomUUID();
-    statements.push({ text: "INSERT INTO attachments (id, transaction_id, project_id, storage_key, file_name, mime_type, size_bytes, kind, content_base64, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,'FINANCE',$8,$9,$10)", params: [attachmentId, id, projectId, `database:${attachmentId}`, cleanText(attachment.fileName, 200), cleanText(attachment.mimeType, 100) || "application/octet-stream", sizeBytes, contentBase64, timestamp, timestamp] });
-  }
+  if (attachmentId) statements.push(
+    { text: "UPDATE attachments SET transaction_id=$1,project_id=$2,entity_type='FINANCIAL_TRANSACTION',entity_id=$1,upload_status='LINKED',linked_at=$3,updated_at=$4 WHERE id=$5 AND uploaded_by_user_id=$6 AND upload_status='UPLOADED' AND transaction_id IS NULL", params: [id, projectId, timestamp, timestamp, attachmentId, actor.id] },
+    { text: "INSERT INTO audit_logs (id,actor_user_id,action,entity_type,entity_id,occurred_at,metadata_json) VALUES ($1,$2,'FILE_LINKED','Attachment',$3,$4,$5)", params: [crypto.randomUUID(), actor.id, attachmentId, timestamp, JSON.stringify({ transactionId: id, projectId })] },
+  );
   statements.push({ text: "INSERT INTO audit_logs (id, actor_user_id, action, entity_type, entity_id, occurred_at, metadata_json) VALUES ($1,$2,$3,'FinancialTransaction',$4,$5,$6)", params: [crypto.randomUUID(), actor.id, `FINANCE_${type}_CREATED`, id, timestamp, JSON.stringify({ type, amountKopecks, cashboxId: sourceCashbox.id, destinationCashboxId: destinationCashbox?.id ?? null, projectId })] });
   await transaction(statements);
 
