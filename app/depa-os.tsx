@@ -1,10 +1,11 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import type { AuthUser } from "../lib/auth";
 import type { AccessProfile, ActionPermission, ModuleKey } from "../lib/permission-definitions";
 import { EmployeeObjectsScreen, FinanceOperationModal, FinanceScreen, OperationPickerModal, money, readFinance, type FinanceData, type FinanceMode } from "./finance-ui";
 import { TeamAccessScreen } from "./team-access-ui";
+import { ClientsScreen } from "./clients-ui";
 
 type Section = "dashboard" | "crm" | "clients" | "orders" | "objects" | "finance" | "tasks" | "team" | "contractors" | "docs";
 type ObjectTab = "overview" | "estimate" | "finance" | "stages" | "photos" | "docs";
@@ -189,8 +190,8 @@ function CrmScreen({ canCreate }: { canCreate: boolean }) {
   </section>;
 }
 
-const genericData: Record<Exclude<Section, "dashboard"|"crm"|"objects"|"finance">, { eyebrow: string; title: string; desc: string; columns: string[]; rows: string[][] }> = {
-  clients: { eyebrow:"ОТНОШЕНИЯ", title:"Клиенты", desc:"Единая история обращений, заказов и объектов.", columns:["Клиент","Телефон","Источник","Объекты","Ответственный"], rows:[["Александр Иванов","+7 914 700-24-18","Сайт","ЖК Море · 128","Денис"],["Мария Волкова","+7 924 110-08-42","Рекомендация","ЖК Атмосфера · 42","Павел"],["Игорь Лебедев","+7 902 481-06-77","Avito","ЖК Бринер · 77","Денис"],["Софья Ларина","+7 914 610-35-90","FarPost","ЖК Нагорный · 16","Павел"]]},
+type GenericSection = Exclude<Section, "dashboard"|"crm"|"clients"|"objects"|"finance">;
+const genericData: Record<GenericSection, { eyebrow: string; title: string; desc: string; columns: string[]; rows: string[][] }> = {
   orders: { eyebrow:"УСЛУГИ", title:"Заказы", desc:"Приёмка и ремонт учитываются как отдельные заказы.", columns:["Заказ","Клиент","Услуга","Стоимость","Статус"], rows:[["DEP-0268","Александр Иванов","Ремонт под ключ","2 640 000 ₽","В работе"],["DEP-0267","Мария Волкова","Ремонт под ключ","3 180 000 ₽","В работе"],["DEP-0266","Игорь Лебедев","Приёмка квартиры","8 500 ₽","Выполнен"],["DEP-0265","Софья Ларина","Ремонт под ключ","4 120 000 ₽","В работе"]]},
   tasks: { eyebrow:"КОНТРОЛЬ", title:"Задачи", desc:"Общие, CRM-задачи и задачи по объектам в одном месте.", columns:["Задача","Связь","Дедлайн","Ответственный","Статус"], rows:[["Согласовать плитку","ЖК Море · 128","Сегодня, 12:00","Денис","В работе"],["Проверить смету электрика","ЖК Атмосфера · 42","Сегодня, 15:00","Павел","Новая"],["Заказать двери","ЖК Бринер · 77","20 августа","Денис","Новая"],["Позвонить Иванову","CRM · Александр Иванов","18 августа","Павел","Запланирована"]]},
   team: { eyebrow:"КОМАНДА", title:"Сотрудники", desc:"Сотрудник может работать в DEPA без аккаунта в системе.", columns:["Сотрудник","Должность","Телефон","Объекты","Доступ"], rows:[["Денис Учайкин","Владелец","+7 914 693-90-45","Все","Owner"],["Павел Костенко","Владелец","+7 984 191-19-91","Все","Owner"],["Антон Ковалёв","Прораб","+7 924 102-18-44","3 объекта","Ограниченный"],["Илья Семёнов","Снабженец","+7 914 731-24-02","2 объекта","Финансы"]]},
@@ -198,16 +199,15 @@ const genericData: Record<Exclude<Section, "dashboard"|"crm"|"objects"|"finance"
   docs: { eyebrow:"АРХИВ", title:"Документы", desc:"Договоры, сметы, чеки и отчёты по объектам.", columns:["Документ","Тип","Объект","Изменён","Версия"], rows:[["Договор DEP-0268","Договор","ЖК Море · 128","14 августа","v1"],["Смета · актуальная","Смета","ЖК Море · 128","12 августа","v4"],["Акт скрытых работ","Акт","ЖК Атмосфера · 42","10 августа","v1"],["Отчёт о приёмке","PDF-отчёт","ЖК Бринер · 77","02 августа","v2"]]},
 };
 
-function GenericScreen({ section, access }: { section: keyof typeof genericData; access: AccessProfile }) {
+function GenericScreen({ section, access }: { section: GenericSection; access: AccessProfile }) {
   const data = genericData[section];
-  const createPermission: Partial<Record<keyof typeof genericData, ActionPermission>> = { clients: "clients.create", orders: "orders.create", tasks: "tasks.create", contractors: "contractors.create", docs: "documents.upload" };
+  const createPermission: Partial<Record<GenericSection, ActionPermission>> = { orders: "orders.create", tasks: "tasks.create", contractors: "contractors.create", docs: "documents.upload" };
   const permission = createPermission[section];
   return <section className="screen-section"><div className="screen-intro"><div><span className="eyebrow">{data.eyebrow}</span><h2>{data.title}</h2><p>{data.desc}</p></div>{permission && access.actions[permission] ? <button className="secondary">＋ Добавить</button> : null}</div><div className="panel data-table"><div className="data-row data-head">{data.columns.map(c => <span key={c}>{c}</span>)}</div>{data.rows.map((row,i) => <button className="data-row" key={i}>{row.map((cell,j) => <span key={j} className={j === 0 ? "strong" : ""}>{j === 0 && <i className="row-avatar">{cell.slice(0,2)}</i>}{cell}</span>)}</button>)}</div></section>;
 }
 
-const scopedModulePresentation: Record<keyof typeof genericData | "crm", { endpoint: string; eyebrow: string; title: string; fields: { key: string; label: string }[] }> = {
+const scopedModulePresentation: Record<GenericSection | "crm", { endpoint: string; eyebrow: string; title: string; fields: { key: string; label: string }[] }> = {
   crm: { endpoint: "crm", eyebrow: "ПРОДАЖИ", title: "CRM", fields: [{ key: "client_name", label: "Клиент" }, { key: "source", label: "Источник" }, { key: "status", label: "Статус" }, { key: "next_action", label: "Следующее действие" }] },
-  clients: { endpoint: "clients", eyebrow: "ОТНОШЕНИЯ", title: "Клиенты", fields: [{ key: "name", label: "Клиент" }, { key: "phone", label: "Телефон" }, { key: "source", label: "Источник" }, { key: "status", label: "Статус" }] },
   orders: { endpoint: "orders", eyebrow: "УСЛУГИ", title: "Заказы", fields: [{ key: "number", label: "Заказ" }, { key: "client_name", label: "Клиент" }, { key: "title", label: "Услуга" }, { key: "status", label: "Статус" }] },
   tasks: { endpoint: "tasks", eyebrow: "КОНТРОЛЬ", title: "Задачи", fields: [{ key: "title", label: "Задача" }, { key: "deadline", label: "Дедлайн" }, { key: "status", label: "Статус" }, { key: "comment", label: "Комментарий" }] },
   team: { endpoint: "team", eyebrow: "КОМАНДА", title: "Сотрудники", fields: [{ key: "full_name", label: "Сотрудник" }, { key: "position", label: "Должность" }, { key: "phone", label: "Телефон" }, { key: "status", label: "Статус" }] },
@@ -282,10 +282,11 @@ function ProfileModal({ user, onClose }: { user: AuthUser; onClose: () => void }
   </div>;
 }
 
-function SearchModal({ onClose }: { onClose: () => void }) {
+function SearchModal({ onClose, onClient }: { onClose: () => void; onClient: (id: string) => void }) {
   const [q,setQ]=useState("");
-  const results=useMemo(()=>["ЖК Море · квартира 128","Александр Иванов","Сухие смеси, профиль, крепёж"].filter(x=>x.toLowerCase().includes(q.toLowerCase())),[q]);
-  return <div className="modal-wrap search-wrap" onMouseDown={e=>{if(e.target===e.currentTarget)onClose()}}><div className="search-modal"><div className="search-input"><span>⌕</span><input autoFocus value={q} onChange={e=>setQ(e.target.value)} placeholder="Поиск по DEPA OS"/><kbd>ESC</kbd></div><div className="search-results"><small>БЫСТРЫЕ РЕЗУЛЬТАТЫ</small>{results.map((r,i)=><button key={r}><i>{i===0?"◇":i===1?"◎":"₽"}</i><span><b>{r}</b><small>{i===0?"Объект · В работе":i===1?"Клиент · 2 заказа":"Операция · 38 500 ₽"}</small></span><em>↗</em></button>)}</div></div></div>;
+  const [results,setResults]=useState<{id:string;fullName:string;phone:string}[]>([]);
+  useEffect(()=>{const controller=new AbortController();const timer=window.setTimeout(()=>{if(!q.trim()){setResults([]);return}const params=new URLSearchParams({search:q,status:"ALL",limit:"5"});fetch(`/api/clients?${params}`,{cache:"no-store",signal:controller.signal}).then(response=>response.ok?response.json():Promise.reject()).then((data:{items?:{id:string;fullName:string;phone:string}[]})=>setResults(data.items??[])).catch(()=>undefined)},250);return()=>{window.clearTimeout(timer);controller.abort()}},[q]);
+  return <div className="modal-wrap search-wrap" onMouseDown={e=>{if(e.target===e.currentTarget)onClose()}}><div className="search-modal"><div className="search-input"><span>⌕</span><input autoFocus value={q} onChange={e=>setQ(e.target.value)} placeholder="Поиск клиентов по ФИО или телефону"/><kbd>ESC</kbd></div><div className="search-results"><small>КЛИЕНТЫ</small>{results.map((client)=><button key={client.id} onClick={()=>{onClose();onClient(client.id)}}><i>◎</i><span><b>{client.fullName}</b><small>{client.phone}</small></span><em>↗</em></button>)}{q.trim()&&!results.length?<div className="finance-empty">Клиенты не найдены.</div>:null}</div></div></div>;
 }
 
 function AccessDenied({ onNavigate }: { onNavigate: () => void }) {
@@ -300,6 +301,7 @@ export function DepaOS({ currentUser, access, initialSection, accessDenied }: { 
   const [modal, setModal] = useState<"picker"|"finance"|"search"|"profile"|null>(null);
   const [financeMode, setFinanceMode] = useState<FinanceMode>("EXPENSE");
   const [financeRevision, setFinanceRevision] = useState(0);
+  const [targetClientId, setTargetClientId] = useState<string | null>(null);
   const [menuOpen,setMenuOpen]=useState(false);
   const title = nav.flatMap(g=>g.items).find(i=>i.id===section)?.label || "Обзор";
   function select(s:Section){if (!access.modules[moduleBySection[s]]) { setDenied(true); return; } setSection(s);setObjectOpen(false);setDenied(false)}
@@ -307,13 +309,13 @@ export function DepaOS({ currentUser, access, initialSection, accessDenied }: { 
   const firstAllowed = nav.flatMap((group) => group.items).find((item) => access.modules[moduleBySection[item.id]])?.id ?? "dashboard";
   const financeAllowed = access.modules.finance && access.actions["finance.view"] && access.ownCashbox;
   const allowedFinanceModes = { EXPENSE: financeAllowed && access.actions["finance.createExpense"], INCOME: financeAllowed && access.actions["finance.createIncome"], TRANSFER: financeAllowed && access.actions["finance.createTransfer"] };
-  const canAddFinance = Object.values(allowedFinanceModes).some(Boolean);
+  const canAddFinance = section === "finance" && Object.values(allowedFinanceModes).some(Boolean);
   return <div className="app-shell">
     <Sidebar section={section} onChange={select} open={menuOpen} onClose={()=>setMenuOpen(false)} user={currentUser} access={access} onProfile={()=>setModal("profile")}/>
     {menuOpen&&<button className="scrim" onClick={()=>setMenuOpen(false)} aria-label="Закрыть меню"/>}
     <main className="main"><Topbar title={objectOpen?"Объект":title} onMenu={()=>setMenuOpen(true)} onAdd={canAddFinance ? ()=>setModal("picker") : undefined} onSearch={currentUser.role === "OWNER" ? ()=>setModal("search") : undefined}/><div className="content">
-      {denied ? <AccessDenied onNavigate={() => select(firstAllowed)} /> : objectOpen?<ObjectDetail onBack={()=>setObjectOpen(false)}/>:section==="dashboard"?(currentUser.role==="OWNER"?<Dashboard onObject={()=>setObjectOpen(true)} onSection={select} user={currentUser}/>:<EmployeeDashboard user={currentUser} access={access} onSection={select}/>):section==="objects"?(currentUser.role==="OWNER"?<ObjectsScreen onObject={()=>setObjectOpen(true)}/>:<EmployeeObjectsScreen/>):section==="crm"?(currentUser.role==="OWNER"?<CrmScreen canCreate={access.actions["crm.create"]}/>:<ScopedModuleScreen section="crm"/>):section==="finance"?<FinanceScreen key={financeRevision} onNew={openFinance}/>:section==="team"&&currentUser.role==="OWNER"?<TeamAccessScreen/>:currentUser.role==="EMPLOYEE"?<ScopedModuleScreen section={section as keyof typeof scopedModulePresentation}/>:<GenericScreen section={section as keyof typeof genericData} access={access}/>}{" "}
+      {denied ? <AccessDenied onNavigate={() => select(firstAllowed)} /> : objectOpen ? <ObjectDetail onBack={()=>setObjectOpen(false)}/> : section === "dashboard" ? (currentUser.role === "OWNER" ? <Dashboard onObject={()=>setObjectOpen(true)} onSection={select} user={currentUser}/> : <EmployeeDashboard user={currentUser} access={access} onSection={select}/>) : section === "clients" ? <ClientsScreen key={targetClientId ?? "clients"} currentUser={currentUser} access={access} initialClientId={targetClientId} onClientClosed={()=>setTargetClientId(null)}/> : section === "objects" ? (currentUser.role === "OWNER" ? <ObjectsScreen onObject={()=>setObjectOpen(true)}/> : <EmployeeObjectsScreen/>) : section === "crm" ? (currentUser.role === "OWNER" ? <CrmScreen canCreate={access.actions["crm.create"]}/> : <ScopedModuleScreen section="crm"/>) : section === "finance" ? <FinanceScreen key={financeRevision} onNew={openFinance}/> : section === "team" && currentUser.role === "OWNER" ? <TeamAccessScreen/> : currentUser.role === "EMPLOYEE" ? <ScopedModuleScreen section={section as GenericSection|"crm"}/> : <GenericScreen section={section as GenericSection} access={access}/>}{" "}
     </div></main>
-    {modal==="picker"&&<OperationPickerModal allowed={allowedFinanceModes} onClose={()=>setModal(null)} onSelect={openFinance}/>} {modal==="finance"&&<FinanceOperationModal mode={financeMode} onClose={()=>setModal(null)} onSaved={()=>setFinanceRevision((value)=>value+1)}/>} {modal==="search"&&<SearchModal onClose={()=>setModal(null)}/>} {modal==="profile"&&<ProfileModal user={currentUser} onClose={()=>setModal(null)}/>}{" "}
+    {modal==="picker"&&<OperationPickerModal allowed={allowedFinanceModes} onClose={()=>setModal(null)} onSelect={openFinance}/>} {modal==="finance"&&<FinanceOperationModal mode={financeMode} onClose={()=>setModal(null)} onSaved={()=>setFinanceRevision((value)=>value+1)}/>} {modal==="search"&&<SearchModal onClose={()=>setModal(null)} onClient={(id)=>{setTargetClientId(id);select("clients")}}/>} {modal==="profile"&&<ProfileModal user={currentUser} onClose={()=>setModal(null)}/>}{" "}
   </div>;
 }

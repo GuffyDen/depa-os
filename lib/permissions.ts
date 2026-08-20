@@ -8,7 +8,8 @@ import {
 type PermissionRow = { permission: string; scope: string; allowed: string | number };
 
 export class AccessError extends Error {
-  constructor(message = "Недостаточно прав для этого действия.", public status = 403) { super(message); }
+  status: number;
+  constructor(message = "Недостаточно прав для этого действия.", status = 403) { super(message); this.status = status; }
 }
 
 export function accessProfileFromRows(actor: Pick<AuthUser, "role">, rows: PermissionRow[]): AccessProfile {

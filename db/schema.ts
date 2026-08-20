@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { check, foreignKey, index, integer, jsonb, pgTable, text, unique, uniqueIndex } from "drizzle-orm/pg-core";
+import { check, foreignKey, index, integer, jsonb, pgTable, text, unique, uniqueIndex, type AnyPgColumn } from "drizzle-orm/pg-core";
 
 const timestamps = {
   createdAt: integer("created_at").notNull(),
@@ -20,14 +20,26 @@ export const employees = pgTable("employees", {
 export const clients = pgTable("clients", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
-  phone: text("phone"),
+  phone: text("phone").notNull(),
+  phoneNormalized: text("phone_normalized").notNull(),
+  secondaryPhone: text("secondary_phone"),
+  email: text("email"),
+  preferredContact: text("preferred_contact"),
   contactsJson: text("contacts_json"),
-  source: text("source"),
+  source: text("source", { enum: ["WEBSITE", "FARPOST", "AVITO", "REFERRAL", "OTHER"] }).notNull().default("OTHER"),
   comment: text("comment"),
+  responsibleUserId: text("responsible_user_id").notNull().references((): AnyPgColumn => users.id, { onDelete: "restrict", onUpdate: "cascade" }),
   ownerEmployeeId: text("owner_employee_id").references(() => employees.id, { onDelete: "restrict", onUpdate: "cascade" }),
-  status: text("status").notNull(),
+  status: text("status", { enum: ["ACTIVE", "ARCHIVED"] }).notNull().default("ACTIVE"),
+  archivedAt: integer("archived_at"),
   ...timestamps,
-}, (table) => [index("idx_clients_phone").on(table.phone), index("idx_clients_owner").on(table.ownerEmployeeId)]);
+}, (table) => [
+  index("idx_clients_phone").on(table.phone),
+  index("idx_clients_phone_normalized").on(table.phoneNormalized),
+  index("idx_clients_owner").on(table.ownerEmployeeId),
+  index("idx_clients_responsible_status_created").on(table.responsibleUserId, table.status, table.createdAt),
+  index("idx_clients_source_status_created").on(table.source, table.status, table.createdAt),
+]);
 
 export const orders = pgTable("orders", {
   id: text("id").primaryKey(),
