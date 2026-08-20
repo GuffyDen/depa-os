@@ -1,5 +1,5 @@
 import { getRequestUser } from "../../../lib/auth";
-import { createFinanceOperation, FinanceError, getFinanceOverview, type CreateFinanceOperationInput } from "../../../lib/finance";
+import { createFinanceOperation, FinanceError, getFinanceOverview, updateFinanceOperation, type CreateFinanceOperationInput } from "../../../lib/finance";
 import { cleanupUnlinkedAttachment } from "../../../lib/files";
 
 export const dynamic = "force-dynamic";
@@ -28,4 +28,14 @@ export async function POST(request: Request) {
     if (typeof body.attachmentId === "string" && body.attachmentId) await cleanupUnlinkedAttachment(user, body.attachmentId).catch((cleanupError) => console.error("Attachment cleanup error", cleanupError));
     return financeError(error);
   }
+}
+
+export async function PATCH(request: Request) {
+  const user = await getRequestUser(request);
+  if (!user) return Response.json({ error: "Требуется авторизация." }, { status: 401 });
+  let body: { id?: unknown; title?: unknown; comment?: unknown; showToClient?: unknown };
+  try { body = await request.json() as typeof body; }
+  catch { return Response.json({ error: "Некорректные данные операции." }, { status: 400 }); }
+  try { return Response.json(await updateFinanceOperation(user, body)); }
+  catch (error) { return financeError(error); }
 }

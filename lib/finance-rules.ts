@@ -1,6 +1,8 @@
-export const PROJECT_EXPENSE_CATEGORIES = ["Материалы", "Работа / подряд", "Доставка и логистика", "Аренда оборудования", "Переделка / брак", "Прочее"] as const;
-export const ADMIN_EXPENSE_CATEGORIES = ["Реклама", "Офис", "Бухгалтерия", "Программное обеспечение", "Инструмент", "Транспорт", "Связь", "Прочее"] as const;
-export const INCOME_PURPOSES = ["MATERIALS", "WORKS", "ADDITIONAL_WORKS", "OTHER"] as const;
+import { FINANCE_CATEGORY_GROUPS, INCOME_PURPOSE_OPTIONS } from "./finance-categories.ts";
+
+export const PROJECT_EXPENSE_CATEGORIES = FINANCE_CATEGORY_GROUPS.PROJECT.map((item) => item.code);
+export const ADMIN_EXPENSE_CATEGORIES = FINANCE_CATEGORY_GROUPS.ADMIN.map((item) => item.code);
+export const INCOME_PURPOSES = INCOME_PURPOSE_OPTIONS.map((item) => item.code);
 
 export type ExpenseKind = "PROJECT" | "ADMIN";
 export type FinanceOperationType = "INCOME" | "EXPENSE" | "TRANSFER" | "REFUND";
@@ -40,4 +42,19 @@ export function cashboxDelta(type: FinanceOperationType, side: "SOURCE" | "DESTI
 export function projectLedgerTotals(incomeKopecks: number, expenseKopecks: number, refundKopecks: number) {
   const actualExpenseKopecks = expenseKopecks - refundKopecks;
   return { actualExpenseKopecks, clientBalanceKopecks: incomeKopecks - actualExpenseKopecks };
+}
+
+export function validateAllocations(totalKopecks: number, allocations: { projectId: string; amountKopecks: number }[]) {
+  if (allocations.length < 2) return "Для распределения выберите минимум два объекта.";
+  if (allocations.some((item) => !item.projectId || !Number.isSafeInteger(item.amountKopecks) || item.amountKopecks <= 0)) return "У каждого объекта должна быть положительная сумма.";
+  if (new Set(allocations.map((item) => item.projectId)).size !== allocations.length) return "Один объект нельзя добавить в распределение дважды.";
+  if (allocations.reduce((sum, item) => sum + item.amountKopecks, 0) !== totalKopecks) return "Сумма распределения должна совпадать с общей суммой расхода.";
+  return null;
+}
+
+export function projectPurposeBalances(values: { materialsIncomeKopecks: number; materialsExpenseKopecks: number; worksIncomeKopecks: number; worksExpenseKopecks: number }) {
+  return {
+    materialsBalanceKopecks: values.materialsIncomeKopecks - values.materialsExpenseKopecks,
+    worksBalanceKopecks: values.worksIncomeKopecks - values.worksExpenseKopecks,
+  };
 }

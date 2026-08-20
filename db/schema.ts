@@ -159,6 +159,7 @@ export const cashboxes = pgTable("cashboxes", {
   ownerEmployeeId: text("owner_employee_id").references(() => employees.id, { onDelete: "restrict", onUpdate: "cascade" }),
   currency: text("currency").notNull().default("RUB"),
   status: text("status", { enum: ["ACTIVE", "INACTIVE"] }).notNull().default("ACTIVE"),
+  openingBalanceKopecks: integer("opening_balance_kopecks").notNull().default(0),
   balanceKopecks: integer("balance_kopecks").notNull().default(0),
   isActive: integer("is_active").notNull().default(1),
   deactivatedAt: integer("deactivated_at"),
@@ -197,6 +198,8 @@ export const financialTransactions = pgTable("financial_transactions", {
   index("idx_transactions_author").on(table.authorUserId),
   index("idx_transactions_order").on(table.orderId),
   index("idx_transactions_created_at").on(table.createdAt),
+  index("idx_transactions_type_date").on(table.type, table.transactionDate),
+  index("idx_transactions_category_date").on(table.category, table.transactionDate),
 ]);
 
 export const transactionAllocations = pgTable("transaction_allocations", {
@@ -207,7 +210,13 @@ export const transactionAllocations = pgTable("transaction_allocations", {
   amountKopecks: integer("amount_kopecks").notNull(),
   purpose: text("purpose").notNull(),
   ...timestamps,
-}, (table) => [index("idx_allocations_transaction").on(table.transactionId), index("idx_allocations_project").on(table.projectId), index("idx_allocations_order").on(table.orderId)]);
+}, (table) => [
+  uniqueIndex("idx_allocations_transaction_project").on(table.transactionId, table.projectId),
+  index("idx_allocations_transaction").on(table.transactionId),
+  index("idx_allocations_project").on(table.projectId),
+  index("idx_allocations_order").on(table.orderId),
+  check("transaction_allocations_amount_check", sql`${table.amountKopecks} > 0`),
+]);
 
 export const attachments = pgTable("attachments", {
   id: text("id").primaryKey(),

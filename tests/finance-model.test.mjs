@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { cashboxDelta, parseAmountKopecks, projectLedgerTotals, transferPreview, validateExpense } from "../lib/finance-rules.ts";
+import { cashboxDelta, parseAmountKopecks, projectLedgerTotals, projectPurposeBalances, transferPreview, validateAllocations, validateExpense } from "../lib/finance-rules.ts";
 
 const root = new URL("../", import.meta.url);
 const read = (path) => readFile(new URL(path, root), "utf8");
@@ -17,9 +17,9 @@ test("expenses require a positive amount and project expenses require an object"
   assert.equal(parseAmountKopecks("38 000"), 3_800_000);
   assert.equal(parseAmountKopecks("0"), null);
   assert.equal(parseAmountKopecks("-10"), null);
-  assert.match(validateExpense("PROJECT", "Материалы", null), /объект/i);
-  assert.equal(validateExpense("PROJECT", "Материалы", "project_1"), null);
-  assert.equal(validateExpense("ADMIN", "Реклама", null), null);
+  assert.match(validateExpense("PROJECT", "MATERIALS", null), /объект/i);
+  assert.equal(validateExpense("PROJECT", "MATERIALS", "project_1"), null);
+  assert.equal(validateExpense("ADMIN", "ADVERTISING", null), null);
   assert.equal(cashboxDelta("EXPENSE") * 3_800_000, -3_800_000);
 });
 
@@ -45,6 +45,39 @@ test("cashbox access is Owner-managed and deactivation preserves history", async
 test("live finance API enforces personal visibility for employees and audits every operation", async () => {
   const [finance, route] = await Promise.all([read("lib/finance.ts"), read("app/api/finance/route.ts")]);
   assert.match(finance, /source_box\.owner_user_id = \$1 OR destination_box\.owner_user_id = \$1/);
-  assert.match(finance, /FINANCE_\$\{type\}_CREATED/);
+  assert.match(finance, /FINANCIAL_TRANSACTION_CREATED/);
   assert.match(route, /getRequestUser/);
+});
+
+test("client material and works budgets stay separate and may become negative", () => {
+  assert.deepEqual(projectPurposeBalances({ materialsIncomeKopecks: 50_000_000, materialsExpenseKopecks: 55_200_000, worksIncomeKopecks: 30_000_000, worksExpenseKopecks: 0 }), {
+    materialsBalanceKopecks: -5_200_000,
+    worksBalanceKopecks: 30_000_000,
+  });
+});
+
+test("multi-project allocations must exactly match the source expense", () => {
+  assert.equal(validateAllocations(9_000_000, [{ projectId: "sea", amountKopecks: 5_500_000 }, { projectId: "atmosphere", amountKopecks: 3_500_000 }]), null);
+  assert.match(validateAllocations(9_000_000, [{ projectId: "sea", amountKopecks: 5_500_000 }, { projectId: "atmosphere", amountKopecks: 3_000_000 }]), /совпадать/i);
+  assert.match(validateAllocations(9_000_000, [{ projectId: "sea", amountKopecks: 5_500_000 }, { projectId: "sea", amountKopecks: 3_500_000 }]), /два/iu);
+});
+
+test("finance writes, allocations, attachment link and reconciliation are atomic and audited", async () => {
+  const [finance, migration, ui] = await Promise.all([read("lib/finance.ts"), read("drizzle/postgres/0005_finance_daily_operations.sql"), read("app/finance-ui.tsx")]);
+  assert.match(finance, /TRANSACTION_ALLOCATION_CREATED/);
+  assert.match(finance, /ATTACHMENT_LINKED/);
+  assert.match(finance, /TRANSFER_CREATED/);
+  assert.match(finance, /opening_balance_kopecks/);
+  assert.match(migration, /financial_transactions_transfer_shape_check/);
+  assert.match(ui, /Распределить между несколькими объектами/);
+  assert.match(ui, /Осталось распределить/);
+});
+
+test("finance UI and dashboard use live API values instead of financial demo totals", async () => {
+  const [dashboard, financeUi] = await Promise.all([read("app/depa-os.tsx"), read("app/finance-ui.tsx")]);
+  assert.match(dashboard, /readFinance/);
+  assert.match(dashboard, /finance\.physicalTotalKopecks/);
+  assert.doesNotMatch(dashboard, /Расход без чека<\/strong><span>18 400/);
+  assert.match(financeUi, /clientFundsKopecks/);
+  assert.match(financeUi, /reconciliation/);
 });

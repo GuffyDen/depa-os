@@ -1,8 +1,8 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import type { AuthUser } from "../lib/auth";
-import { EmployeeObjectsScreen, FinanceOperationModal, FinanceScreen, OperationPickerModal, TeamFinanceScreen, type FinanceMode } from "./finance-ui";
+import { EmployeeObjectsScreen, FinanceOperationModal, FinanceScreen, OperationPickerModal, TeamFinanceScreen, money, readFinance, type FinanceData, type FinanceMode } from "./finance-ui";
 
 type Section = "dashboard" | "crm" | "clients" | "orders" | "objects" | "finance" | "tasks" | "team" | "contractors" | "docs";
 type ObjectTab = "overview" | "estimate" | "finance" | "stages" | "photos" | "docs";
@@ -99,22 +99,24 @@ function Metric({ label, value, detail, tone }: { label: string; value: string; 
 }
 
 function Dashboard({ onObject, onSection, user }: { onObject: () => void; onSection: (s: Section) => void; user: AuthUser }) {
+  const [finance, setFinance] = useState<FinanceData | null>(null);
+  useEffect(() => { let cancelled = false; readFinance().then((result) => { if (!cancelled) setFinance(result); }).catch(() => undefined); return () => { cancelled = true; }; }, []);
+  const financeAttention = finance?.attentionItems.slice(0, 3) ?? [];
   return <>
     <section className="welcome"><div><span className="eyebrow">ВОСКРЕСЕНЬЕ, 16 АВГУСТА</span><h2>Добрый день, {user.name.split(" ")[0]}.</h2><p>В фокусе 4 вопроса. Один из них влияет на срок сдачи.</p></div><div className="weather"><span>Владивосток</span><b>+23°</b><small>ясно · рабочий день</small></div></section>
     <section className="metrics-grid">
       <Metric label="ОБЪЕКТЫ В РАБОТЕ" value="7" detail="2 завершатся в сентябре" />
       <Metric label="ОБОРОТ · АВГУСТ" value="2,84 млн ₽" detail="+18% к июлю" />
-      <Metric label="ПЕРСОНАЛЬНЫЕ КАССЫ" value="2 кассы" detail="Физические деньги · не прибыль" />
+      <Metric label="ДЕНЬГИ В КАССАХ" value={finance ? money(finance.physicalTotalKopecks) : "—"} detail={`${finance?.cashboxes.filter((box) => box.status === "ACTIVE").length ?? 0} активных касс · физический остаток, не прибыль`} />
       <Metric label="ПРОГНОЗ ПРИБЫЛИ" value="684 000 ₽" detail="Маржинальность 22,4%" tone="orange" />
     </section>
     <div className="dashboard-grid">
       <section className="panel attention-panel">
-        <div className="panel-head"><div><span className="eyebrow orange">ТРЕБУЕТ ВНИМАНИЯ</span><h3>Не упустить сегодня</h3></div><b className="badge-alert">4</b></div>
+        <div className="panel-head"><div><span className="eyebrow orange">ТРЕБУЕТ ВНИМАНИЯ</span><h3>Не упустить сегодня</h3></div><b className="badge-alert">{financeAttention.length + 2}</b></div>
         <div className="attention-list">
-          <button><i>!</i><div><strong>Баланс материалов ниже нуля</strong><span>ЖК Атмосфера · долг клиента 52 000 ₽</span></div><em>Финансы</em></button>
+          {financeAttention.map((item, index) => <button key={`${item.type}-${item.transactionId ?? item.projectId ?? item.cashboxId ?? index}`} onClick={() => onSection("finance")}><i>₽</i><div><strong>{item.title}</strong><span>{item.detail}</span></div><em>Финансы</em></button>)}
           <button><i>◷</i><div><strong>Риск сдвига срока на 6 дней</strong><span>ЖК Море · плитка ещё не согласована</span></div><em>Сроки</em></button>
           <button><i>▧</i><div><strong>Нет фотоотчёта за 15 августа</strong><span>ЖК Бринер · ответственный Антон К.</span></div><em>Контроль</em></button>
-          <button><i>₽</i><div><strong>Расход без чека</strong><span>18 400 ₽ · снабжение · Павел</span></div><em>Учёт</em></button>
         </div>
       </section>
       <section className="panel tasks-panel">
@@ -146,9 +148,9 @@ function Dashboard({ onObject, onSection, user }: { onObject: () => void; onSect
       </section>
       <section className="panel cash-panel">
         <div className="panel-head"><div><span className="eyebrow">КАССЫ</span><h3>Персональные</h3></div><button className="link" onClick={() => onSection("finance")}>Подробнее →</button></div>
-        <div className="cash-row"><span><i className="dot" />Касса Дениса</span><b>Открыть →</b></div>
-        <div className="cash-row"><span><i className="dot gray" />Касса Паши</span><b>Открыть →</b></div>
-        <div className="cash-note"><span>Баланс касс</span><b>Физическое расположение денег</b><span>Прибыль и клиентские средства</span><b>Считаются отдельно</b></div>
+        {finance?.cashboxes.filter((box) => box.status === "ACTIVE").map((box, index) => <button className="cash-row" key={box.id} onClick={() => onSection("finance")}><span><i className={`dot ${index ? "gray" : ""}`} />{box.name}</span><b className={box.balanceKopecks < 0 ? "minus" : ""}>{money(box.balanceKopecks)}</b></button>)}
+        {!finance?.cashboxes.filter((box) => box.status === "ACTIVE").length && <div className="finance-empty">Активных касс нет.</div>}
+        <div className="cash-note"><span>Итого в кассах</span><b>{finance ? money(finance.physicalTotalKopecks) : "—"} · физический остаток</b><span>Клиентские средства</span><b>{finance ? money(finance.clientFundsKopecks) : "—"} · считаются отдельно</b></div>
       </section>
     </div>
   </>;

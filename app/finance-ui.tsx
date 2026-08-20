@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
+import { FINANCE_CATEGORY_GROUPS, INCOME_PURPOSE_OPTIONS, financeCategoryLabel, financePurposeLabel } from "../lib/finance-categories";
 
 export type FinanceMode = "EXPENSE" | "INCOME" | "TRANSFER" | "REFUND";
 
@@ -13,15 +14,18 @@ type FinanceTransaction = {
   destinationCashboxId: string | null; destinationCashboxName: string | null; originalTransactionId: string | null; projectId: string | null; projectName: string | null;
   clientId: string | null; category: string; source: string | null; purpose: string | null; title: string; comment: string | null; showToClient: boolean;
   authorUserId: string; authorName: string; createdAt: number; attachmentCount: number; attachmentId: string | null;
+  allocations: { id: string; projectId: string; projectName: string; amountKopecks: number; purpose: string }[];
 };
-type FinanceData = {
-  isOwner: boolean; cashboxes: Cashbox[]; transactions: FinanceTransaction[]; projects: { id: string; name: string; clientId: string; incomeKopecks: number; expenseKopecks: number; refundKopecks: number; actualExpenseKopecks: number; clientBalanceKopecks: number }[];
-  clients: { id: string; name: string }[]; physicalTotalKopecks: number;
+export type FinanceData = {
+  isOwner: boolean; cashboxes: Cashbox[]; transactions: FinanceTransaction[]; projects: { id: string; name: string; clientId: string; incomeKopecks: number; expenseKopecks: number; refundKopecks: number; actualExpenseKopecks: number; clientBalanceKopecks: number; materialsIncomeKopecks: number; materialsExpenseKopecks: number; materialsBalanceKopecks: number; worksIncomeKopecks: number; worksExpenseKopecks: number; worksBalanceKopecks: number; additionalWorksIncomeKopecks: number }[];
+  clients: { id: string; name: string }[]; physicalTotalKopecks: number; clientFundsKopecks: number;
+  summary: { todayIncomeKopecks: number; todayExpenseKopecks: number; todayTransferKopecks: number; monthProjectExpenseKopecks: number; monthAdminExpenseKopecks: number };
+  attentionItems: { type: string; severity: string; title: string; detail: string; cashboxId?: string; projectId?: string; transactionId?: string }[];
+  reconciliation: { ok: boolean; mismatchCount: number };
 };
 
-const projectCategories = ["Материалы", "Работа / подряд", "Доставка и логистика", "Аренда оборудования", "Переделка / брак", "Прочее"];
-const adminCategories = ["Реклама", "Офис", "Бухгалтерия", "Программное обеспечение", "Инструмент", "Транспорт", "Связь", "Прочее"];
-const purposeLabels: Record<string, string> = { MATERIALS: "Материалы", WORKS: "Работы", ADDITIONAL_WORKS: "Дополнительные работы", OTHER: "Другое" };
+const projectCategories = FINANCE_CATEGORY_GROUPS.PROJECT;
+const adminCategories = FINANCE_CATEGORY_GROUPS.ADMIN;
 const modeLabels: Record<FinanceMode, string> = { EXPENSE: "Добавить расход", INCOME: "Добавить поступление", TRANSFER: "Переместить деньги", REFUND: "Оформить возврат" };
 
 export function money(kopecks: number, sign = false) {
@@ -41,7 +45,7 @@ function localDate() {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
 }
 
-async function readFinance() {
+export async function readFinance() {
   const response = await fetch("/api/finance", { cache: "no-store" });
   const result = await response.json() as FinanceData & { error?: string };
   if (!response.ok) throw new Error(result.error ?? "Не удалось загрузить финансы.");
@@ -52,17 +56,17 @@ function transactionLabel(transaction: FinanceTransaction) {
   if (transaction.type === "TRANSFER") return `Перемещение · ${transaction.cashboxName} → ${transaction.destinationCashboxName}`;
   if (transaction.type === "REFUND") return `Возврат · ${transaction.category}`;
   if (transaction.type === "INCOME") return `Поступление · ${transaction.source || transaction.category}`;
-  return `${transaction.expenseType === "ADMIN" ? "Административный" : "Объектный"} расход · ${transaction.category}`;
+  return `${transaction.expenseType === "ADMIN" ? "Административный" : "Объектный"} расход · ${financeCategoryLabel(transaction.category)}`;
 }
 
-function TransactionRow({ transaction, cashboxId }: { transaction: FinanceTransaction; cashboxId?: string }) {
+function TransactionRow({ transaction, cashboxId, onOpen }: { transaction: FinanceTransaction; cashboxId?: string; onOpen?: () => void }) {
   const incomingTransfer = transaction.type === "TRANSFER" && transaction.destinationCashboxId === cashboxId;
   const positive = transaction.type === "INCOME" || transaction.type === "REFUND" || incomingTransfer;
   const neutral = transaction.type === "TRANSFER" && !cashboxId;
   const amount = neutral ? money(transaction.amountKopecks) : money(positive ? transaction.amountKopecks : -transaction.amountKopecks, true);
   return <div className="transaction finance-transaction">
     <span className={`transaction-icon ${positive ? "plus" : transaction.type === "TRANSFER" ? "transfer" : "minus"}`}>{transaction.type === "TRANSFER" ? "⇄" : positive ? "↓" : "↑"}</span>
-    <div><b>{transaction.title}</b><small>{transactionLabel(transaction)}{transaction.projectName ? ` · ${transaction.projectName}` : ""}<br />{new Date(transaction.transactionDate * 1000).toLocaleDateString("ru-RU")} · {transaction.authorName}{transaction.attachmentId ? <> · <a href={`/api/files/${transaction.attachmentId}`} target="_blank" rel="noreferrer">чек приложен</a></> : ""}</small></div>
+    <div><b>{transaction.title}</b><small>{transactionLabel(transaction)}{transaction.projectName ? ` · ${transaction.projectName}` : ""}{transaction.allocations.length ? ` · ${transaction.allocations.map((item) => `${item.projectName} ${money(item.amountKopecks)}`).join("; ")}` : ""}{transaction.purpose ? ` · ${financePurposeLabel(transaction.purpose)}` : ""}<br />{new Date(transaction.transactionDate * 1000).toLocaleDateString("ru-RU")} · {transaction.authorName}{transaction.attachmentId ? <> · <a href={`/api/files/${transaction.attachmentId}`} target="_blank" rel="noreferrer">чек приложен</a></> : " · без чека"}{onOpen && <> · <button type="button" className="inline-detail" onClick={onOpen}>подробнее</button></>}</small></div>
     <span className="person-pill">{transaction.cashboxName}</span><strong className={positive ? "plus" : neutral ? "" : "minus"}>{amount}</strong>
   </div>;
 }
@@ -81,21 +85,61 @@ export function FinanceScreen({ onNew }: { onNew: (mode: FinanceMode) => void })
   const [data, setData] = useState<FinanceData | null>(null);
   const [error, setError] = useState("");
   const [tab, setTab] = useState<"OPERATIONS" | "CASHBOXES">("OPERATIONS");
+  const [query, setQuery] = useState("");
+  const [typeFilter, setTypeFilter] = useState("");
+  const [cashboxFilter, setCashboxFilter] = useState("");
+  const [categoryFilter, setCategoryFilter] = useState("");
+  const [projectFilter, setProjectFilter] = useState("");
+  const [authorFilter, setAuthorFilter] = useState("");
+  const [receiptFilter, setReceiptFilter] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [selectedTransaction, setSelectedTransaction] = useState<FinanceTransaction | null>(null);
   async function refresh() { try { setError(""); setData(await readFinance()); } catch (reason) { setError(reason instanceof Error ? reason.message : "Не удалось загрузить финансы."); } }
   useEffect(() => {
     let cancelled = false;
     readFinance().then((result) => { if (!cancelled) setData(result); }).catch((reason) => { if (!cancelled) setError(reason instanceof Error ? reason.message : "Не удалось загрузить финансы."); });
     return () => { cancelled = true; };
   }, []);
+  const filteredTransactions = (data?.transactions ?? []).filter((item) => {
+    const haystack = `${item.title} ${item.comment ?? ""} ${item.projectName ?? ""} ${item.authorName} ${item.source ?? ""} ${item.allocations.map((allocation) => allocation.projectName).join(" ")}`.toLocaleLowerCase("ru-RU");
+    const day = new Date(item.transactionDate * 1000).toISOString().slice(0, 10);
+    return (!query || haystack.includes(query.toLocaleLowerCase("ru-RU")))
+      && (!typeFilter || item.type === typeFilter)
+      && (!cashboxFilter || item.cashboxId === cashboxFilter || item.destinationCashboxId === cashboxFilter)
+      && (!categoryFilter || item.category === categoryFilter)
+      && (!projectFilter || item.projectId === projectFilter || item.allocations.some((allocation) => allocation.projectId === projectFilter))
+      && (!authorFilter || item.authorUserId === authorFilter)
+      && (!receiptFilter || (receiptFilter === "YES" ? item.attachmentCount > 0 : item.attachmentCount === 0))
+      && (!dateFrom || day >= dateFrom) && (!dateTo || day <= dateTo);
+  });
+  const categoryOptions = [...FINANCE_CATEGORY_GROUPS.PROJECT, ...FINANCE_CATEGORY_GROUPS.ADMIN].filter((item, index, all) => all.findIndex((candidate) => candidate.code === item.code) === index);
+  const authors = [...new Map((data?.transactions ?? []).map((item) => [item.authorUserId, item.authorName])).entries()];
   return <section className="screen-section finance-screen"><div className="screen-intro"><div><span className="eyebrow">ЕДИНЫЙ УЧЁТ</span><h2>Финансы</h2><p>Кассы показывают физическое расположение денег. Прибыль и клиентские средства учитываются отдельно.</p></div><div className="finance-actions">{data?.isOwner && <button className="secondary" onClick={() => onNew("INCOME")}>＋ Поступление</button>}<button className="secondary" onClick={() => onNew("EXPENSE")}>− Расход</button>{data?.isOwner && <button className="primary" onClick={() => onNew("TRANSFER")}>⇄ Переместить</button>}</div></div>
     <div className="segmented finance-tabs"><button className={tab === "OPERATIONS" ? "active" : ""} onClick={() => setTab("OPERATIONS")}>Операции</button><button className={tab === "CASHBOXES" ? "active" : ""} onClick={() => setTab("CASHBOXES")}>Кассы</button></div>
     {error && <div className="auth-error" role="alert"><i>!</i><span>{error}</span><button onClick={refresh}>Повторить</button></div>}
     {!data && !error && <div className="panel finance-loading">Загружаем финансовые данные…</div>}
     {data && <>
-      <div className="metrics-grid finance-metrics"><div className="metric"><div className="metric-top"><span>ФИЗИЧЕСКИ В КАССАХ</span><i>↗</i></div><strong>{money(data.physicalTotalKopecks)}</strong><small>{data.cashboxes.filter((box) => box.status === "ACTIVE").length} активные персональные кассы</small></div><div className="metric"><div className="metric-top"><span>СРЕДСТВА КЛИЕНТОВ</span><i>↗</i></div><strong>Отдельно</strong><small>Не рассчитываются суммой касс</small></div><div className="metric"><div className="metric-top"><span>ПРИБЫЛЬ DEPA</span><i>↗</i></div><strong>Отдельно</strong><small>Управленческий контур</small></div><div className="metric"><div className="metric-top"><span>ДОСТУП</span><i>↗</i></div><strong>{data.isOwner ? "Owner" : "Личный"}</strong><small>{data.isOwner ? "Все персональные кассы" : "Только своя касса"}</small></div></div>
-      {tab === "OPERATIONS" ? <div className="panel table-panel"><div className="table-toolbar"><strong>Все операции</strong><div><button>Фильтры</button></div></div>{data.transactions.length ? data.transactions.map((item) => <TransactionRow key={item.id} transaction={item} />) : <div className="finance-empty">Операций пока нет. Добавьте поступление, расход или перемещение.</div>}</div> : <div className="cashbox-grid">{data.cashboxes.map((box) => <CashboxCard key={box.id} cashbox={box} transactions={data.transactions} />)}</div>}
+      <div className="metrics-grid finance-metrics"><div className="metric"><div className="metric-top"><span>ФИЗИЧЕСКИ В КАССАХ</span><i>↗</i></div><strong>{money(data.physicalTotalKopecks)}</strong><small>{data.cashboxes.filter((box) => box.status === "ACTIVE").length} активные персональные кассы · не прибыль</small></div><div className="metric"><div className="metric-top"><span>КЛИЕНТСКИЕ СРЕДСТВА</span><i>↗</i></div><strong>{money(data.clientFundsKopecks)}</strong><small>Положительные бюджеты по назначениям</small></div><div className="metric"><div className="metric-top"><span>СЕГОДНЯ · ПРИХОД / РАСХОД</span><i>↗</i></div><strong>{money(data.summary.todayIncomeKopecks)} / {money(data.summary.todayExpenseKopecks)}</strong><small>Перемещения: {money(data.summary.todayTransferKopecks)}</small></div><div className="metric"><div className="metric-top"><span>МЕСЯЦ · ОБЪЕКТЫ / АДМИН</span><i>↗</i></div><strong>{money(data.summary.monthProjectExpenseKopecks)} / {money(data.summary.monthAdminExpenseKopecks)}</strong><small>{data.reconciliation.ok ? "Баланс касс согласован" : `Расхождений: ${data.reconciliation.mismatchCount}`}</small></div></div>
+      {data.attentionItems.length > 0 && <div className="panel finance-attention"><div className="table-toolbar"><strong>Требует внимания</strong><small>{data.attentionItems.length}</small></div>{data.attentionItems.slice(0, 8).map((item, index) => <div className="finance-attention-row" key={`${item.type}-${item.transactionId ?? item.projectId ?? item.cashboxId ?? index}`}><i>!</i><span><b>{item.title}</b><small>{item.detail}</small></span></div>)}</div>}
+      {tab === "OPERATIONS" ? <div className="panel table-panel"><div className="table-toolbar"><strong>Все операции</strong><small>{filteredTransactions.length} из {data.transactions.length}</small></div><div className="finance-filter-bar"><input aria-label="Поиск операций" placeholder="Комментарий, клиент, объект" value={query} onChange={(event) => setQuery(event.target.value)} /><select aria-label="Тип" value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}><option value="">Все типы</option><option value="INCOME">Поступление</option><option value="EXPENSE">Расход</option><option value="TRANSFER">Перемещение</option></select><select aria-label="Касса" value={cashboxFilter} onChange={(event) => setCashboxFilter(event.target.value)}><option value="">Все кассы</option>{data.cashboxes.map((box) => <option value={box.id} key={box.id}>{box.name}</option>)}</select><select aria-label="Категория" value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}><option value="">Все категории</option>{categoryOptions.map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}</select><select aria-label="Объект" value={projectFilter} onChange={(event) => setProjectFilter(event.target.value)}><option value="">Все объекты</option>{data.projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select><select aria-label="Автор" value={authorFilter} onChange={(event) => setAuthorFilter(event.target.value)}><option value="">Все авторы</option>{authors.map(([id, name]) => <option key={id} value={id}>{name}</option>)}</select><select aria-label="Чек" value={receiptFilter} onChange={(event) => setReceiptFilter(event.target.value)}><option value="">Чек: любой</option><option value="YES">Есть чек</option><option value="NO">Нет чека</option></select><input aria-label="Дата от" type="date" value={dateFrom} onChange={(event) => setDateFrom(event.target.value)} /><input aria-label="Дата до" type="date" value={dateTo} onChange={(event) => setDateTo(event.target.value)} /></div>{filteredTransactions.length ? filteredTransactions.map((item) => <TransactionRow key={item.id} transaction={item} onOpen={data.isOwner ? () => setSelectedTransaction(item) : undefined} />) : <div className="finance-empty">По выбранным фильтрам операций нет.</div>}</div> : <div className="cashbox-grid">{data.cashboxes.map((box) => <CashboxCard key={box.id} cashbox={box} transactions={data.transactions} />)}</div>}
     </>}
+    {selectedTransaction && <TransactionDetailModal transaction={selectedTransaction} onClose={() => setSelectedTransaction(null)} onSaved={async () => { setSelectedTransaction(null); await refresh(); }} />}
   </section>;
+}
+
+function TransactionDetailModal({ transaction, onClose, onSaved }: { transaction: FinanceTransaction; onClose: () => void; onSaved: () => void }) {
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setLoading(true); setError("");
+    const form = new FormData(event.currentTarget);
+    const response = await fetch("/api/finance", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: transaction.id, title: form.get("title"), comment: form.get("comment"), showToClient: form.get("showToClient") === "on" }) });
+    const result = await response.json() as { error?: string };
+    if (!response.ok) { setError(result.error ?? "Не удалось обновить операцию."); setLoading(false); return; }
+    onSaved();
+  }
+  return <div className="modal-wrap" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className="modal finance-detail-modal" role="dialog" aria-modal="true" aria-labelledby="transaction-detail-title"><div className="modal-head"><div><span className="eyebrow">ФИНАНСОВАЯ ОПЕРАЦИЯ</span><h3 id="transaction-detail-title">{transactionLabel(transaction)}</h3></div><button onClick={onClose} aria-label="Закрыть">×</button></div><div className="transaction-facts"><span>Сумма <b>{money(transaction.amountKopecks)}</b></span><span>Дата <b>{new Date(transaction.transactionDate * 1000).toLocaleDateString("ru-RU")}</b></span><span>Касса <b>{transaction.cashboxName}</b></span><span>Автор <b>{transaction.authorName}</b></span></div>{transaction.allocations.length > 0 && <div className="detail-allocations">{transaction.allocations.map((item) => <span key={item.id}>{item.projectName}<b>{money(item.amountKopecks)}</b></span>)}</div>}<form onSubmit={submit}><label><span>Название</span><input name="title" defaultValue={transaction.title} required /></label><label><span>Комментарий</span><textarea name="comment" defaultValue={transaction.comment ?? ""} /></label>{transaction.expenseType === "PROJECT" && <label className="toggle-row"><span><b>Показывать клиенту</b><small>Изменение будет записано в audit log</small></span><input name="showToClient" type="checkbox" defaultChecked={transaction.showToClient} /></label>}<div className="immutable-note">Сумма, касса, категория, объект и распределение защищены от тихого редактирования.</div>{transaction.attachmentId && <a className="secondary receipt-link" href={`/api/files/${transaction.attachmentId}`} target="_blank" rel="noreferrer">Открыть чек</a>}{error && <div className="auth-error" role="alert"><i>!</i><span>{error}</span></div>}<div className="modal-actions"><button type="button" onClick={onClose}>Закрыть</button><button className="primary" type="submit" disabled={loading}>{loading ? "Сохраняем…" : "Сохранить изменения"}</button></div></form></section></div>;
 }
 
 export function OperationPickerModal({ onClose, onSelect, isOwner }: { onClose: () => void; onSelect: (mode: FinanceMode) => void; isOwner: boolean }) {
@@ -140,6 +184,9 @@ export function FinanceOperationModal({ mode, onClose, onSaved }: { mode: Financ
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [attachmentName, setAttachmentName] = useState("");
+  const [splitAcrossProjects, setSplitAcrossProjects] = useState(false);
+  const [allocations, setAllocations] = useState([{ projectId: "", amount: "" }, { projectId: "", amount: "" }]);
+  const [category, setCategory] = useState("MATERIALS");
   useEffect(() => { readFinance().then((result) => { setData(result); const active = result.cashboxes.filter((box) => box.status === "ACTIVE"); setCashboxId(active[0]?.id ?? ""); setDestinationCashboxId(active[1]?.id ?? ""); }).catch((reason) => setError(reason instanceof Error ? reason.message : "Не удалось загрузить кассы.")); }, []);
   const activeCashboxes = data?.cashboxes.filter((box) => box.status === "ACTIVE") ?? [];
   const selectedCashbox = activeCashboxes.find((box) => box.id === cashboxId);
@@ -149,12 +196,15 @@ export function FinanceOperationModal({ mode, onClose, onSaved }: { mode: Financ
   const destinationAfter = destinationCashbox ? destinationCashbox.balanceKopecks + amountKopecks : 0;
   const selectedOriginal = data?.transactions.find((item) => item.id === originalTransactionId);
   const categories = expenseType === "PROJECT" ? projectCategories : adminCategories;
+  const allocationTotalKopecks = allocations.reduce((sum, item) => sum + amountToKopecks(item.amount), 0);
+  const allocationRemainingKopecks = amountKopecks - allocationTotalKopecks;
+  const selectedProject = data?.projects.find((item) => item.id === projectId);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setError(""); setLoading(true);
     const form = new FormData(event.currentTarget);
     try {
-      const receiptProjectId = expenseType === "PROJECT" || mode !== "EXPENSE" ? projectId || null : null;
+      const receiptProjectId = splitAcrossProjects ? null : expenseType === "PROJECT" || mode !== "EXPENSE" ? projectId || null : null;
       const attachmentId = await uploadReceipt(form.get("attachment") instanceof File && (form.get("attachment") as File).size > 0 ? form.get("attachment") as File : undefined, receiptProjectId);
       const effectiveCashboxId = mode === "REFUND" && selectedOriginal ? selectedOriginal.cashboxId : cashboxId;
       const response = await fetch("/api/finance", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
@@ -162,6 +212,7 @@ export function FinanceOperationModal({ mode, onClose, onSaved }: { mode: Financ
         category: form.get("category"), projectId: expenseType === "PROJECT" || mode !== "EXPENSE" ? projectId || null : null,
         clientId: clientId || null, purpose: form.get("purpose"), source: form.get("source"), title: form.get("title"), comment: form.get("comment"),
         showToClient: expenseType === "PROJECT" && form.get("showToClient") === "on", originalTransactionId: originalTransactionId || null, attachmentId,
+        allocations: mode === "EXPENSE" && expenseType === "PROJECT" && splitAcrossProjects ? allocations : [],
       }) });
       const result = await response.json() as { error?: string; operation?: { warning?: string | null } };
       if (!response.ok) throw new Error(result.error ?? "Не удалось провести операцию.");
@@ -172,20 +223,22 @@ export function FinanceOperationModal({ mode, onClose, onSaved }: { mode: Financ
 
   return <div className="modal-wrap" onMouseDown={(event) => { if (event.target === event.currentTarget && !loading) onClose(); }}><section className="modal finance-modal" role="dialog" aria-modal="true" aria-labelledby="finance-modal-title"><div className="modal-head"><div><span className="eyebrow">ФИНАНСЫ</span><h3 id="finance-modal-title">{modeLabels[mode]}</h3></div><button onClick={onClose} aria-label="Закрыть">×</button></div>
     {success ? <div className="success"><i>✓</i><h3>Готово</h3><p>{success}</p></div> : <form onSubmit={submit}>
-      {mode === "EXPENSE" && <fieldset className="expense-type"><legend>Тип расхода</legend><button type="button" className={expenseType === "PROJECT" ? "active" : ""} onClick={() => setExpenseType("PROJECT")}><b>Объектный расход</b><small>Связан с конкретным объектом</small></button><button type="button" className={expenseType === "ADMIN" ? "active" : ""} onClick={() => setExpenseType("ADMIN")}><b>Административный расход</b><small>Без объекта и клиентского показа</small></button></fieldset>}
+      {mode === "EXPENSE" && <fieldset className="expense-type"><legend>Тип расхода</legend><button type="button" className={expenseType === "PROJECT" ? "active" : ""} onClick={() => { setExpenseType("PROJECT"); setCategory("MATERIALS"); }}><b>Объектный расход</b><small>Связан с конкретным объектом</small></button><button type="button" className={expenseType === "ADMIN" ? "active" : ""} onClick={() => { setExpenseType("ADMIN"); setCategory("ADVERTISING"); setSplitAcrossProjects(false); }}><b>Административный расход</b><small>Без объекта и клиентского показа</small></button></fieldset>}
       <div className="form-grid"><label><span>Сумма</span><div className="amount-input"><input required value={amount} onChange={(event) => setAmount(event.target.value)} inputMode="decimal" placeholder="100 000" /><b>₽</b></div></label><label><span>Дата</span><input name="date" type="date" defaultValue={localDate()} required /></label>
         {mode === "TRANSFER" ? <><label><span>Откуда</span><select value={cashboxId} onChange={(event) => setCashboxId(event.target.value)} required><option value="">Выберите кассу</option>{activeCashboxes.map((box) => <option key={box.id} value={box.id}>{box.name} · {money(box.balanceKopecks)}</option>)}</select></label><label><span>Куда</span><select value={destinationCashboxId} onChange={(event) => setDestinationCashboxId(event.target.value)} required><option value="">Выберите кассу</option>{activeCashboxes.map((box) => <option key={box.id} value={box.id}>{box.name} · {money(box.balanceKopecks)}</option>)}</select></label></> : mode === "REFUND" ? <label className="wide"><span>Исходный расход</span><select value={originalTransactionId} onChange={(event) => { const id = event.target.value; setOriginalTransactionId(id); const original = data?.transactions.find((item) => item.id === id); if (original) { setCashboxId(original.cashboxId); setProjectId(original.projectId ?? ""); } }}><option value="">Без связи с исходной операцией</option>{data?.transactions.filter((item) => item.type === "EXPENSE").map((item) => <option key={item.id} value={item.id}>{item.title} · {money(item.amountKopecks)} · {item.cashboxName}</option>)}</select></label> : <label><span>{mode === "INCOME" ? "Касса-получатель" : "Касса"}</span><select value={cashboxId} onChange={(event) => setCashboxId(event.target.value)} required><option value="">Выберите кассу</option>{activeCashboxes.map((box) => <option key={box.id} value={box.id}>{box.name} · {money(box.balanceKopecks)}</option>)}</select></label>}
-        {mode === "EXPENSE" && <><label><span>Категория</span><select name="category" key={expenseType} required>{categories.map((category) => <option key={category}>{category}</option>)}</select></label>{expenseType === "PROJECT" && <label className="wide"><span>Объект</span><select value={projectId} onChange={(event) => { setProjectId(event.target.value); const project = data?.projects.find((item) => item.id === event.target.value); setClientId(project?.clientId ?? ""); }} required><option value="">Выберите объект</option>{data?.projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>}</>}
-        {mode === "INCOME" && <><label><span>Источник</span><input name="source" required placeholder="Клиент, банк, другое" /></label><label><span>Клиент</span><select value={clientId} onChange={(event) => setClientId(event.target.value)}><option value="">Не связан</option>{data?.clients.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}</select></label><label><span>Объект</span><select value={projectId} onChange={(event) => { setProjectId(event.target.value); const project = data?.projects.find((item) => item.id === event.target.value); if (project) setClientId(project.clientId); }}><option value="">Не связан</option>{data?.projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label><label><span>Назначение</span><select name="purpose" required={Boolean(projectId || clientId)}><option value="">Выберите</option>{Object.entries(purposeLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label></>}
+        {mode === "EXPENSE" && <><label><span>Категория</span><select name="category" key={expenseType} value={category} onChange={(event) => setCategory(event.target.value)} required>{categories.map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}</select></label>{expenseType === "PROJECT" && !splitAcrossProjects && <label className="wide"><span>Объект</span><select value={projectId} onChange={(event) => { setProjectId(event.target.value); const project = data?.projects.find((item) => item.id === event.target.value); setClientId(project?.clientId ?? ""); }} required><option value="">Выберите объект</option>{data?.projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select>{data?.projects.length === 0 && <small>Нет доступных объектов. Создайте объект в разделе «Объекты».</small>}</label>}</>}
+        {mode === "INCOME" && <><label><span>Источник</span><input name="source" required placeholder="Клиент, банк, другое" /></label><label><span>Клиент</span><select value={clientId} onChange={(event) => setClientId(event.target.value)}><option value="">Не связан</option>{data?.clients.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}</select></label><label><span>Объект</span><select value={projectId} onChange={(event) => { setProjectId(event.target.value); const project = data?.projects.find((item) => item.id === event.target.value); if (project) setClientId(project.clientId); }}><option value="">Не связан</option>{data?.projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select>{data?.projects.length === 0 && <small>Нет доступных объектов. Создайте объект в разделе «Объекты».</small>}</label><label><span>Назначение</span><select name="purpose" required={Boolean(projectId || clientId)}><option value="">Выберите</option>{INCOME_PURPOSE_OPTIONS.map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}</select></label></>}
         {mode === "REFUND" && !selectedOriginal && <><label><span>Касса</span><select value={cashboxId} onChange={(event) => setCashboxId(event.target.value)} required><option value="">Выберите кассу</option>{activeCashboxes.map((box) => <option key={box.id} value={box.id}>{box.name}</option>)}</select></label><label><span>Категория</span><input name="category" required placeholder="Материалы" /></label><label className="wide"><span>Объект</span><select value={projectId} onChange={(event) => setProjectId(event.target.value)}><option value="">Не связан</option>{data?.projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label></>}
         {mode !== "TRANSFER" && <label className="wide"><span>{mode === "INCOME" ? "Назначение / название" : "Название"}</span><input name="title" placeholder={mode === "REFUND" ? "Возврат материалов" : mode === "EXPENSE" ? "Что оплачено" : "Оплата по договору"} /></label>}
         <label className="wide"><span>Комментарий</span><textarea name="comment" placeholder={mode === "TRANSFER" ? "Передал на закупки" : "Необязательно"} /></label>
       </div>
+      {mode === "EXPENSE" && expenseType === "PROJECT" && <><label className="toggle-row"><span><b>Распределить между несколькими объектами</b><small>Один исходный чек останется у общей операции</small></span><input type="checkbox" checked={splitAcrossProjects} disabled={(data?.projects.length ?? 0) < 2} onChange={(event) => { setSplitAcrossProjects(event.target.checked); if (event.target.checked) { setProjectId(""); setClientId(""); } }} /></label>{splitAcrossProjects && <div className="allocation-editor"><div className="table-toolbar"><strong>Распределение</strong><small>Общая сумма: {money(amountKopecks)}</small></div>{allocations.map((allocation, index) => <div className="allocation-row" key={index}><select aria-label={`Объект распределения ${index + 1}`} value={allocation.projectId} onChange={(event) => setAllocations((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, projectId: event.target.value } : item))} required><option value="">Выберите объект</option>{data?.projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select><div className="amount-input"><input aria-label={`Сумма распределения ${index + 1}`} value={allocation.amount} onChange={(event) => setAllocations((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, amount: event.target.value } : item))} inputMode="decimal" required placeholder="0" /><b>₽</b></div>{allocations.length > 2 && <button type="button" aria-label="Удалить строку распределения" onClick={() => setAllocations((current) => current.filter((_, itemIndex) => itemIndex !== index))}>×</button>}</div>)}<button type="button" className="link" onClick={() => setAllocations((current) => [...current, { projectId: "", amount: "" }])}>＋ Добавить объект</button><div className={allocationRemainingKopecks === 0 ? "allocation-total ready" : "allocation-total"}><span>Осталось распределить</span><b>{money(allocationRemainingKopecks)}</b></div></div>}</>}
       <label className="upload"><input name="attachment" type="file" accept=".jpg,.jpeg,.png,.webp,.heic,.heif,.pdf,image/jpeg,image/png,image/webp,image/heic,image/heif,application/pdf" onChange={(event) => setAttachmentName(event.target.files?.[0]?.name ?? "")} /><i>＋</i><span><b>{attachmentName || "Прикрепить чек"}</b><small>PDF, JPG, PNG, WebP или HEIC до 10 МБ · необязательно</small></span></label>
       {mode === "EXPENSE" && expenseType === "PROJECT" && <label className="toggle-row"><span><b>Показывать клиенту</b><small>Расход появится в клиентском кабинете</small></span><input name="showToClient" type="checkbox" defaultChecked /></label>}
       <div className={`warning after-posting ${sourceAfter < 0 ? "negative" : ""}`}><b>После проведения</b>{selectedCashbox && <><span>{selectedCashbox.name}</span><strong>{money(selectedCashbox.balanceKopecks)} → {money(sourceAfter)}</strong></>}{mode === "TRANSFER" && destinationCashbox && <><span>{destinationCashbox.name}</span><strong>{money(destinationCashbox.balanceKopecks)} → {money(destinationAfter)}</strong></>}{sourceAfter < 0 && <p>Баланс кассы станет отрицательным. Операция разрешена.</p>}</div>
+      {mode === "EXPENSE" && expenseType === "PROJECT" && category === "MATERIALS" && !splitAcrossProjects && selectedProject && <div className={`warning after-posting ${selectedProject.materialsBalanceKopecks - amountKopecks < 0 ? "negative" : ""}`}><b>Клиентский бюджет материалов</b><span>{selectedProject.name}</span><strong>{money(selectedProject.materialsBalanceKopecks)} → {money(selectedProject.materialsBalanceKopecks - amountKopecks)}</strong>{selectedProject.materialsBalanceKopecks - amountKopecks < 0 && <p>Возникнет долг клиента {money(Math.abs(selectedProject.materialsBalanceKopecks - amountKopecks))}. Операция разрешена.</p>}</div>}
       {error && <div className="auth-error" role="alert"><i>!</i><span>{error}</span></div>}
-      <div className="modal-actions"><button type="button" onClick={onClose}>Отмена</button><button type="submit" className="primary" disabled={loading || !data}>{loading ? "Проводим…" : mode === "TRANSFER" ? "Провести перемещение" : "Провести операцию"}</button></div>
+      <div className="modal-actions"><button type="button" onClick={onClose}>Отмена</button><button type="submit" className="primary" disabled={loading || !data || (splitAcrossProjects && allocationRemainingKopecks !== 0)}>{loading ? "Проводим…" : mode === "TRANSFER" ? "Провести перемещение" : "Провести операцию"}</button></div>
     </form>}
   </section></div>;
 }
