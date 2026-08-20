@@ -81,3 +81,18 @@ test("finance UI and dashboard use live API values instead of financial demo tot
   assert.match(financeUi, /clientFundsKopecks/);
   assert.match(financeUi, /reconciliation/);
 });
+
+test("finance summary contains three monetary business indicators without an access card", async () => {
+  const [financeUi, styles, finance] = await Promise.all([read("app/finance-ui.tsx"), read("app/globals.css"), read("lib/finance.ts")]);
+  const summary = financeUi.match(/<div className="metrics-grid finance-metrics finance-summary">([\s\S]*?)<\/div>\n      \{data\.attentionItems/)?.[1] ?? "";
+  assert.equal((summary.match(/className="metric"/g) ?? []).length, 3);
+  assert.match(summary, /ФИЗИЧЕСКИ В КАССАХ/);
+  assert.match(summary, /СРЕДСТВА КЛИЕНТОВ/);
+  assert.match(summary, /ПРИБЫЛЬ DEPA/);
+  assert.match(summary, /money\(data\.clientFundsKopecks\)/);
+  assert.match(summary, /money\(depaProfitKopecks\)/);
+  assert.doesNotMatch(summary, /ДОСТУП|Owner|ОТДЕЛЬНО/);
+  assert.match(styles, /\.metrics-grid\.finance-summary\{grid-template-columns:repeat\(3,minmax\(0,1fr\)\)\}/);
+  assert.match(finance, /purpose='OTHER'/);
+  assert.match(finance, /project\.otherIncomeKopecks/);
+});

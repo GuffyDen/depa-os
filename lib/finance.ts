@@ -56,6 +56,7 @@ type ProjectEconomicsRow = {
   works_income_kopecks: string | number;
   works_expense_kopecks: string | number;
   additional_works_income_kopecks: string | number;
+  other_income_kopecks: string | number;
 };
 
 type ReconciliationRow = { id: string; name: string; stored_balance_kopecks: string | number; calculated_balance_kopecks: string | number };
@@ -210,7 +211,8 @@ export async function getFinanceOverview(actor: AuthUser) {
       COALESCE(SUM(CASE WHEN type='EXPENSE' AND category='MATERIALS' THEN amount_kopecks ELSE 0 END),0) AS materials_expense_kopecks,
       COALESCE(SUM(CASE WHEN type='INCOME' AND purpose='WORKS' THEN amount_kopecks ELSE 0 END),0) AS works_income_kopecks,
       COALESCE(SUM(CASE WHEN type='EXPENSE' AND category='CONTRACTOR_WORK' THEN amount_kopecks ELSE 0 END),0) AS works_expense_kopecks,
-      COALESCE(SUM(CASE WHEN type='INCOME' AND purpose='ADDITIONAL_WORKS' THEN amount_kopecks ELSE 0 END),0) AS additional_works_income_kopecks
+      COALESCE(SUM(CASE WHEN type='INCOME' AND purpose='ADDITIONAL_WORKS' THEN amount_kopecks ELSE 0 END),0) AS additional_works_income_kopecks,
+      COALESCE(SUM(CASE WHEN type='INCOME' AND purpose='OTHER' THEN amount_kopecks ELSE 0 END),0) AS other_income_kopecks
     FROM ledger`;
   const [boxes, transactions, projects, clients, projectEconomics, reconciliation, summaryRows] = await Promise.all([
     query<CashboxRow>(`SELECT c.*, u.display_name AS owner_name FROM cashboxes c LEFT JOIN users u ON u.id = c.owner_user_id ${boxCondition} ORDER BY c.status ASC, c.created_at ASC`, params),
@@ -248,7 +250,7 @@ export async function getFinanceOverview(actor: AuthUser) {
     const materialsExpenseKopecks = number(economics?.materials_expense_kopecks);
     const worksIncomeKopecks = number(economics?.works_income_kopecks);
     const worksExpenseKopecks = number(economics?.works_expense_kopecks);
-    return { id: project.id, name: project.name, clientId: project.client_id, incomeKopecks, expenseKopecks, refundKopecks, ...projectLedgerTotals(incomeKopecks, expenseKopecks, refundKopecks), materialsIncomeKopecks, materialsExpenseKopecks, materialsBalanceKopecks: materialsIncomeKopecks - materialsExpenseKopecks, worksIncomeKopecks, worksExpenseKopecks, worksBalanceKopecks: worksIncomeKopecks - worksExpenseKopecks, additionalWorksIncomeKopecks: number(economics?.additional_works_income_kopecks) };
+    return { id: project.id, name: project.name, clientId: project.client_id, incomeKopecks, expenseKopecks, refundKopecks, ...projectLedgerTotals(incomeKopecks, expenseKopecks, refundKopecks), materialsIncomeKopecks, materialsExpenseKopecks, materialsBalanceKopecks: materialsIncomeKopecks - materialsExpenseKopecks, worksIncomeKopecks, worksExpenseKopecks, worksBalanceKopecks: worksIncomeKopecks - worksExpenseKopecks, additionalWorksIncomeKopecks: number(economics?.additional_works_income_kopecks), otherIncomeKopecks: number(economics?.other_income_kopecks) };
   });
   const attentionItems = [
     ...boxes.filter((box) => box.status === "ACTIVE" && number(box.balance_kopecks) < 0).map((box) => ({ type: "NEGATIVE_CASHBOX", severity: "WARNING", title: "Отрицательная касса", detail: `${box.name}: ${number(box.balance_kopecks)} коп.`, cashboxId: box.id })),
@@ -267,7 +269,7 @@ export async function getFinanceOverview(actor: AuthUser) {
     projects: serializedProjects,
     clients,
     physicalTotalKopecks: boxes.filter((box) => box.status === "ACTIVE").reduce((sum, box) => sum + number(box.balance_kopecks), 0),
-    clientFundsKopecks: serializedProjects.reduce((sum, project) => sum + Math.max(0, project.materialsBalanceKopecks) + Math.max(0, project.worksBalanceKopecks) + Math.max(0, project.additionalWorksIncomeKopecks), 0),
+    clientFundsKopecks: serializedProjects.reduce((sum, project) => sum + Math.max(0, project.materialsBalanceKopecks) + Math.max(0, project.worksBalanceKopecks) + Math.max(0, project.additionalWorksIncomeKopecks) + Math.max(0, project.otherIncomeKopecks), 0),
     summary: { todayIncomeKopecks: number(summary?.today_income_kopecks), todayExpenseKopecks: number(summary?.today_expense_kopecks), todayTransferKopecks: number(summary?.today_transfer_kopecks), monthProjectExpenseKopecks: number(summary?.month_project_expense_kopecks), monthAdminExpenseKopecks: number(summary?.month_admin_expense_kopecks) },
     attentionItems,
     reconciliation: { ok: reconciliationMismatches.length === 0, mismatchCount: reconciliationMismatches.length },
