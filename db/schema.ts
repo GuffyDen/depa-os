@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { check, foreignKey, index, integer, jsonb, pgTable, text, unique, uniqueIndex, type AnyPgColumn } from "drizzle-orm/pg-core";
+import { check, foreignKey, index, integer, jsonb, numeric, pgTable, text, unique, uniqueIndex, type AnyPgColumn } from "drizzle-orm/pg-core";
 
 const timestamps = {
   createdAt: integer("created_at").notNull(),
@@ -54,21 +54,26 @@ export const orders = pgTable("orders", {
 
 export const projects = pgTable("projects", {
   id: text("id").primaryKey(),
-  orderId: text("order_id").notNull().references(() => orders.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  orderId: text("order_id").references(() => orders.id, { onDelete: "restrict", onUpdate: "cascade" }),
   clientId: text("client_id").notNull().references(() => clients.id, { onDelete: "restrict", onUpdate: "cascade" }),
   name: text("name").notNull(),
   residentialComplex: text("residential_complex"),
-  address: text("address"),
-  apartment: text("apartment"),
+  address: text("address").notNull(),
+  apartment: text("apartment").notNull(),
+  areaSqm: numeric("area_sqm", { precision: 8, scale: 2 }),
+  responsibleUserId: text("responsible_user_id").notNull().references((): AnyPgColumn => users.id, { onDelete: "restrict", onUpdate: "cascade" }),
   managerEmployeeId: text("manager_employee_id").references(() => employees.id, { onDelete: "restrict", onUpdate: "cascade" }),
   foremanEmployeeId: text("foreman_employee_id").references(() => employees.id, { onDelete: "restrict", onUpdate: "cascade" }),
-  status: text("status").notNull(),
+  status: text("status", { enum: ["PLANNING", "ACTIVE", "PAUSED", "COMPLETED", "ARCHIVED"] }).notNull().default("PLANNING"),
   startDate: integer("start_date"),
   plannedEndDate: integer("planned_end_date"),
   forecastEndDate: integer("forecast_end_date"),
   actualEndDate: integer("actual_end_date"),
   contractAmountKopecks: integer("contract_amount_kopecks").notNull(),
+  estimatedMaterialsBudgetKopecks: integer("estimated_materials_budget_kopecks").notNull().default(0),
   comment: text("comment"),
+  createdByUserId: text("created_by_user_id").notNull().references((): AnyPgColumn => users.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  archivedAt: integer("archived_at"),
   ...timestamps,
 }, (table) => [
   index("idx_projects_status_manager").on(table.status, table.managerEmployeeId),
@@ -76,6 +81,8 @@ export const projects = pgTable("projects", {
   index("idx_projects_order").on(table.orderId),
   index("idx_projects_manager").on(table.managerEmployeeId),
   index("idx_projects_foreman").on(table.foremanEmployeeId),
+  index("idx_projects_responsible_status_created").on(table.responsibleUserId, table.status, table.createdAt),
+  index("idx_projects_foreman_status").on(table.foremanEmployeeId, table.status),
 ]);
 
 export const users = pgTable("users", {

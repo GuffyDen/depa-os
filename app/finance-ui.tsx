@@ -278,14 +278,14 @@ async function uploadReceipt(file: File | undefined, projectId: string | null) {
   return attachmentId;
 }
 
-export function FinanceOperationModal({ mode, onClose, onSaved }: { mode: FinanceMode; onClose: () => void; onSaved: () => void }) {
+export function FinanceOperationModal({ mode, onClose, onSaved, initialProjectId = "", initialClientId = "" }: { mode: FinanceMode; onClose: () => void; onSaved: () => void; initialProjectId?: string; initialClientId?: string }) {
   const [data, setData] = useState<FinanceData | null>(null);
   const [expenseType, setExpenseType] = useState<"PROJECT" | "ADMIN">("PROJECT");
   const [amount, setAmount] = useState("");
   const [cashboxId, setCashboxId] = useState("");
   const [destinationCashboxId, setDestinationCashboxId] = useState("");
-  const [projectId, setProjectId] = useState("");
-  const [clientId, setClientId] = useState("");
+  const [projectId, setProjectId] = useState(initialProjectId);
+  const [clientId, setClientId] = useState(initialClientId);
   const [originalTransactionId, setOriginalTransactionId] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");

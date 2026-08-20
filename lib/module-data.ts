@@ -36,7 +36,7 @@ export async function getModuleData(actor: AuthUser, module: ModuleKey) {
     const scope = await getScope(actor, "projects");
     const params = scope === "ALL" ? [] : [actor.id, actor.employeeId];
     return { items: await query(`SELECT DISTINCT p.id,p.name,p.residential_complex,p.address,p.apartment,p.status,p.start_date,p.planned_end_date,p.forecast_end_date,p.manager_employee_id,p.foreman_employee_id,c.name AS client_name
-      FROM projects p JOIN clients c ON c.id=p.client_id ${scope === "ALL" ? "" : "LEFT JOIN user_project_access a ON a.project_id=p.id AND a.user_id=$1 WHERE a.id IS NOT NULL OR p.manager_employee_id=$2 OR p.foreman_employee_id=$2"}
+      FROM projects p JOIN clients c ON c.id=p.client_id ${scope === "ALL" ? "" : "LEFT JOIN user_project_access a ON a.project_id=p.id AND a.user_id=$1 WHERE p.responsible_user_id=$1 OR a.id IS NOT NULL OR p.manager_employee_id=$2 OR p.foreman_employee_id=$2"}
       ORDER BY p.updated_at DESC LIMIT 200`, params) };
   }
   if (module === "tasks") {

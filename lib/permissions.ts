@@ -78,7 +78,7 @@ export async function canViewProject(actor: AuthUser, projectId: string) {
   if (profile.scopes.projects === "ALL") return true;
   const row = await first<{ id: string }>(`SELECT p.id FROM projects p
     LEFT JOIN user_project_access a ON a.project_id=p.id AND a.user_id=$2
-    WHERE p.id=$1 AND (a.id IS NOT NULL OR p.manager_employee_id=$3 OR p.foreman_employee_id=$3) LIMIT 1`, [projectId, actor.id, actor.employeeId]);
+    WHERE p.id=$1 AND (p.responsible_user_id=$2 OR a.id IS NOT NULL OR p.manager_employee_id=$3 OR p.foreman_employee_id=$3) LIMIT 1`, [projectId, actor.id, actor.employeeId]);
   return Boolean(row);
 }
 
