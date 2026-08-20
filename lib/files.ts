@@ -1,6 +1,7 @@
 import { del, head, type PutBlobResult } from "@vercel/blob";
 import type { AuthUser } from "./auth";
 import { first, query, transaction } from "./postgres";
+import { AccessError, assertModuleAction, canViewCashbox, canViewProject, getAccessProfile } from "./permissions";
 
 export const FILE_CATEGORIES = ["RECEIPT", "PROJECT_PHOTO", "DAILY_REPORT", "HIDDEN_WORK", "CONTRACT", "ACT", "ESTIMATE", "INSPECTION", "WARRANTY", "OTHER"] as const;
 export type FileCategory = (typeof FILE_CATEGORIES)[number];
@@ -112,12 +113,18 @@ function parsePayload(payload: string | null): UploadClientPayload {
 
 async function assertProjectUploadAccess(actor: AuthUser, projectId: string | null | undefined) {
   if (!projectId || actor.role === "OWNER") return;
-  const access = await first<{ id: string }>("SELECT id FROM user_project_access WHERE user_id=$1 AND project_id=$2 LIMIT 1", [actor.id, projectId]);
-  if (!access) throw new FileError("Нет доступа к файлам этого объекта.", 403);
+  if (!(await canViewProject(actor, projectId))) throw new FileError("Нет доступа к файлам этого объекта.", 403);
 }
 
 export async function prepareAttachmentUpload(actor: AuthUser, pathname: string, clientPayload: string | null) {
   const payload = parsePayload(clientPayload);
+  try {
+    if (payload.category === "RECEIPT") await assertModuleAction(actor, "finance", "finance.createExpense");
+    else await assertModuleAction(actor, "documents", "documents.upload");
+  } catch (error) {
+    if (error instanceof AccessError) throw new FileError("Нет права загружать этот файл.", 403);
+    throw error;
+  }
   await assertProjectUploadAccess(actor, payload.projectId);
   const expectedPath = attachmentPath(payload.attachmentId, payload.category, payload.mimeType);
   if (pathname !== expectedPath) throw new FileError("Путь загрузки файла отклонён.");
@@ -190,15 +197,26 @@ export async function cleanupUnlinkedAttachment(actor: AuthUser, attachmentId: s
 }
 
 export async function getAuthorizedAttachment(actor: AuthUser, attachmentId: string) {
-  const row = await first<AttachmentRow & { cashbox_owner_user_id: string | null; transaction_author_user_id: string | null }>(`SELECT a.*,
-    cb.owner_user_id AS cashbox_owner_user_id,ft.author_user_id AS transaction_author_user_id
+  const row = await first<AttachmentRow & { cashbox_id: string | null; expense_type: string | null }>(`SELECT a.*,
+    ft.cashbox_id,ft.expense_type
     FROM attachments a LEFT JOIN financial_transactions ft ON ft.id=a.transaction_id LEFT JOIN cashboxes cb ON cb.id=ft.cashbox_id
     WHERE a.id=$1 AND a.upload_status='LINKED' AND a.deleted_at IS NULL LIMIT 1`, [attachmentId]);
   if (!row) throw new FileError("Файл не найден.", 404);
   if (actor.role !== "OWNER") {
-    const ownOperation = row.uploaded_by_user_id === actor.id || row.cashbox_owner_user_id === actor.id || row.transaction_author_user_id === actor.id;
-    const projectAccess = row.project_id ? await first<{ id: string }>("SELECT id FROM user_project_access WHERE user_id=$1 AND project_id=$2 LIMIT 1", [actor.id, row.project_id]) : null;
-    if (!ownOperation && !projectAccess) throw new FileError("Нет доступа к этому файлу.", 403);
+    try {
+      if (row.category === "RECEIPT") {
+        await assertModuleAction(actor, "finance", "finance.view");
+        if (!row.cashbox_id || !(await canViewCashbox(actor, row.cashbox_id))) throw new FileError("Нет доступа к этому чеку.", 403);
+        if (row.expense_type === "ADMIN" && !(await getAccessProfile(actor)).actions["finance.viewAdministrativeExpenses"]) throw new FileError("Нет доступа к этому чеку.", 403);
+      } else {
+        await assertModuleAction(actor, "documents", "documents.view");
+        if (row.project_id && !(await canViewProject(actor, row.project_id))) throw new FileError("Нет доступа к этому файлу.", 403);
+      }
+    } catch (error) {
+      if (error instanceof FileError) throw error;
+      if (error instanceof AccessError) throw new FileError("Нет доступа к этому файлу.", 403);
+      throw error;
+    }
   }
   return row;
 }

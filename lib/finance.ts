@@ -3,8 +3,7 @@ import { confirmAttachmentUpload, FileError } from "./files";
 import { first, query, transaction } from "./postgres";
 import { FINANCE_CATEGORY_GROUPS, categoryRequiresReceipt, financeCategoryLabel } from "./finance-categories";
 import { INCOME_PURPOSES, parseAmountKopecks, projectLedgerTotals, transferPreview, validateAllocations, validateExpense, type ExpenseKind, type FinanceOperationType } from "./finance-rules";
-
-const FINANCE_ACCESS = "FINANCE_ACCESS";
+import { AccessError, assertActionPermission, assertModuleAction, canViewCashbox, getAccessProfile, getScope } from "./permissions";
 
 type CashboxRow = {
   id: string;
@@ -106,27 +105,34 @@ export async function ensurePersonalCashboxes() {
   ]);
 }
 
-async function permissionAllowed(userId: string, permission: string) {
-  const row = await first<{ allowed: string | number }>("SELECT allowed FROM user_permissions WHERE user_id = $1 AND permission = $2 AND scope = 'COMPANY' LIMIT 1", [userId, permission]);
-  return Boolean(number(row?.allowed));
-}
-
 async function assertFinanceAccess(actor: AuthUser) {
-  if (actor.role === "OWNER") return;
-  if (!(await permissionAllowed(actor.id, FINANCE_ACCESS))) throw new FinanceError("Нет доступа к финансовым операциям.", 403);
+  try { await assertModuleAction(actor, "finance", "finance.view"); }
+  catch (error) { if (error instanceof AccessError) throw new FinanceError("Нет доступа к финансовым операциям.", 403); throw error; }
 }
 
-async function cashboxForActor(actor: AuthUser, id: string, requireActive = true) {
+async function cashboxById(id: string, requireActive = true) {
   const row = await first<CashboxRow>("SELECT c.*, u.display_name AS owner_name FROM cashboxes c LEFT JOIN users u ON u.id = c.owner_user_id WHERE c.id = $1 LIMIT 1", [id]);
   if (!row || (requireActive && row.status !== "ACTIVE")) throw new FinanceError("Касса не найдена или неактивна.", 404);
-  if (actor.role !== "OWNER" && row.owner_user_id !== actor.id) throw new FinanceError("Можно работать только со своей кассой.", 403);
+  return row;
+}
+
+async function cashboxForView(actor: AuthUser, id: string, requireActive = false) {
+  const row = await cashboxById(id, requireActive);
+  if (!(await canViewCashbox(actor, id))) throw new FinanceError("Нет доступа к истории этой кассы.", 403);
+  return row;
+}
+
+async function ownCashboxForWrite(actor: AuthUser, id: string) {
+  const row = await cashboxById(id, true);
+  if (row.owner_user_id !== actor.id) throw new FinanceError("Финансовые операции можно проводить только из собственной кассы.", 403);
   return row;
 }
 
 async function projectForActor(actor: AuthUser, id: string) {
-  const row = actor.role === "OWNER"
+  const allProjects = actor.role === "OWNER" || await getScope(actor, "projects") === "ALL";
+  const row = allProjects
     ? await first<{ id: string; client_id: string }>("SELECT id, client_id FROM projects WHERE id = $1 AND status <> 'ARCHIVED' LIMIT 1", [id])
-    : await first<{ id: string; client_id: string }>("SELECT p.id, p.client_id FROM projects p JOIN user_project_access a ON a.project_id = p.id WHERE p.id = $1 AND a.user_id = $2 AND p.status <> 'ARCHIVED' LIMIT 1", [id, actor.id]);
+    : await first<{ id: string; client_id: string }>("SELECT DISTINCT p.id,p.client_id FROM projects p LEFT JOIN user_project_access a ON a.project_id=p.id AND a.user_id=$2 WHERE p.id=$1 AND p.status<>'ARCHIVED' AND (a.id IS NOT NULL OR p.manager_employee_id=$3 OR p.foreman_employee_id=$3) LIMIT 1", [id, actor.id, actor.employeeId]);
   if (!row) throw new FinanceError("Объект не найден или недоступен.", 403);
   return row;
 }
@@ -191,10 +197,18 @@ export async function reconcileCashboxes(actor: AuthUser, recalculate = false) {
 export async function getFinanceOverview(actor: AuthUser) {
   await ensurePersonalCashboxes();
   await assertFinanceAccess(actor);
-  const boxCondition = actor.role === "OWNER" ? "" : "WHERE c.owner_user_id = $1";
-  const params = actor.role === "OWNER" ? [] : [actor.id];
-  const transactionCondition = actor.role === "OWNER" ? "" : "WHERE source_box.owner_user_id = $1 OR destination_box.owner_user_id = $1";
-  const summaryCondition = actor.role === "OWNER" ? "" : "WHERE EXISTS (SELECT 1 FROM cashboxes sc WHERE sc.id=ft.cashbox_id AND sc.owner_user_id=$1) OR EXISTS (SELECT 1 FROM cashboxes dc WHERE dc.id=ft.destination_cashbox_id AND dc.owner_user_id=$1)";
+  const access = await getAccessProfile(actor);
+  const viewAllCashboxes = actor.role === "OWNER" || access.scopes.cashboxes === "ALL";
+  const boxCondition = viewAllCashboxes ? "" : "WHERE c.owner_user_id = $1";
+  const params = viewAllCashboxes ? [] : [actor.id];
+  const cashboxTransactionPredicate = viewAllCashboxes ? "" : "(source_box.owner_user_id = $1 OR destination_box.owner_user_id = $1)";
+  const cashboxSummaryPredicate = viewAllCashboxes ? "" : "(EXISTS (SELECT 1 FROM cashboxes sc WHERE sc.id=ft.cashbox_id AND sc.owner_user_id=$1) OR EXISTS (SELECT 1 FROM cashboxes dc WHERE dc.id=ft.destination_cashbox_id AND dc.owner_user_id=$1))";
+  const adminPredicate = access.actions["finance.viewAdministrativeExpenses"] ? "" : "ft.expense_type IS DISTINCT FROM 'ADMIN'";
+  const transactionPredicates = [cashboxTransactionPredicate, adminPredicate].filter(Boolean);
+  const summaryPredicates = [cashboxSummaryPredicate, adminPredicate].filter(Boolean);
+  const transactionCondition = transactionPredicates.length ? `WHERE ${transactionPredicates.join(" AND ")}` : "";
+  const summaryCondition = summaryPredicates.length ? `WHERE ${summaryPredicates.join(" AND ")}` : "";
+  const allProjects = actor.role === "OWNER" || access.scopes.projects === "ALL";
   const ledgerSql = `WITH ledger AS (
       SELECT ft.project_id,ft.type,ft.amount_kopecks,ft.category,ft.purpose
       FROM financial_transactions ft
@@ -224,15 +238,15 @@ export async function getFinanceOverview(actor: AuthUser) {
       (SELECT a.id FROM attachments a WHERE a.transaction_id = ft.id AND a.upload_status='LINKED' AND a.deleted_at IS NULL ORDER BY a.created_at LIMIT 1) AS attachment_id,
       COALESCE((SELECT jsonb_agg(jsonb_build_object('id',ta.id,'projectId',ta.project_id,'projectName',ap.name,'amountKopecks',ta.amount_kopecks,'purpose',ta.purpose) ORDER BY ap.name) FROM transaction_allocations ta JOIN projects ap ON ap.id=ta.project_id WHERE ta.transaction_id=ft.id),'[]'::jsonb) AS allocations_json
       FROM financial_transactions ft JOIN cashboxes source_box ON source_box.id = ft.cashbox_id LEFT JOIN cashboxes destination_box ON destination_box.id = ft.destination_cashbox_id LEFT JOIN projects p ON p.id = ft.project_id JOIN users u ON u.id = ft.author_user_id ${transactionCondition} ORDER BY ft.transaction_date DESC, ft.created_at DESC LIMIT 200`, params),
-    actor.role === "OWNER"
+    allProjects
       ? query<{ id: string; name: string; client_id: string }>("SELECT id, name, client_id FROM projects WHERE status <> 'ARCHIVED' ORDER BY name")
-      : query<{ id: string; name: string; client_id: string }>("SELECT p.id, p.name, p.client_id FROM projects p JOIN user_project_access a ON a.project_id = p.id WHERE a.user_id = $1 AND p.status <> 'ARCHIVED' ORDER BY p.name", [actor.id]),
-    actor.role === "OWNER"
+      : query<{ id: string; name: string; client_id: string }>("SELECT DISTINCT p.id,p.name,p.client_id FROM projects p LEFT JOIN user_project_access a ON a.project_id=p.id AND a.user_id=$1 WHERE p.status<>'ARCHIVED' AND (a.id IS NOT NULL OR p.manager_employee_id=$2 OR p.foreman_employee_id=$2) ORDER BY p.name", [actor.id, actor.employeeId]),
+    (actor.role === "OWNER" || access.scopes.clients === "ALL")
       ? query<{ id: string; name: string }>("SELECT id, name FROM clients WHERE status = 'ACTIVE' ORDER BY name")
-      : query<{ id: string; name: string }>("SELECT DISTINCT c.id, c.name FROM clients c JOIN projects p ON p.client_id = c.id JOIN user_project_access a ON a.project_id = p.id WHERE a.user_id = $1 AND c.status = 'ACTIVE' ORDER BY c.name", [actor.id]),
-    actor.role === "OWNER"
+      : query<{ id: string; name: string }>("SELECT DISTINCT c.id,c.name FROM clients c LEFT JOIN projects p ON p.client_id=c.id LEFT JOIN user_project_access a ON a.project_id=p.id AND a.user_id=$1 WHERE c.status='ACTIVE' AND (c.owner_employee_id=$2 OR a.id IS NOT NULL OR p.manager_employee_id=$2 OR p.foreman_employee_id=$2) ORDER BY c.name", [actor.id, actor.employeeId]),
+    allProjects
       ? query<ProjectEconomicsRow>(`${ledgerSql} GROUP BY project_id`)
-      : query<ProjectEconomicsRow>(`${ledgerSql} WHERE EXISTS (SELECT 1 FROM user_project_access a WHERE a.project_id=ledger.project_id AND a.user_id=$1) GROUP BY project_id`, [actor.id]),
+      : query<ProjectEconomicsRow>(`${ledgerSql} WHERE EXISTS (SELECT 1 FROM projects p LEFT JOIN user_project_access a ON a.project_id=p.id AND a.user_id=$1 WHERE p.id=ledger.project_id AND (a.id IS NOT NULL OR p.manager_employee_id=$2 OR p.foreman_employee_id=$2)) GROUP BY project_id`, [actor.id, actor.employeeId]),
     reconciliationRows(),
     query<{ today_income_kopecks: string | number; today_expense_kopecks: string | number; today_transfer_kopecks: string | number; month_project_expense_kopecks: string | number; month_admin_expense_kopecks: string | number }>(`SELECT
       COALESCE(SUM(CASE WHEN type='INCOME' AND transaction_date >= EXTRACT(EPOCH FROM date_trunc('day',now() AT TIME ZONE 'Asia/Vladivostok') AT TIME ZONE 'Asia/Vladivostok') THEN amount_kopecks ELSE 0 END),0) AS today_income_kopecks,
@@ -265,17 +279,30 @@ export async function getFinanceOverview(actor: AuthUser) {
   const reconciliationMismatches = reconciliation.filter((row) => number(row.stored_balance_kopecks) !== number(row.calculated_balance_kopecks));
   if (reconciliationMismatches.length) console.error("FINANCE_RECONCILIATION_MISMATCH", reconciliationMismatches);
   const summary = summaryRows[0];
+  const depaProfitKopecks = 0; // Управленческий P&L будет подключён к достоверному реестру отдельным модулем.
+  const visibleProjects = access.actions["finance.viewClientFunds"] ? serializedProjects : serializedProjects.map((project) => ({
+    ...project, incomeKopecks: 0, expenseKopecks: 0, refundKopecks: 0, actualExpenseKopecks: 0, clientBalanceKopecks: 0,
+    materialsIncomeKopecks: 0, materialsExpenseKopecks: 0, materialsBalanceKopecks: 0, worksIncomeKopecks: 0, worksExpenseKopecks: 0,
+    worksBalanceKopecks: 0, additionalWorksIncomeKopecks: 0, otherIncomeKopecks: 0,
+  }));
   return {
     isOwner: actor.role === "OWNER",
     currentUserId: actor.id,
+    capabilities: {
+      createExpense: access.actions["finance.createExpense"], createIncome: access.actions["finance.createIncome"], createTransfer: access.actions["finance.createTransfer"],
+      editTransaction: access.actions["finance.editTransaction"], viewClientFunds: access.actions["finance.viewClientFunds"], viewProfit: access.actions["finance.viewProfit"],
+      viewAdministrativeExpenses: access.actions["finance.viewAdministrativeExpenses"], cashboxScope: access.scopes.cashboxes, hasOwnActiveCashbox: boxes.some((box) => box.owner_user_id === actor.id && box.status === "ACTIVE"),
+    },
     cashboxes: boxes.map((box) => serializeCashbox(box, transactions)),
+    transferRecipients: (await query<CashboxRow>("SELECT c.*,u.display_name AS owner_name FROM cashboxes c LEFT JOIN users u ON u.id=c.owner_user_id WHERE c.status='ACTIVE' AND c.owner_user_id<>$1 ORDER BY c.name", [actor.id])).map((box) => ({ id: box.id, name: professionalCashboxName(box.name), ownerName: box.owner_name })),
     transactions: serializedTransactions,
-    projects: serializedProjects,
+    projects: visibleProjects,
     clients,
     physicalTotalKopecks: boxes.filter((box) => box.status === "ACTIVE").reduce((sum, box) => sum + number(box.balance_kopecks), 0),
-    clientFundsKopecks: serializedProjects.reduce((sum, project) => sum + Math.max(0, project.materialsBalanceKopecks) + Math.max(0, project.worksBalanceKopecks) + Math.max(0, project.additionalWorksIncomeKopecks) + Math.max(0, project.otherIncomeKopecks), 0),
-    summary: { todayIncomeKopecks: number(summary?.today_income_kopecks), todayExpenseKopecks: number(summary?.today_expense_kopecks), todayTransferKopecks: number(summary?.today_transfer_kopecks), monthProjectExpenseKopecks: number(summary?.month_project_expense_kopecks), monthAdminExpenseKopecks: number(summary?.month_admin_expense_kopecks) },
-    attentionItems,
+    clientFundsKopecks: access.actions["finance.viewClientFunds"] ? serializedProjects.reduce((sum, project) => sum + Math.max(0, project.materialsBalanceKopecks) + Math.max(0, project.worksBalanceKopecks) + Math.max(0, project.additionalWorksIncomeKopecks) + Math.max(0, project.otherIncomeKopecks), 0) : null,
+    depaProfitKopecks: access.actions["finance.viewProfit"] ? depaProfitKopecks : null,
+    summary: { todayIncomeKopecks: number(summary?.today_income_kopecks), todayExpenseKopecks: number(summary?.today_expense_kopecks), todayTransferKopecks: number(summary?.today_transfer_kopecks), monthProjectExpenseKopecks: number(summary?.month_project_expense_kopecks), monthAdminExpenseKopecks: access.actions["finance.viewAdministrativeExpenses"] ? number(summary?.month_admin_expense_kopecks) : null },
+    attentionItems: attentionItems.filter((item) => access.actions["finance.viewAdministrativeExpenses"] || item.type !== "NEGATIVE_CASHBOX"),
     reconciliation: { ok: reconciliationMismatches.length === 0, mismatchCount: reconciliationMismatches.length },
   };
 }
@@ -306,7 +333,7 @@ export async function getCashboxHistory(actor: AuthUser, filters: CashboxHistory
   await assertFinanceAccess(actor);
   const cashboxId = cleanText(filters.cashboxId, 100);
   if (!cashboxId) throw new FinanceError("Выберите кассу.");
-  await cashboxForActor(actor, cashboxId);
+  await cashboxForView(actor, cashboxId);
 
   const dateFrom = cleanText(filters.dateFrom, 10);
   const dateTo = cleanText(filters.dateTo, 10);
@@ -325,6 +352,7 @@ export async function getCashboxHistory(actor: AuthUser, filters: CashboxHistory
 
   const values: unknown[] = [cashboxId];
   const conditions = ["(ft.cashbox_id=$1 OR ft.destination_cashbox_id=$1)"];
+  if (actor.role !== "OWNER" && !(await getAccessProfile(actor)).actions["finance.viewAdministrativeExpenses"]) conditions.push("ft.expense_type IS DISTINCT FROM 'ADMIN'");
   function bind(value: unknown) { values.push(value); return `$${values.length}`; }
   if (dateFrom) conditions.push(`ft.transaction_date >= EXTRACT(EPOCH FROM (${bind(dateFrom)}::date::timestamp AT TIME ZONE 'Asia/Vladivostok'))`);
   if (dateTo) conditions.push(`ft.transaction_date < EXTRACT(EPOCH FROM ((${bind(dateTo)}::date + 1)::timestamp AT TIME ZONE 'Asia/Vladivostok'))`);
@@ -365,12 +393,14 @@ export async function createFinanceOperation(actor: AuthUser, input: CreateFinan
   await assertFinanceAccess(actor);
   const type = cleanText(input.type, 20) as FinanceOperationType;
   if (!["INCOME", "EXPENSE", "TRANSFER", "REFUND"].includes(type)) throw new FinanceError("Выберите тип финансовой операции.");
-  if (actor.role !== "OWNER" && type !== "EXPENSE") throw new FinanceError("Сотрудник может создавать только разрешённые расходы из своей кассы.", 403);
+  const requiredPermission = type === "EXPENSE" ? "finance.createExpense" : type === "INCOME" ? "finance.createIncome" : type === "TRANSFER" ? "finance.createTransfer" : "finance.editTransaction";
+  try { await assertActionPermission(actor, requiredPermission); }
+  catch (error) { if (error instanceof AccessError) throw new FinanceError("Нет права на создание этой операции.", 403); throw error; }
   const amountKopecks = parseAmountKopecks(input.amount);
   if (!amountKopecks) throw new FinanceError("Сумма должна быть больше нуля.");
   const cashboxId = cleanText(input.cashboxId, 100);
   if (!cashboxId) throw new FinanceError("Выберите кассу.");
-  let sourceCashbox = await cashboxForActor(actor, cashboxId);
+  let sourceCashbox = type === "REFUND" ? await cashboxById(cashboxId) : await ownCashboxForWrite(actor, cashboxId);
   let destinationCashbox: CashboxRow | null = null;
   const timestamp = nowSeconds();
   const dateValue = cleanText(input.date, 30);
@@ -394,15 +424,14 @@ export async function createFinanceOperation(actor: AuthUser, input: CreateFinan
   const source = cleanText(input.source, 180) || null;
 
   if (type === "TRANSFER") {
-    if (actor.role !== "OWNER") throw new FinanceError("Перемещения между кассами проводит Owner.", 403);
     const destinationId = cleanText(input.destinationCashboxId, 100);
     if (!destinationId) throw new FinanceError("Выберите кассу-получатель.");
     if (destinationId === cashboxId) throw new FinanceError("Кассы отправителя и получателя должны отличаться.");
-    destinationCashbox = await cashboxForActor(actor, destinationId);
+    destinationCashbox = await cashboxById(destinationId, true);
     expenseType = "" as ExpenseKind; category = "Перемещение"; projectId = null; clientId = null; purpose = null; showToClient = false; originalTransactionId = null;
   } else if (type === "EXPENSE") {
     if (expenseType !== "PROJECT" && expenseType !== "ADMIN") throw new FinanceError("Выберите тип расхода.");
-    if (actor.role !== "OWNER" && expenseType === "ADMIN") throw new FinanceError("Административные расходы проводит Owner.", 403);
+    if (expenseType === "ADMIN" && actor.role !== "OWNER" && !(await getAccessProfile(actor)).actions["finance.viewAdministrativeExpenses"]) throw new FinanceError("Нет права на административные расходы.", 403);
     const expenseError = validateExpense(expenseType, category, projectId || allocations[0]?.projectId);
     if (expenseError) throw new FinanceError(expenseError);
     if (expenseType === "ADMIN") { projectId = null; clientId = null; showToClient = false; allocations.length = 0; }
@@ -424,7 +453,7 @@ export async function createFinanceOperation(actor: AuthUser, input: CreateFinan
       if (!original || original.type !== "EXPENSE") throw new FinanceError("Исходный расход для возврата не найден.");
       const refunded = await first<{ total: string | number }>("SELECT COALESCE(SUM(amount_kopecks), 0) AS total FROM financial_transactions WHERE type = 'REFUND' AND original_transaction_id = $1", [originalTransactionId]);
       if (amountKopecks > number(original.amount_kopecks) - number(refunded?.total)) throw new FinanceError("Сумма возврата превышает остаток исходного расхода.");
-      sourceCashbox = await cashboxForActor(actor, original.cashbox_id);
+      sourceCashbox = await ownCashboxForWrite(actor, original.cashbox_id);
       projectId = original.project_id; clientId = original.client_id; category = original.category;
     }
   }
@@ -482,10 +511,13 @@ export async function createFinanceOperation(actor: AuthUser, input: CreateFinan
 }
 
 export async function updateFinanceOperation(actor: AuthUser, input: { id?: unknown; title?: unknown; comment?: unknown; showToClient?: unknown }) {
-  if (actor.role !== "OWNER") throw new FinanceError("Редактировать финансовые операции может только Owner.", 403);
+  try { await assertModuleAction(actor, "finance", "finance.editTransaction"); }
+  catch (error) { if (error instanceof AccessError) throw new FinanceError("Нет права редактировать финансовые операции.", 403); throw error; }
   const id = cleanText(input.id, 100);
-  const existing = await first<{ id: string; title: string; comment: string | null; show_to_client: string | number; expense_type: string | null }>("SELECT id,title,comment,show_to_client,expense_type FROM financial_transactions WHERE id=$1 LIMIT 1", [id]);
+  const existing = await first<{ id: string; title: string; comment: string | null; show_to_client: string | number; expense_type: string | null; cashbox_id: string }>("SELECT id,title,comment,show_to_client,expense_type,cashbox_id FROM financial_transactions WHERE id=$1 LIMIT 1", [id]);
   if (!existing) throw new FinanceError("Финансовая операция не найдена.", 404);
+  if (!(await canViewCashbox(actor, existing.cashbox_id))) throw new FinanceError("Операция недоступна.", 403);
+  if (existing.expense_type === "ADMIN" && actor.role !== "OWNER" && !(await getAccessProfile(actor)).actions["finance.viewAdministrativeExpenses"]) throw new FinanceError("Операция недоступна.", 403);
   const title = cleanText(input.title, 180);
   if (!title) throw new FinanceError("Укажите название операции.");
   const comment = cleanText(input.comment, 1000) || null;

@@ -64,6 +64,11 @@ async function makePasswordHash(password: string) {
   return { hash: await derivePassword(password, saltHex, PASSWORD_ITERATIONS), salt: saltHex, iterations: PASSWORD_ITERATIONS };
 }
 
+export async function createLocalPasswordCredential(password: string) {
+  if (password.length < 8) throw new Error("Пароль должен содержать минимум 8 символов.");
+  return makePasswordHash(password);
+}
+
 async function verifyPassword(password: string, row: UserRow) {
   if (!row.password_hash || !row.password_salt || !row.password_iterations) return false;
   const candidate = hexToBytes(await derivePassword(password, row.password_salt, row.password_iterations));

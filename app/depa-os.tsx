@@ -2,7 +2,9 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import type { AuthUser } from "../lib/auth";
-import { EmployeeObjectsScreen, FinanceOperationModal, FinanceScreen, OperationPickerModal, TeamFinanceScreen, money, readFinance, type FinanceData, type FinanceMode } from "./finance-ui";
+import type { AccessProfile, ActionPermission, ModuleKey } from "../lib/permission-definitions";
+import { EmployeeObjectsScreen, FinanceOperationModal, FinanceScreen, OperationPickerModal, money, readFinance, type FinanceData, type FinanceMode } from "./finance-ui";
+import { TeamAccessScreen } from "./team-access-ui";
 
 type Section = "dashboard" | "crm" | "clients" | "orders" | "objects" | "finance" | "tasks" | "team" | "contractors" | "docs";
 type ObjectTab = "overview" | "estimate" | "finance" | "stages" | "photos" | "docs";
@@ -25,6 +27,8 @@ const nav: { group: string; items: { id: Section; label: string; icon: string; c
     { id: "docs", label: "Документы", icon: "▱" },
   ]},
 ];
+
+const moduleBySection: Record<Section, ModuleKey> = { dashboard: "dashboard", crm: "crm", clients: "clients", orders: "orders", objects: "projects", tasks: "tasks", finance: "finance", team: "team", contractors: "contractors", docs: "documents" };
 
 const objects = [
   { id: 1, name: "ЖК Море · 128", client: "Александр Иванов", status: "В работе", stage: "Малярные работы", progress: 68, date: "12 сен", budget: "2 640 000 ₽", balance: "+148 000 ₽", lead: "ДП", alert: false },
@@ -64,8 +68,8 @@ function initials(name: string) {
   return name.split(" ").map((part) => part[0]).join("").slice(0, 2).toLocaleUpperCase("ru-RU");
 }
 
-function Sidebar({ section, onChange, open, onClose, user, onProfile }: { section: Section; onChange: (s: Section) => void; open: boolean; onClose: () => void; user: AuthUser; onProfile: () => void }) {
-  const visibleNav = user.role === "OWNER" ? nav : nav.map((group) => ({ ...group, items: group.items.filter((item) => ["objects", "tasks", "finance"].includes(item.id)) })).filter((group) => group.items.length > 0);
+function Sidebar({ section, onChange, open, onClose, user, access, onProfile }: { section: Section; onChange: (s: Section) => void; open: boolean; onClose: () => void; user: AuthUser; access: AccessProfile; onProfile: () => void }) {
+  const visibleNav = nav.map((group) => ({ ...group, items: group.items.filter((item) => access.modules[moduleBySection[item.id]]) })).filter((group) => group.items.length > 0);
   return <aside className={`sidebar ${open ? "open" : ""}`}>
     <div className="side-head"><Brand /><button className="icon-btn mobile-only" onClick={onClose} aria-label="Закрыть меню">×</button></div>
     <nav>
@@ -82,14 +86,14 @@ function Sidebar({ section, onChange, open, onClose, user, onProfile }: { sectio
   </aside>;
 }
 
-function Topbar({ title, onMenu, onAdd, onSearch }: { title: string; onMenu: () => void; onAdd: () => void; onSearch: () => void }) {
+function Topbar({ title, onMenu, onAdd, onSearch }: { title: string; onMenu: () => void; onAdd?: () => void; onSearch?: () => void }) {
   return <header className="topbar">
     <button className="icon-btn mobile-only" onClick={onMenu} aria-label="Открыть меню">☰</button>
     <div><small>DEPA STROY · ВЛАДИВОСТОК</small><h1>{title}</h1></div>
     <div className="top-actions">
-      <button className="search" onClick={onSearch}><span>⌕</span><span className="search-label">Найти клиента, объект, операцию</span><kbd>⌘ K</kbd></button>
+      {onSearch ? <button className="search" onClick={onSearch}><span>⌕</span><span className="search-label">Найти клиента, объект, операцию</span><kbd>⌘ K</kbd></button> : null}
       <button className="round" aria-label="Уведомления">●<i>3</i></button>
-      <button className="primary" onClick={onAdd}>＋ <span>Добавить</span></button>
+      {onAdd ? <button className="primary" onClick={onAdd}>＋ <span>Добавить</span></button> : null}
     </div>
   </header>;
 }
@@ -150,14 +154,22 @@ function Dashboard({ onObject, onSection, user }: { onObject: () => void; onSect
         <div className="panel-head"><div><span className="eyebrow">КАССЫ</span><h3>Персональные</h3></div><button className="link" onClick={() => onSection("finance")}>Подробнее →</button></div>
         {finance?.cashboxes.filter((box) => box.status === "ACTIVE").map((box, index) => <button className="cash-row" key={box.id} onClick={() => onSection("finance")}><span><i className={`dot ${index ? "gray" : ""}`} />{box.name}</span><b className={box.balanceKopecks < 0 ? "minus" : ""}>{money(box.balanceKopecks)}</b></button>)}
         {!finance?.cashboxes.filter((box) => box.status === "ACTIVE").length && <div className="finance-empty">Активных касс нет.</div>}
-        <div className="cash-note"><span>Итого в кассах</span><b>{finance ? money(finance.physicalTotalKopecks) : "—"} · физический остаток</b><span>Клиентские средства</span><b>{finance ? money(finance.clientFundsKopecks) : "—"} · считаются отдельно</b></div>
+        <div className="cash-note"><span>Итого в кассах</span><b>{finance ? money(finance.physicalTotalKopecks) : "—"} · физический остаток</b><span>Клиентские средства</span><b>{finance?.clientFundsKopecks != null ? money(finance.clientFundsKopecks) : "—"} · считаются отдельно</b></div>
       </section>
     </div>
   </>;
 }
 
-function EmployeeDashboard({ user, onSection }: { user: AuthUser; onSection: (s: Section) => void }) {
-  return <><section className="welcome"><div><span className="eyebrow">ЛИЧНЫЙ КОНТУР</span><h2>{user.name.split(" ")[0]}, рабочее пространство</h2><p>Здесь доступны только назначенные объекты, задачи и ваша персональная касса.</p></div></section><div className="metrics-grid"><Metric label="МОЯ КАССА" value="Открыть" detail="Баланс и личные операции" /><Metric label="ОБЪЕКТЫ" value="По доступу" detail="Назначаются Owner" /><Metric label="ФИНАНСЫ DEPA" value="Скрыты" detail="Прибыль и чужие кассы недоступны" /><Metric label="РОЛЬ" value="Сотрудник" detail="Ограниченный контур" /></div><div className="panel employee-start"><div><span className="eyebrow">БЫСТРЫЙ ДОСТУП</span><h3>Рабочее пространство</h3><p>Операции создаются только по вашей кассе и разрешённым объектам.</p></div><button className="secondary" onClick={() => onSection("objects")}>Мои объекты</button><button className="primary" onClick={() => onSection("finance")}>Моя касса</button></div></>;
+function EmployeeDashboard({ user, access, onSection }: { user: AuthUser; access: AccessProfile; onSection: (s: Section) => void }) {
+  const [finance, setFinance] = useState<FinanceData | null>(null);
+  useEffect(() => { if (!access.modules.finance || !access.actions["finance.view"]) return; let active = true; readFinance().then((result) => { if (active) setFinance(result); }).catch(() => undefined); return () => { active = false; }; }, [access]);
+  const quickSections = (["objects", "tasks", "finance", "docs"] as Section[]).filter((section) => access.modules[moduleBySection[section]]);
+  return <><section className="welcome"><div><span className="eyebrow">РАБОЧИЙ КОНТУР</span><h2>{user.name.split(" ")[0]}, рабочее пространство</h2><p>Здесь отображаются только разрешённые разделы и доступная область данных.</p></div></section><div className="metrics-grid employee-metrics">
+    {access.modules.finance && access.actions["finance.view"] ? <Metric label={access.scopes.cashboxes === "ALL" ? "ДОСТУПНЫЕ КАССЫ" : "МОЯ КАССА"} value={finance ? money(finance.physicalTotalKopecks) : "—"} detail={access.scopes.cashboxes === "ALL" ? "Просмотр всех касс · операции только из своей" : "Баланс и история собственной кассы"} /> : null}
+    {access.modules.projects ? <Metric label="ОБЪЕКТЫ" value={access.scopes.projects === "ALL" ? "Все" : "Назначенные"} detail="Доступ определяется Owner" /> : null}
+    {access.actions["finance.viewClientFunds"] && finance?.clientFundsKopecks !== null ? <Metric label="СРЕДСТВА КЛИЕНТОВ" value={finance ? money(finance.clientFundsKopecks ?? 0) : "—"} detail="В доступной области" /> : null}
+    {access.actions["finance.viewProfit"] && finance?.depaProfitKopecks !== null ? <Metric label="ПРИБЫЛЬ DEPA" value={finance ? money(finance.depaProfitKopecks ?? 0) : "—"} detail="Разрешено Owner" tone="orange" /> : null}
+  </div><div className="panel employee-start"><div><span className="eyebrow">БЫСТРЫЙ ДОСТУП</span><h3>Рабочее пространство</h3><p>Прямые переходы и API также проверяют эти права.</p></div>{quickSections.map((section) => <button className={section === "finance" ? "primary" : "secondary"} key={section} onClick={() => onSection(section)}>{nav.flatMap((group) => group.items).find((item) => item.id === section)?.label}</button>)}</div></>;
 }
 
 function ObjectsScreen({ onObject }: { onObject: () => void }) {
@@ -171,9 +183,9 @@ function ObjectsScreen({ onObject }: { onObject: () => void }) {
   </section>;
 }
 
-function CrmScreen() {
+function CrmScreen({ canCreate }: { canCreate: boolean }) {
   return <section className="screen-section"><div className="screen-intro"><div><span className="eyebrow">ПРОДАЖИ</span><h2>CRM</h2><p>12 активных обращений · потенциал 18,4 млн ₽</p></div><div className="segmented"><button className="active">Воронка</button><button>Список</button></div></div>
-    <div className="kanban">{crmColumns.map((col, i) => <div className="kanban-col" key={col.title}><div className="kanban-head"><span><i className={i === 4 ? "orange-bg" : ""} />{col.title}</span><b>{col.count}</b></div>{col.cards.map((name,j) => <article key={name}><span className="source">{j % 2 ? "AVITO" : "САЙТ"}</span><h4>{name}</h4><p>Ремонт · 62 м²</p><div><small>{i < 2 ? "Связаться сегодня" : "Следующее действие 18 авг"}</small><span className="avatar mini">{j%2 ? "ПС" : "ДП"}</span></div></article>)}<button className="kanban-add">＋ Добавить</button></div>)}</div>
+    <div className="kanban">{crmColumns.map((col, i) => <div className="kanban-col" key={col.title}><div className="kanban-head"><span><i className={i === 4 ? "orange-bg" : ""} />{col.title}</span><b>{col.count}</b></div>{col.cards.map((name,j) => <article key={name}><span className="source">{j % 2 ? "AVITO" : "САЙТ"}</span><h4>{name}</h4><p>Ремонт · 62 м²</p><div><small>{i < 2 ? "Связаться сегодня" : "Следующее действие 18 авг"}</small><span className="avatar mini">{j%2 ? "ПС" : "ДП"}</span></div></article>)}{canCreate ? <button className="kanban-add">＋ Добавить</button> : null}</div>)}</div>
   </section>;
 }
 
@@ -186,9 +198,30 @@ const genericData: Record<Exclude<Section, "dashboard"|"crm"|"objects"|"finance"
   docs: { eyebrow:"АРХИВ", title:"Документы", desc:"Договоры, сметы, чеки и отчёты по объектам.", columns:["Документ","Тип","Объект","Изменён","Версия"], rows:[["Договор DEP-0268","Договор","ЖК Море · 128","14 августа","v1"],["Смета · актуальная","Смета","ЖК Море · 128","12 августа","v4"],["Акт скрытых работ","Акт","ЖК Атмосфера · 42","10 августа","v1"],["Отчёт о приёмке","PDF-отчёт","ЖК Бринер · 77","02 августа","v2"]]},
 };
 
-function GenericScreen({ section }: { section: keyof typeof genericData }) {
+function GenericScreen({ section, access }: { section: keyof typeof genericData; access: AccessProfile }) {
   const data = genericData[section];
-  return <section className="screen-section"><div className="screen-intro"><div><span className="eyebrow">{data.eyebrow}</span><h2>{data.title}</h2><p>{data.desc}</p></div><button className="secondary">＋ Добавить</button></div><div className="panel data-table"><div className="data-row data-head">{data.columns.map(c => <span key={c}>{c}</span>)}</div>{data.rows.map((row,i) => <button className="data-row" key={i}>{row.map((cell,j) => <span key={j} className={j === 0 ? "strong" : ""}>{j === 0 && <i className="row-avatar">{cell.slice(0,2)}</i>}{cell}</span>)}</button>)}</div></section>;
+  const createPermission: Partial<Record<keyof typeof genericData, ActionPermission>> = { clients: "clients.create", orders: "orders.create", tasks: "tasks.create", contractors: "contractors.create", docs: "documents.upload" };
+  const permission = createPermission[section];
+  return <section className="screen-section"><div className="screen-intro"><div><span className="eyebrow">{data.eyebrow}</span><h2>{data.title}</h2><p>{data.desc}</p></div>{permission && access.actions[permission] ? <button className="secondary">＋ Добавить</button> : null}</div><div className="panel data-table"><div className="data-row data-head">{data.columns.map(c => <span key={c}>{c}</span>)}</div>{data.rows.map((row,i) => <button className="data-row" key={i}>{row.map((cell,j) => <span key={j} className={j === 0 ? "strong" : ""}>{j === 0 && <i className="row-avatar">{cell.slice(0,2)}</i>}{cell}</span>)}</button>)}</div></section>;
+}
+
+const scopedModulePresentation: Record<keyof typeof genericData | "crm", { endpoint: string; eyebrow: string; title: string; fields: { key: string; label: string }[] }> = {
+  crm: { endpoint: "crm", eyebrow: "ПРОДАЖИ", title: "CRM", fields: [{ key: "client_name", label: "Клиент" }, { key: "source", label: "Источник" }, { key: "status", label: "Статус" }, { key: "next_action", label: "Следующее действие" }] },
+  clients: { endpoint: "clients", eyebrow: "ОТНОШЕНИЯ", title: "Клиенты", fields: [{ key: "name", label: "Клиент" }, { key: "phone", label: "Телефон" }, { key: "source", label: "Источник" }, { key: "status", label: "Статус" }] },
+  orders: { endpoint: "orders", eyebrow: "УСЛУГИ", title: "Заказы", fields: [{ key: "number", label: "Заказ" }, { key: "client_name", label: "Клиент" }, { key: "title", label: "Услуга" }, { key: "status", label: "Статус" }] },
+  tasks: { endpoint: "tasks", eyebrow: "КОНТРОЛЬ", title: "Задачи", fields: [{ key: "title", label: "Задача" }, { key: "deadline", label: "Дедлайн" }, { key: "status", label: "Статус" }, { key: "comment", label: "Комментарий" }] },
+  team: { endpoint: "team", eyebrow: "КОМАНДА", title: "Сотрудники", fields: [{ key: "full_name", label: "Сотрудник" }, { key: "position", label: "Должность" }, { key: "phone", label: "Телефон" }, { key: "status", label: "Статус" }] },
+  contractors: { endpoint: "contractors", eyebrow: "ИСПОЛНИТЕЛИ", title: "Исполнители", fields: [{ key: "name", label: "Исполнитель" }, { key: "specialization", label: "Специализация" }, { key: "phone", label: "Телефон" }, { key: "status", label: "Статус" }] },
+  docs: { endpoint: "documents", eyebrow: "АРХИВ", title: "Документы", fields: [{ key: "original_filename", label: "Документ" }, { key: "category", label: "Тип" }, { key: "entity_type", label: "Связь" }, { key: "updated_at", label: "Изменён" }] },
+};
+
+function ScopedModuleScreen({ section }: { section: keyof typeof scopedModulePresentation }) {
+  const presentation = scopedModulePresentation[section];
+  const [items, setItems] = useState<Record<string, unknown>[] | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => { let active = true; fetch(`/api/${presentation.endpoint}`, { cache: "no-store" }).then(async (response) => { const result = await response.json() as { items?: Record<string, unknown>[]; error?: string }; if (!response.ok) throw new Error(result.error); if (active) setItems(result.items ?? []); }).catch((reason) => { if (active) setError(reason instanceof Error ? reason.message : "Не удалось загрузить раздел."); }); return () => { active = false; }; }, [presentation.endpoint]);
+  function display(value: unknown) { if (value == null || value === "") return "—"; if (typeof value === "number" && value > 1_000_000_000) return new Date(value * 1000).toLocaleDateString("ru-RU"); return String(value); }
+  return <section className="screen-section"><div className="screen-intro"><div><span className="eyebrow">{presentation.eyebrow}</span><h2>{presentation.title}</h2><p>Данные отфильтрованы сервером по индивидуальной области доступа.</p></div></div>{error ? <div className="auth-error"><i>!</i><span>{error}</span></div> : null}{items ? <div className="panel data-table"><div className="data-row data-head">{presentation.fields.map((field) => <span key={field.key}>{field.label}</span>)}</div>{items.map((item, index) => <div className="data-row" key={String(item.id ?? index)}>{presentation.fields.map((field) => <span className={field === presentation.fields[0] ? "strong" : ""} key={field.key}>{display(item[field.key])}</span>)}</div>)}</div> : <div className="panel finance-loading">Загружаем данные…</div>}{items?.length === 0 ? <div className="panel finance-empty">В доступной области записей пока нет.</div> : null}</section>;
 }
 
 function ObjectDetail({ onBack }: { onBack: () => void }) {
@@ -255,22 +288,32 @@ function SearchModal({ onClose }: { onClose: () => void }) {
   return <div className="modal-wrap search-wrap" onMouseDown={e=>{if(e.target===e.currentTarget)onClose()}}><div className="search-modal"><div className="search-input"><span>⌕</span><input autoFocus value={q} onChange={e=>setQ(e.target.value)} placeholder="Поиск по DEPA OS"/><kbd>ESC</kbd></div><div className="search-results"><small>БЫСТРЫЕ РЕЗУЛЬТАТЫ</small>{results.map((r,i)=><button key={r}><i>{i===0?"◇":i===1?"◎":"₽"}</i><span><b>{r}</b><small>{i===0?"Объект · В работе":i===1?"Клиент · 2 заказа":"Операция · 38 500 ₽"}</small></span><em>↗</em></button>)}</div></div></div>;
 }
 
-export function DepaOS({ currentUser }: { currentUser: AuthUser }) {
-  const [section, setSection] = useState<Section>("dashboard");
+function AccessDenied({ onNavigate }: { onNavigate: () => void }) {
+  return <section className="panel access-denied"><span>403</span><h2>Доступ к разделу закрыт</h2><p>Раздел не входит в индивидуальные права этого аккаунта. Пункты меню и API используют ту же серверную проверку.</p><button className="primary" onClick={onNavigate}>Открыть доступный раздел</button></section>;
+}
+
+export function DepaOS({ currentUser, access, initialSection, accessDenied }: { currentUser: AuthUser; access: AccessProfile; initialSection: string; accessDenied?: ModuleKey }) {
+  const safeInitial = Object.hasOwn(moduleBySection, initialSection) ? initialSection as Section : "dashboard";
+  const [section, setSection] = useState<Section>(safeInitial);
+  const [denied, setDenied] = useState(Boolean(accessDenied));
   const [objectOpen, setObjectOpen] = useState(false);
   const [modal, setModal] = useState<"picker"|"finance"|"search"|"profile"|null>(null);
   const [financeMode, setFinanceMode] = useState<FinanceMode>("EXPENSE");
   const [financeRevision, setFinanceRevision] = useState(0);
   const [menuOpen,setMenuOpen]=useState(false);
   const title = nav.flatMap(g=>g.items).find(i=>i.id===section)?.label || "Обзор";
-  function select(s:Section){setSection(s);setObjectOpen(false)}
+  function select(s:Section){if (!access.modules[moduleBySection[s]]) { setDenied(true); return; } setSection(s);setObjectOpen(false);setDenied(false)}
   function openFinance(mode: FinanceMode) { setFinanceMode(mode); setModal("finance"); }
+  const firstAllowed = nav.flatMap((group) => group.items).find((item) => access.modules[moduleBySection[item.id]])?.id ?? "dashboard";
+  const financeAllowed = access.modules.finance && access.actions["finance.view"] && access.ownCashbox;
+  const allowedFinanceModes = { EXPENSE: financeAllowed && access.actions["finance.createExpense"], INCOME: financeAllowed && access.actions["finance.createIncome"], TRANSFER: financeAllowed && access.actions["finance.createTransfer"] };
+  const canAddFinance = Object.values(allowedFinanceModes).some(Boolean);
   return <div className="app-shell">
-    <Sidebar section={section} onChange={select} open={menuOpen} onClose={()=>setMenuOpen(false)} user={currentUser} onProfile={()=>setModal("profile")}/>
+    <Sidebar section={section} onChange={select} open={menuOpen} onClose={()=>setMenuOpen(false)} user={currentUser} access={access} onProfile={()=>setModal("profile")}/>
     {menuOpen&&<button className="scrim" onClick={()=>setMenuOpen(false)} aria-label="Закрыть меню"/>}
-    <main className="main"><Topbar title={objectOpen?"Объект":title} onMenu={()=>setMenuOpen(true)} onAdd={()=>setModal("picker")} onSearch={()=>setModal("search")}/><div className="content">
-      {objectOpen?<ObjectDetail onBack={()=>setObjectOpen(false)}/>:section==="dashboard"?(currentUser.role==="OWNER"?<Dashboard onObject={()=>setObjectOpen(true)} onSection={select} user={currentUser}/>:<EmployeeDashboard user={currentUser} onSection={select}/>):section==="objects"?(currentUser.role==="OWNER"?<ObjectsScreen onObject={()=>setObjectOpen(true)}/>:<EmployeeObjectsScreen/>):section==="crm"?<CrmScreen/>:section==="finance"?<FinanceScreen key={financeRevision} onNew={openFinance}/>:section==="team"&&currentUser.role==="OWNER"?<TeamFinanceScreen/>:<GenericScreen section={section as keyof typeof genericData}/>}
+    <main className="main"><Topbar title={objectOpen?"Объект":title} onMenu={()=>setMenuOpen(true)} onAdd={canAddFinance ? ()=>setModal("picker") : undefined} onSearch={currentUser.role === "OWNER" ? ()=>setModal("search") : undefined}/><div className="content">
+      {denied ? <AccessDenied onNavigate={() => select(firstAllowed)} /> : objectOpen?<ObjectDetail onBack={()=>setObjectOpen(false)}/>:section==="dashboard"?(currentUser.role==="OWNER"?<Dashboard onObject={()=>setObjectOpen(true)} onSection={select} user={currentUser}/>:<EmployeeDashboard user={currentUser} access={access} onSection={select}/>):section==="objects"?(currentUser.role==="OWNER"?<ObjectsScreen onObject={()=>setObjectOpen(true)}/>:<EmployeeObjectsScreen/>):section==="crm"?(currentUser.role==="OWNER"?<CrmScreen canCreate={access.actions["crm.create"]}/>:<ScopedModuleScreen section="crm"/>):section==="finance"?<FinanceScreen key={financeRevision} onNew={openFinance}/>:section==="team"&&currentUser.role==="OWNER"?<TeamAccessScreen/>:currentUser.role==="EMPLOYEE"?<ScopedModuleScreen section={section as keyof typeof scopedModulePresentation}/>:<GenericScreen section={section as keyof typeof genericData} access={access}/>}{" "}
     </div></main>
-    {modal==="picker"&&<OperationPickerModal isOwner={currentUser.role==="OWNER"} onClose={()=>setModal(null)} onSelect={openFinance}/>} {modal==="finance"&&<FinanceOperationModal mode={financeMode} onClose={()=>setModal(null)} onSaved={()=>setFinanceRevision((value)=>value+1)}/>} {modal==="search"&&<SearchModal onClose={()=>setModal(null)}/>} {modal==="profile"&&<ProfileModal user={currentUser} onClose={()=>setModal(null)}/>}
+    {modal==="picker"&&<OperationPickerModal allowed={allowedFinanceModes} onClose={()=>setModal(null)} onSelect={openFinance}/>} {modal==="finance"&&<FinanceOperationModal mode={financeMode} onClose={()=>setModal(null)} onSaved={()=>setFinanceRevision((value)=>value+1)}/>} {modal==="search"&&<SearchModal onClose={()=>setModal(null)}/>} {modal==="profile"&&<ProfileModal user={currentUser} onClose={()=>setModal(null)}/>}{" "}
   </div>;
 }

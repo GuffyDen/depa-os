@@ -26,7 +26,8 @@ test("protected file routes require DEPA auth and validate access", async () => 
   assert.match(uploadRoute, /getRequestUser/);
   assert.match(fileRoute, /getRequestUser/);
   assert.match(fileRoute, /access: "private"/);
-  assert.match(files, /user_project_access/);
+  assert.match(files, /canViewProject/);
+  assert.match(files, /assertModuleAction/);
   assert.match(files, /FILE_UPLOADED/);
   assert.match(files, /FILE_LINKED|FILE_DELETED|FILE_VIEWED/);
 });
