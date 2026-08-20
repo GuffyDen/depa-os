@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useState } from "react";
 import { FINANCE_CATEGORY_GROUPS, INCOME_PURPOSE_OPTIONS, financeCategoryLabel, financePurposeLabel } from "../lib/finance-categories";
 
 export type FinanceMode = "EXPENSE" | "INCOME" | "TRANSFER" | "REFUND";
@@ -17,7 +17,7 @@ type FinanceTransaction = {
   allocations: { id: string; projectId: string; projectName: string; amountKopecks: number; purpose: string }[];
 };
 export type FinanceData = {
-  isOwner: boolean; cashboxes: Cashbox[]; transactions: FinanceTransaction[]; projects: { id: string; name: string; clientId: string; incomeKopecks: number; expenseKopecks: number; refundKopecks: number; actualExpenseKopecks: number; clientBalanceKopecks: number; materialsIncomeKopecks: number; materialsExpenseKopecks: number; materialsBalanceKopecks: number; worksIncomeKopecks: number; worksExpenseKopecks: number; worksBalanceKopecks: number; additionalWorksIncomeKopecks: number; otherIncomeKopecks: number }[];
+  isOwner: boolean; currentUserId: string; cashboxes: Cashbox[]; transactions: FinanceTransaction[]; projects: { id: string; name: string; clientId: string; incomeKopecks: number; expenseKopecks: number; refundKopecks: number; actualExpenseKopecks: number; clientBalanceKopecks: number; materialsIncomeKopecks: number; materialsExpenseKopecks: number; materialsBalanceKopecks: number; worksIncomeKopecks: number; worksExpenseKopecks: number; worksBalanceKopecks: number; additionalWorksIncomeKopecks: number; otherIncomeKopecks: number }[];
   clients: { id: string; name: string }[]; physicalTotalKopecks: number; clientFundsKopecks: number;
   summary: { todayIncomeKopecks: number; todayExpenseKopecks: number; todayTransferKopecks: number; monthProjectExpenseKopecks: number; monthAdminExpenseKopecks: number };
   attentionItems: { type: string; severity: string; title: string; detail: string; cashboxId?: string; projectId?: string; transactionId?: string }[];
@@ -72,14 +72,120 @@ function TransactionRow({ transaction, cashboxId, onOpen }: { transaction: Finan
   </div>;
 }
 
-function CashboxCard({ cashbox, transactions }: { cashbox: Cashbox; transactions: FinanceTransaction[] }) {
-  const history = transactions.filter((item) => item.cashboxId === cashbox.id || item.destinationCashboxId === cashbox.id).slice(0, 20);
-  return <article className={`cashbox-card panel ${cashbox.status === "INACTIVE" ? "inactive" : ""}`}>
+type PeriodPreset = "ALL" | "TODAY" | "YESTERDAY" | "THIS_WEEK" | "THIS_MONTH" | "LAST_MONTH" | "CUSTOM";
+
+function dateInputValue(date: Date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function periodRange(preset: PeriodPreset, customFrom: string, customTo: string) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  if (preset === "ALL") return { from: "", to: "" };
+  if (preset === "CUSTOM") return { from: customFrom, to: customTo };
+  if (preset === "TODAY") return { from: dateInputValue(today), to: dateInputValue(today) };
+  if (preset === "YESTERDAY") { const yesterday = new Date(today); yesterday.setDate(yesterday.getDate() - 1); return { from: dateInputValue(yesterday), to: dateInputValue(yesterday) }; }
+  if (preset === "THIS_WEEK") { const monday = new Date(today); const day = monday.getDay() || 7; monday.setDate(monday.getDate() - day + 1); return { from: dateInputValue(monday), to: dateInputValue(today) }; }
+  if (preset === "THIS_MONTH") { const first = new Date(today.getFullYear(), today.getMonth(), 1); return { from: dateInputValue(first), to: dateInputValue(today) }; }
+  const first = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+  const last = new Date(today.getFullYear(), today.getMonth(), 0);
+  return { from: dateInputValue(first), to: dateInputValue(last) };
+}
+
+function CashboxHistory({ cashbox, projects, isOwner, onOpen }: { cashbox: Cashbox; projects: FinanceData["projects"]; isOwner: boolean; onOpen: (transaction: FinanceTransaction) => void }) {
+  const [period, setPeriod] = useState<PeriodPreset>("ALL");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
+  const [appliedCustomFrom, setAppliedCustomFrom] = useState("");
+  const [appliedCustomTo, setAppliedCustomTo] = useState("");
+  const [typeFilter, setTypeFilter] = useState("");
+  const [categoryFilter, setCategoryFilter] = useState("");
+  const [projectFilter, setProjectFilter] = useState("");
+  const [transactions, setTransactions] = useState<FinanceTransaction[]>([]);
+  const [hasMore, setHasMore] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [error, setError] = useState("");
+  const categories = [...FINANCE_CATEGORY_GROUPS.PROJECT, ...FINANCE_CATEGORY_GROUPS.ADMIN].filter((item, index, all) => all.findIndex((candidate) => candidate.code === item.code) === index);
+  const filtersActive = period !== "ALL" || Boolean(typeFilter || categoryFilter || projectFilter);
+
+  const loadHistory = useCallback(async (offset: number, signal?: AbortSignal) => {
+    const range = periodRange(period, appliedCustomFrom, appliedCustomTo);
+    const params = new URLSearchParams({ cashboxId: cashbox.id, limit: "20", offset: String(offset) });
+    if (range.from) params.set("dateFrom", range.from);
+    if (range.to) params.set("dateTo", range.to);
+    if (typeFilter) params.set("transactionType", typeFilter);
+    if (categoryFilter) params.set("category", categoryFilter);
+    if (projectFilter) params.set("projectId", projectFilter);
+    const response = await fetch(`/api/finance/history?${params}`, { cache: "no-store", signal });
+    const result = await response.json() as { transactions?: FinanceTransaction[]; hasMore?: boolean; error?: string };
+    if (!response.ok) throw new Error(result.error ?? "Не удалось загрузить историю кассы.");
+    return { transactions: result.transactions ?? [], hasMore: Boolean(result.hasMore) };
+  }, [appliedCustomFrom, appliedCustomTo, cashbox.id, categoryFilter, period, projectFilter, typeFilter]);
+
+  useEffect(() => {
+    if (period === "CUSTOM" && (!appliedCustomFrom || !appliedCustomTo)) return;
+    const controller = new AbortController();
+    loadHistory(0, controller.signal).then((result) => {
+      setTransactions(result.transactions); setHasMore(result.hasMore);
+    }).catch((reason) => {
+      if (reason instanceof DOMException && reason.name === "AbortError") return;
+      setError(reason instanceof Error ? reason.message : "Не удалось загрузить историю кассы.");
+    }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    return () => controller.abort();
+  }, [appliedCustomFrom, appliedCustomTo, loadHistory, period]);
+
+  function resetFilters() {
+    setLoading(true); setPeriod("ALL"); setCustomFrom(""); setCustomTo(""); setAppliedCustomFrom(""); setAppliedCustomTo(""); setTypeFilter(""); setCategoryFilter(""); setProjectFilter(""); setError("");
+  }
+
+  function applyCustomPeriod() {
+    if (!customFrom || !customTo) { setError("Укажите обе даты периода."); return; }
+    if (customFrom > customTo) { setError("Дата начала периода должна быть не позже даты окончания."); return; }
+    setLoading(true); setError(""); setAppliedCustomFrom(customFrom); setAppliedCustomTo(customTo);
+  }
+
+  async function loadMore() {
+    setLoadingMore(true); setError("");
+    try { const result = await loadHistory(transactions.length); setTransactions((current) => [...current, ...result.transactions]); setHasMore(result.hasMore); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "Не удалось загрузить следующую страницу."); }
+    finally { setLoadingMore(false); }
+  }
+
+  return <div className="cashbox-history"><div className="table-toolbar"><strong>История операций</strong><small>{transactions.length} загружено</small></div>
+    <div className="cashbox-history-filters">
+      <label><span>Период</span><select value={period} onChange={(event) => { const next = event.target.value as PeriodPreset; setLoading(next !== "CUSTOM"); setError(""); setPeriod(next); if (next === "CUSTOM") { setAppliedCustomFrom(""); setAppliedCustomTo(""); } }}><option value="ALL">Всё время</option><option value="TODAY">Сегодня</option><option value="YESTERDAY">Вчера</option><option value="THIS_WEEK">Эта неделя</option><option value="THIS_MONTH">Этот месяц</option><option value="LAST_MONTH">Прошлый месяц</option><option value="CUSTOM">Выбрать период</option></select></label>
+      <label><span>Тип</span><select value={typeFilter} onChange={(event) => { setLoading(true); setError(""); setTypeFilter(event.target.value); }}><option value="">Все типы</option><option value="EXPENSE">Расход</option><option value="INCOME">Поступление</option><option value="TRANSFER">Перемещение</option></select></label>
+      <label><span>Категория</span><select value={categoryFilter} onChange={(event) => { setLoading(true); setError(""); setCategoryFilter(event.target.value); }}><option value="">Все категории</option>{categories.map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}</select></label>
+      <label><span>Объект</span><select value={projectFilter} onChange={(event) => { setLoading(true); setError(""); setProjectFilter(event.target.value); }}><option value="">Все объекты</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
+      <button type="button" className="cashbox-filter-reset" onClick={resetFilters} disabled={!filtersActive}>Сбросить</button>
+    </div>
+    {period === "CUSTOM" && <div className="cashbox-date-range"><label><span>От</span><input aria-label="Дата от" type="date" value={customFrom} onChange={(event) => setCustomFrom(event.target.value)} /></label><i>—</i><label><span>До</span><input aria-label="Дата до" type="date" value={customTo} onChange={(event) => setCustomTo(event.target.value)} /></label><button type="button" className="secondary" onClick={applyCustomPeriod}>Применить</button></div>}
+    {error && <div className="auth-error cashbox-history-error" role="alert"><i>!</i><span>{error}</span></div>}
+    {loading ? <div className="finance-empty">Загружаем операции…</div> : transactions.length ? transactions.map((item) => <TransactionRow key={item.id} transaction={item} cashboxId={cashbox.id} onOpen={isOwner ? () => onOpen(item) : undefined} />) : <div className="finance-empty">{filtersActive ? "Операций за выбранный период нет." : "Операций пока нет."}</div>}
+    {!loading && hasMore && <div className="cashbox-load-more"><button type="button" className="secondary" disabled={loadingMore} onClick={loadMore}>{loadingMore ? "Загружаем…" : "Показать ещё"}</button></div>}
+  </div>;
+}
+
+function SelectedCashboxCard({ cashbox, projects, isOwner, onOpen }: { cashbox: Cashbox; projects: FinanceData["projects"]; isOwner: boolean; onOpen: (transaction: FinanceTransaction) => void }) {
+  return <article className="cashbox-card selected-cashbox-card panel">
     <header><div><span className="eyebrow">ПЕРСОНАЛЬНАЯ КАССА</span><h3>{cashbox.name}</h3></div><span className={`cashbox-status ${cashbox.status.toLowerCase()}`}>{cashbox.status === "ACTIVE" ? "Активна" : "Неактивна"}</span></header>
     <div className="cashbox-balance"><span>Текущий баланс</span><strong className={cashbox.balanceKopecks < 0 ? "minus" : ""}>{money(cashbox.balanceKopecks)}</strong>{cashbox.balanceKopecks < 0 && <small>DEPA должна владельцу кассы {money(Math.abs(cashbox.balanceKopecks))}</small>}</div>
     <div className="cashbox-stats"><div><span>Сегодня поступило</span><b>{money(cashbox.todayIncomeKopecks)}</b></div><div><span>Сегодня потрачено</span><b>{money(cashbox.todayExpenseKopecks)}</b></div><div><span>Передано</span><b>{money(cashbox.transferredOutKopecks)}</b></div><div><span>Получено</span><b>{money(cashbox.transferredInKopecks)}</b></div></div>
-    <div className="cashbox-history"><div className="table-toolbar"><strong>История операций</strong><small>{history.length} записей</small></div>{history.length ? history.map((item) => <TransactionRow key={item.id} transaction={item} cashboxId={cashbox.id} />) : <div className="finance-empty">Операций пока нет.</div>}</div>
+    <CashboxHistory cashbox={cashbox} projects={projects} isOwner={isOwner} onOpen={onOpen} />
   </article>;
+}
+
+function CashboxWorkspace({ data, onOpen }: { data: FinanceData; onOpen: (transaction: FinanceTransaction) => void }) {
+  const activeCashboxes = data.cashboxes.filter((box) => box.status === "ACTIVE");
+  const ownCashbox = activeCashboxes.find((box) => box.ownerUserId === data.currentUserId);
+  const [selectedCashboxId, setSelectedCashboxId] = useState(() => ownCashbox?.id ?? activeCashboxes[0]?.id ?? "");
+  const selectedCashbox = activeCashboxes.find((box) => box.id === selectedCashboxId) ?? ownCashbox ?? activeCashboxes[0];
+  if (!selectedCashbox) return <div className="panel finance-empty">Активных касс нет.</div>;
+  return <div className="cashbox-workspace">
+    {activeCashboxes.length > 1 && <label className="cashbox-selector"><span>Активная касса</span><select value={selectedCashbox.id} onChange={(event) => setSelectedCashboxId(event.target.value)}>{activeCashboxes.map((box) => <option key={box.id} value={box.id}>{box.ownerName ?? box.name} · {box.name}</option>)}</select></label>}
+    <SelectedCashboxCard key={selectedCashbox.id} cashbox={selectedCashbox} projects={data.projects} isOwner={data.isOwner} onOpen={onOpen} />
+  </div>;
 }
 
 export function FinanceScreen({ onNew }: { onNew: (mode: FinanceMode) => void }) {
@@ -123,7 +229,7 @@ export function FinanceScreen({ onNew }: { onNew: (mode: FinanceMode) => void })
     {data && <>
       <div className="metrics-grid finance-metrics finance-summary"><div className="metric"><div className="metric-top"><span>ФИЗИЧЕСКИ В КАССАХ</span><i>↗</i></div><strong className={data.physicalTotalKopecks < 0 ? "minus" : ""}>{money(data.physicalTotalKopecks)}</strong><small>{data.cashboxes.filter((box) => box.status === "ACTIVE").length} активные персональные кассы · не прибыль</small></div><div className="metric"><div className="metric-top"><span>СРЕДСТВА КЛИЕНТОВ</span><i>↗</i></div><strong>{money(data.clientFundsKopecks)}</strong><small>Текущий остаток клиентских средств</small></div><div className="metric"><div className="metric-top"><span>ПРИБЫЛЬ DEPA</span><i>↗</i></div><strong>{money(depaProfitKopecks)}</strong><small>Расчёт будет расширен с P&amp;L</small></div></div>
       {data.attentionItems.length > 0 && <div className="panel finance-attention"><div className="table-toolbar"><strong>Требует внимания</strong><small>{data.attentionItems.length}</small></div>{data.attentionItems.slice(0, 8).map((item, index) => <div className="finance-attention-row" key={`${item.type}-${item.transactionId ?? item.projectId ?? item.cashboxId ?? index}`}><i>!</i><span><b>{item.title}</b><small>{item.detail}</small></span></div>)}</div>}
-      {tab === "OPERATIONS" ? <div className="panel table-panel"><div className="table-toolbar"><strong>Все операции</strong><small>{filteredTransactions.length} из {data.transactions.length}</small></div><div className="finance-filter-bar"><input aria-label="Поиск операций" placeholder="Комментарий, клиент, объект" value={query} onChange={(event) => setQuery(event.target.value)} /><select aria-label="Тип" value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}><option value="">Все типы</option><option value="INCOME">Поступление</option><option value="EXPENSE">Расход</option><option value="TRANSFER">Перемещение</option></select><select aria-label="Касса" value={cashboxFilter} onChange={(event) => setCashboxFilter(event.target.value)}><option value="">Все кассы</option>{data.cashboxes.map((box) => <option value={box.id} key={box.id}>{box.name}</option>)}</select><select aria-label="Категория" value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}><option value="">Все категории</option>{categoryOptions.map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}</select><select aria-label="Объект" value={projectFilter} onChange={(event) => setProjectFilter(event.target.value)}><option value="">Все объекты</option>{data.projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select><select aria-label="Автор" value={authorFilter} onChange={(event) => setAuthorFilter(event.target.value)}><option value="">Все авторы</option>{authors.map(([id, name]) => <option key={id} value={id}>{name}</option>)}</select><select aria-label="Чек" value={receiptFilter} onChange={(event) => setReceiptFilter(event.target.value)}><option value="">Чек: любой</option><option value="YES">Есть чек</option><option value="NO">Нет чека</option></select><input aria-label="Дата от" type="date" value={dateFrom} onChange={(event) => setDateFrom(event.target.value)} /><input aria-label="Дата до" type="date" value={dateTo} onChange={(event) => setDateTo(event.target.value)} /></div>{filteredTransactions.length ? filteredTransactions.map((item) => <TransactionRow key={item.id} transaction={item} onOpen={data.isOwner ? () => setSelectedTransaction(item) : undefined} />) : <div className="finance-empty">По выбранным фильтрам операций нет.</div>}</div> : <div className="cashbox-grid">{data.cashboxes.map((box) => <CashboxCard key={box.id} cashbox={box} transactions={data.transactions} />)}</div>}
+      {tab === "OPERATIONS" ? <div className="panel table-panel"><div className="table-toolbar"><strong>Все операции</strong><small>{filteredTransactions.length} из {data.transactions.length}</small></div><div className="finance-filter-bar"><input aria-label="Поиск операций" placeholder="Комментарий, клиент, объект" value={query} onChange={(event) => setQuery(event.target.value)} /><select aria-label="Тип" value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}><option value="">Все типы</option><option value="INCOME">Поступление</option><option value="EXPENSE">Расход</option><option value="TRANSFER">Перемещение</option></select><select aria-label="Касса" value={cashboxFilter} onChange={(event) => setCashboxFilter(event.target.value)}><option value="">Все кассы</option>{data.cashboxes.map((box) => <option value={box.id} key={box.id}>{box.name}</option>)}</select><select aria-label="Категория" value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}><option value="">Все категории</option>{categoryOptions.map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}</select><select aria-label="Объект" value={projectFilter} onChange={(event) => setProjectFilter(event.target.value)}><option value="">Все объекты</option>{data.projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select><select aria-label="Автор" value={authorFilter} onChange={(event) => setAuthorFilter(event.target.value)}><option value="">Все авторы</option>{authors.map(([id, name]) => <option key={id} value={id}>{name}</option>)}</select><select aria-label="Чек" value={receiptFilter} onChange={(event) => setReceiptFilter(event.target.value)}><option value="">Чек: любой</option><option value="YES">Есть чек</option><option value="NO">Нет чека</option></select><input aria-label="Дата от" type="date" value={dateFrom} onChange={(event) => setDateFrom(event.target.value)} /><input aria-label="Дата до" type="date" value={dateTo} onChange={(event) => setDateTo(event.target.value)} /></div>{filteredTransactions.length ? filteredTransactions.map((item) => <TransactionRow key={item.id} transaction={item} onOpen={data.isOwner ? () => setSelectedTransaction(item) : undefined} />) : <div className="finance-empty">По выбранным фильтрам операций нет.</div>}</div> : <CashboxWorkspace data={data} onOpen={setSelectedTransaction} />}
     </>}
     {selectedTransaction && <TransactionDetailModal transaction={selectedTransaction} onClose={() => setSelectedTransaction(null)} onSaved={async () => { setSelectedTransaction(null); await refresh(); }} />}
   </section>;

@@ -1,7 +1,7 @@
 import type { AuthUser } from "./auth";
 import { confirmAttachmentUpload, FileError } from "./files";
 import { first, query, transaction } from "./postgres";
-import { categoryRequiresReceipt, financeCategoryLabel } from "./finance-categories";
+import { FINANCE_CATEGORY_GROUPS, categoryRequiresReceipt, financeCategoryLabel } from "./finance-categories";
 import { INCOME_PURPOSES, parseAmountKopecks, projectLedgerTotals, transferPreview, validateAllocations, validateExpense, type ExpenseKind, type FinanceOperationType } from "./finance-rules";
 
 const FINANCE_ACCESS = "FINANCE_ACCESS";
@@ -68,6 +68,9 @@ export class FinanceError extends Error {
 function nowSeconds() { return Math.floor(Date.now() / 1000); }
 function number(value: string | number | null | undefined) { return Number(value ?? 0); }
 function cleanText(value: unknown, max = 500) { return typeof value === "string" ? value.trim().slice(0, max) : ""; }
+function professionalCashboxName(value: string | null | undefined) {
+  return String(value ?? "").replaceAll("Касса \u041f\u0430\u0448\u0438", "Касса Павла").replaceAll("Касса \u041f\u0430\u0445\u0438", "Касса Павла");
+}
 function parseAllocationsJson(value: unknown) {
   if (!Array.isArray(value)) return [];
   return value.map((item) => {
@@ -78,7 +81,7 @@ function parseAllocationsJson(value: unknown) {
 
 function personalCashboxName(user: Pick<AuthUser, "id" | "name">) {
   if (user.id === "user_owner_denis") return "Касса Дениса";
-  if (user.id === "user_owner_pavel") return "Касса Паши";
+  if (user.id === "user_owner_pavel") return "Касса Павла";
   const firstName = user.name.trim().split(/\s+/)[0] || "сотрудника";
   if (firstName.endsWith("й")) return `Касса ${firstName.slice(0, -1)}я`;
   if (firstName.endsWith("а")) return `Касса ${firstName.slice(0, -1)}ы`;
@@ -92,7 +95,7 @@ export async function ensurePersonalCashboxes() {
     {
       text: `INSERT INTO cashboxes (id, owner_user_id, name, type, owner_employee_id, currency, status, balance_kopecks, is_active, created_at, updated_at)
         SELECT 'cashbox_' || id, id,
-          CASE id WHEN 'user_owner_denis' THEN 'Касса Дениса' WHEN 'user_owner_pavel' THEN 'Касса Паши' ELSE 'Касса ' || split_part(display_name, ' ', 1) END,
+          CASE id WHEN 'user_owner_denis' THEN 'Касса Дениса' WHEN 'user_owner_pavel' THEN 'Касса Павла' ELSE 'Касса ' || split_part(display_name, ' ', 1) END,
           'PERSONAL', employee_id, 'RUB', 'ACTIVE', 0, 1, $1, $2
         FROM users WHERE role = 'OWNER' AND status = 'ACTIVE'
         ON CONFLICT (owner_user_id) DO UPDATE SET name = EXCLUDED.name, owner_employee_id = EXCLUDED.owner_employee_id, type = 'PERSONAL', status = 'ACTIVE', is_active = 1, updated_at = EXCLUDED.updated_at
@@ -135,7 +138,7 @@ function serializeCashbox(row: CashboxRow, transactions: TransactionRow[]) {
     id: row.id,
     ownerUserId: row.owner_user_id,
     ownerName: row.owner_name,
-    name: row.name,
+    name: professionalCashboxName(row.name),
     status: row.status,
     balanceKopecks: number(row.balance_kopecks),
     createdAt: number(row.created_at),
@@ -150,7 +153,7 @@ function serializeCashbox(row: CashboxRow, transactions: TransactionRow[]) {
 function serializeTransaction(row: TransactionRow) {
   return {
     id: row.id, type: row.type, expenseType: row.expense_type, amountKopecks: number(row.amount_kopecks), transactionDate: number(row.transaction_date),
-    cashboxId: row.cashbox_id, cashboxName: row.cashbox_name, destinationCashboxId: row.destination_cashbox_id, destinationCashboxName: row.destination_cashbox_name,
+    cashboxId: row.cashbox_id, cashboxName: professionalCashboxName(row.cashbox_name), destinationCashboxId: row.destination_cashbox_id, destinationCashboxName: row.destination_cashbox_name ? professionalCashboxName(row.destination_cashbox_name) : null,
     originalTransactionId: row.original_transaction_id, projectId: row.project_id, projectName: row.project_name, clientId: row.client_id,
     category: row.category, source: row.source, purpose: row.purpose, title: row.title, comment: row.comment, showToClient: Boolean(number(row.show_to_client)),
     authorUserId: row.author_user_id, authorName: row.author_name, createdAt: number(row.created_at), attachmentCount: number(row.attachment_count), attachmentId: row.attachment_id,
@@ -264,6 +267,7 @@ export async function getFinanceOverview(actor: AuthUser) {
   const summary = summaryRows[0];
   return {
     isOwner: actor.role === "OWNER",
+    currentUserId: actor.id,
     cashboxes: boxes.map((box) => serializeCashbox(box, transactions)),
     transactions: serializedTransactions,
     projects: serializedProjects,
@@ -274,6 +278,79 @@ export async function getFinanceOverview(actor: AuthUser) {
     attentionItems,
     reconciliation: { ok: reconciliationMismatches.length === 0, mismatchCount: reconciliationMismatches.length },
   };
+}
+
+const cashboxHistoryCategories = new Set<string>([
+  ...FINANCE_CATEGORY_GROUPS.PROJECT.map((item) => item.code),
+  ...FINANCE_CATEGORY_GROUPS.ADMIN.map((item) => item.code),
+]);
+
+export type CashboxHistoryFilters = {
+  cashboxId?: unknown;
+  dateFrom?: unknown;
+  dateTo?: unknown;
+  transactionType?: unknown;
+  category?: unknown;
+  projectId?: unknown;
+  limit?: unknown;
+  offset?: unknown;
+};
+
+function validIsoDate(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
+
+export async function getCashboxHistory(actor: AuthUser, filters: CashboxHistoryFilters) {
+  await assertFinanceAccess(actor);
+  const cashboxId = cleanText(filters.cashboxId, 100);
+  if (!cashboxId) throw new FinanceError("Выберите кассу.");
+  await cashboxForActor(actor, cashboxId);
+
+  const dateFrom = cleanText(filters.dateFrom, 10);
+  const dateTo = cleanText(filters.dateTo, 10);
+  if ((dateFrom && !validIsoDate(dateFrom)) || (dateTo && !validIsoDate(dateTo))) throw new FinanceError("Укажите корректный период.");
+  if (dateFrom && dateTo && dateFrom > dateTo) throw new FinanceError("Дата начала периода должна быть не позже даты окончания.");
+
+  const transactionType = cleanText(filters.transactionType, 20) as FinanceOperationType | "";
+  if (transactionType && !["INCOME", "EXPENSE", "TRANSFER", "REFUND"].includes(transactionType)) throw new FinanceError("Выберите корректный тип операции.");
+  const category = cleanText(filters.category, 50);
+  if (category && !cashboxHistoryCategories.has(category)) throw new FinanceError("Выберите корректную категорию.");
+  const projectId = cleanText(filters.projectId, 100);
+  const requestedLimit = Number(filters.limit);
+  const requestedOffset = Number(filters.offset);
+  const limit = Number.isInteger(requestedLimit) ? Math.min(50, Math.max(1, requestedLimit)) : 20;
+  const offset = Number.isInteger(requestedOffset) ? Math.min(1_000_000, Math.max(0, requestedOffset)) : 0;
+
+  const values: unknown[] = [cashboxId];
+  const conditions = ["(ft.cashbox_id=$1 OR ft.destination_cashbox_id=$1)"];
+  function bind(value: unknown) { values.push(value); return `$${values.length}`; }
+  if (dateFrom) conditions.push(`ft.transaction_date >= EXTRACT(EPOCH FROM (${bind(dateFrom)}::date::timestamp AT TIME ZONE 'Asia/Vladivostok'))`);
+  if (dateTo) conditions.push(`ft.transaction_date < EXTRACT(EPOCH FROM ((${bind(dateTo)}::date + 1)::timestamp AT TIME ZONE 'Asia/Vladivostok'))`);
+  if (transactionType) conditions.push(`ft.type=${bind(transactionType)}`);
+  if (category) conditions.push(`ft.category=${bind(category)}`);
+  if (projectId) {
+    const projectParam = bind(projectId);
+    conditions.push(`(ft.project_id=${projectParam} OR EXISTS (SELECT 1 FROM transaction_allocations project_filter WHERE project_filter.transaction_id=ft.id AND project_filter.project_id=${projectParam}))`);
+  }
+  const limitParam = bind(limit + 1);
+  const offsetParam = bind(offset);
+  const rows = await query<TransactionRow>(`SELECT ft.*, source_box.name AS cashbox_name, destination_box.name AS destination_cashbox_name, p.name AS project_name, u.display_name AS author_name,
+    (SELECT COUNT(*) FROM attachments a WHERE a.transaction_id=ft.id AND a.upload_status='LINKED' AND a.deleted_at IS NULL) AS attachment_count,
+    (SELECT a.id FROM attachments a WHERE a.transaction_id=ft.id AND a.upload_status='LINKED' AND a.deleted_at IS NULL ORDER BY a.created_at LIMIT 1) AS attachment_id,
+    COALESCE((SELECT jsonb_agg(jsonb_build_object('id',ta.id,'projectId',ta.project_id,'projectName',ap.name,'amountKopecks',ta.amount_kopecks,'purpose',ta.purpose) ORDER BY ap.name) FROM transaction_allocations ta JOIN projects ap ON ap.id=ta.project_id WHERE ta.transaction_id=ft.id),'[]'::jsonb) AS allocations_json
+    FROM financial_transactions ft
+    JOIN cashboxes source_box ON source_box.id=ft.cashbox_id
+    LEFT JOIN cashboxes destination_box ON destination_box.id=ft.destination_cashbox_id
+    LEFT JOIN projects p ON p.id=ft.project_id
+    JOIN users u ON u.id=ft.author_user_id
+    WHERE ${conditions.join(" AND ")}
+    ORDER BY ft.transaction_date DESC,ft.created_at DESC,ft.id DESC
+    LIMIT ${limitParam} OFFSET ${offsetParam}`, values);
+  const hasMore = rows.length > limit;
+  const page = rows.slice(0, limit).map(serializeTransaction);
+  return { transactions: page, hasMore, nextOffset: hasMore ? offset + page.length : null };
 }
 
 export type CreateFinanceOperationInput = {
