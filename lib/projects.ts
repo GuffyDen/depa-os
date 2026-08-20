@@ -48,9 +48,9 @@ function moneyKopecks(value: unknown) {
 
 function validate(input: ProjectInput, actor: AuthUser, previous?: ProjectRow) {
   const clientId = clean(input.clientId, 100) ?? previous?.client_id ?? null;
-  const residentialComplex = clean(input.residentialComplex, 180);
-  const address = clean(input.address, 300);
-  const apartment = clean(input.apartment, 40);
+  const residentialComplex = input.residentialComplex === undefined ? previous?.residential_complex ?? null : clean(input.residentialComplex, 180);
+  const address = input.address === undefined ? previous?.address ?? null : clean(input.address, 300);
+  const apartment = input.apartment === undefined ? previous?.apartment ?? null : clean(input.apartment, 40);
   const responsibleUserId = clean(input.responsibleUserId, 100) ?? previous?.responsible_user_id ?? actor.id;
   const status = (clean(input.status, 30) ?? previous?.status ?? "PLANNING") as ProjectStatus;
   if (!clientId) throw new ProjectError("Выберите клиента.");
@@ -58,16 +58,19 @@ function validate(input: ProjectInput, actor: AuthUser, previous?: ProjectRow) {
   if (!apartment) throw new ProjectError("Укажите номер квартиры.");
   if (!PROJECT_STATUSES.some((item) => item.value === status)) throw new ProjectError("Некорректный статус объекта.");
   const areaText = clean(input.areaSqm, 20);
-  const areaSqm = areaText ? Number(areaText.replace(",", ".")) : null;
+  const areaSqm = input.areaSqm === undefined ? previous?.area_sqm == null ? null : Number(previous.area_sqm) : areaText ? Number(areaText.replace(",", ".")) : null;
   if (areaSqm !== null && (!Number.isFinite(areaSqm) || areaSqm <= 0 || areaSqm > 100000)) throw new ProjectError("Проверьте площадь объекта.");
-  const plannedEndDate = dateSeconds(input.plannedEndDate);
-  const forecastEndDate = dateSeconds(input.forecastEndDate) ?? plannedEndDate;
-  const displayName = clean(input.displayName, 240) ?? buildProjectName(residentialComplex, address, apartment);
+  const plannedEndDate = input.plannedEndDate === undefined ? previous?.planned_end_date ?? null : dateSeconds(input.plannedEndDate);
+  const forecastEndDate = input.forecastEndDate === undefined ? previous?.forecast_end_date ?? plannedEndDate : dateSeconds(input.forecastEndDate) ?? plannedEndDate;
+  const displayName = input.displayName === undefined ? previous?.name ?? buildProjectName(residentialComplex, address, apartment) : clean(input.displayName, 240) ?? buildProjectName(residentialComplex, address, apartment);
   return {
     clientId, residentialComplex, address, apartment, areaSqm, displayName, responsibleUserId,
-    foremanEmployeeId: clean(input.foremanEmployeeId, 100), status, startDate: dateSeconds(input.startDate), plannedEndDate,
-    forecastEndDate, actualEndDate: dateSeconds(input.actualEndDate), contractWorksAmountKopecks: moneyKopecks(input.contractWorksAmount),
-    estimatedMaterialsBudgetKopecks: moneyKopecks(input.estimatedMaterialsBudget), comment: clean(input.comment, 4000),
+    foremanEmployeeId: input.foremanEmployeeId === undefined ? previous?.foreman_employee_id ?? null : clean(input.foremanEmployeeId, 100), status,
+    startDate: input.startDate === undefined ? previous?.start_date ?? null : dateSeconds(input.startDate), plannedEndDate, forecastEndDate,
+    actualEndDate: input.actualEndDate === undefined ? previous?.actual_end_date ?? null : dateSeconds(input.actualEndDate),
+    contractWorksAmountKopecks: input.contractWorksAmount === undefined ? Number(previous?.contract_amount_kopecks ?? 0) : moneyKopecks(input.contractWorksAmount),
+    estimatedMaterialsBudgetKopecks: input.estimatedMaterialsBudget === undefined ? Number(previous?.estimated_materials_budget_kopecks ?? 0) : moneyKopecks(input.estimatedMaterialsBudget),
+    comment: input.comment === undefined ? previous?.comment ?? null : clean(input.comment, 4000),
   };
 }
 
@@ -79,15 +82,15 @@ function baseSelect() {
     FROM projects p JOIN clients c ON c.id=p.client_id JOIN users ru ON ru.id=p.responsible_user_id LEFT JOIN employees fe ON fe.id=p.foreman_employee_id`;
 }
 
-function serialize(row: ProjectRow) {
+function serialize(row: ProjectRow, canViewFinancialPlan = true) {
   return {
     id: row.id, clientId: row.client_id, clientName: row.client_name, clientPhone: row.client_phone, displayName: row.name,
     residentialComplex: row.residential_complex, address: row.address, apartment: row.apartment,
     areaSqm: row.area_sqm == null ? null : Number(row.area_sqm), responsibleUserId: row.responsible_user_id,
     responsibleName: row.responsible_name, foremanEmployeeId: row.foreman_employee_id, foremanName: row.foreman_name,
     status: row.status, startDate: row.start_date, plannedEndDate: row.planned_end_date, forecastEndDate: row.forecast_end_date,
-    actualEndDate: row.actual_end_date, contractWorksAmountKopecks: Number(row.contract_amount_kopecks),
-    estimatedMaterialsBudgetKopecks: Number(row.estimated_materials_budget_kopecks), comment: row.comment,
+    actualEndDate: row.actual_end_date, contractWorksAmountKopecks: canViewFinancialPlan ? Number(row.contract_amount_kopecks) : null,
+    estimatedMaterialsBudgetKopecks: canViewFinancialPlan ? Number(row.estimated_materials_budget_kopecks) : null, comment: row.comment,
     createdByUserId: row.created_by_user_id, archivedAt: row.archived_at, createdAt: row.created_at, updatedAt: row.updated_at,
   };
 }
@@ -113,6 +116,26 @@ async function assertRelations(clientId: string, responsibleUserId: string, fore
   if (!responsible) throw new ProjectError("Выбранный пользователь не может быть ответственным.");
   if (foremanEmployeeId && !foreman) throw new ProjectError("Выбранный прораб недоступен.");
   return responsible;
+}
+
+async function assertAssignmentChange(actor: AuthUser, responsibleUserId: string, foremanEmployeeId: string | null, previous?: ProjectRow) {
+  if (actor.role === "OWNER") return;
+  const access = await getAccessProfile(actor);
+  if (access.actions["projects.assignEmployees"]) return;
+  const changesAssignment = previous
+    ? previous.responsible_user_id !== responsibleUserId || previous.foreman_employee_id !== foremanEmployeeId
+    : responsibleUserId !== actor.id || foremanEmployeeId !== null;
+  if (changesAssignment) throw new AccessError("Нет права назначать ответственного или прораба.");
+}
+
+async function assertFinancialPlanChange(actor: AuthUser, contractWorksAmountKopecks: number, estimatedMaterialsBudgetKopecks: number, previous?: ProjectRow) {
+  if (actor.role === "OWNER") return;
+  const access = await getAccessProfile(actor);
+  if (access.actions["projects.viewCost"]) return;
+  const changesPlan = previous
+    ? Number(previous.contract_amount_kopecks) !== contractWorksAmountKopecks || Number(previous.estimated_materials_budget_kopecks) !== estimatedMaterialsBudgetKopecks
+    : contractWorksAmountKopecks !== 0 || estimatedMaterialsBudgetKopecks !== 0;
+  if (changesPlan) throw new AccessError("Нет права изменять финансовый план объекта.");
 }
 
 function scopeCondition(actor: AuthUser, all: boolean, offset = 0) {
@@ -142,7 +165,7 @@ export async function listProjects(actor: AuthUser, requestUrl: string) {
   const count = await first<{ count: string | number }>(`SELECT COUNT(*) AS count FROM projects p JOIN clients c ON c.id=p.client_id${where}`, params);
   const rows = await query<ProjectRow>(`${baseSelect()}${where} ORDER BY CASE p.status WHEN 'ACTIVE' THEN 0 WHEN 'PLANNING' THEN 1 WHEN 'PAUSED' THEN 2 WHEN 'COMPLETED' THEN 3 ELSE 4 END,p.created_at DESC,p.id DESC LIMIT ${add(limit + 1)} OFFSET ${add(offset)}`, params);
   return {
-    items: rows.slice(0, limit).map(serialize), total: Number(count?.count ?? 0), hasMore: rows.length > limit, nextOffset: rows.length > limit ? offset + limit : null,
+    items: rows.slice(0, limit).map((row) => serialize(row, actor.role === "OWNER" || access.actions["projects.viewCost"])), total: Number(count?.count ?? 0), hasMore: rows.length > limit, nextOffset: rows.length > limit ? offset + limit : null,
     managers: await listProjectManagers(), foremen: await listForemen(), statuses: PROJECT_STATUSES,
     hasClients: Boolean(await first<{ id: string }>("SELECT id FROM clients WHERE status='ACTIVE' LIMIT 1")),
   };
@@ -153,7 +176,10 @@ async function visibleRow(actor: AuthUser, projectId: string) {
   const access = await getAccessProfile(actor);
   const scope = scopeCondition(actor, access.scopes.projects === "ALL", 1);
   const row = await first<ProjectRow>(`${baseSelect()} WHERE p.id=$1${scope.sql} LIMIT 1`, [projectId, ...scope.params]);
-  if (!row) throw new AccessError("Объект не найден или недоступен.", 404);
+  if (!row) {
+    const exists = await first<{ id: string }>("SELECT id FROM projects WHERE id=$1 LIMIT 1", [projectId]);
+    throw new AccessError(exists ? "Нет доступа к этому объекту." : "Объект не найден.", exists ? 403 : 404);
+  }
   return row;
 }
 
@@ -173,36 +199,55 @@ function projectLedgerSql() {
 export async function getProject(actor: AuthUser, projectId: string) {
   const row = await visibleRow(actor, projectId);
   const access = await getAccessProfile(actor);
-  const canReadFinance = actor.role === "OWNER" || (access.modules.finance && access.actions["finance.view"] && access.actions["projects.viewCost"]);
+  const canReadFinance = actor.role === "OWNER" || (access.modules.finance && access.actions["finance.view"]);
+  const canViewClientFunds = actor.role === "OWNER" || (canReadFinance && access.actions["finance.viewClientFunds"]);
+  const canViewCost = actor.role === "OWNER" || (canReadFinance && access.actions["projects.viewCost"]);
+  const canViewMargin = actor.role === "OWNER" || (canReadFinance && access.actions["projects.viewMargin"] && access.actions["finance.viewProfit"]);
+  const canReadDocuments = actor.role === "OWNER" || (access.modules.documents && access.actions["documents.view"]);
+  const canReadTasks = actor.role === "OWNER" || (access.modules.tasks && access.actions["tasks.view"]);
   const ledger = projectLedgerSql();
-  const [summary, operations, estimates, stages, photos, additionalWorks, contractors, documents] = await Promise.all([
-    canReadFinance ? first<{ materials_income: number | string; works_income: number | string; additional_income: number | string; materials_expense: number | string; object_expense: number | string }>(`${ledger} SELECT
+  const operationTypes = canViewClientFunds && canViewCost ? "" : canViewCost ? " WHERE pl.type IN ('EXPENSE','REFUND')" : " WHERE pl.type='INCOME'";
+  const [summary, operations, estimates, stages, reports, photos, hiddenWorks, additionalWorks, contractors, documents, tasks] = await Promise.all([
+    canReadFinance && (canViewClientFunds || canViewCost) ? first<{ materials_income: number | string; works_income: number | string; additional_income: number | string; materials_expense: number | string; object_expense: number | string }>(`${ledger} SELECT
       COALESCE(SUM(CASE WHEN type='INCOME' AND purpose='MATERIALS' THEN amount_kopecks ELSE 0 END),0) AS materials_income,
       COALESCE(SUM(CASE WHEN type='INCOME' AND purpose='WORKS' THEN amount_kopecks ELSE 0 END),0) AS works_income,
       COALESCE(SUM(CASE WHEN type='INCOME' AND purpose='ADDITIONAL_WORKS' THEN amount_kopecks ELSE 0 END),0) AS additional_income,
       COALESCE(SUM(CASE WHEN type='EXPENSE' AND category='MATERIALS' THEN amount_kopecks ELSE 0 END),0) AS materials_expense,
       COALESCE(SUM(CASE WHEN type='EXPENSE' THEN amount_kopecks ELSE 0 END),0) AS object_expense FROM project_ledger`, [projectId]) : Promise.resolve(null),
-    canReadFinance ? query<{ id: string; type: string; amountKopecks: number; transactionDate: number; category: string; categoryLabel: string; purpose: string | null; purposeLabel: string | null; title: string; cashboxName: string; authorName: string; attachmentId: string | null }>(`${ledger} SELECT pl.transaction_id AS id,pl.type,pl.amount_kopecks AS "amountKopecks",pl.transaction_date AS "transactionDate",pl.category,pl.purpose,pl.title,cb.name AS "cashboxName",u.display_name AS "authorName",
+    canReadFinance && (canViewClientFunds || canViewCost) ? query<{ id: string; type: string; amountKopecks: number; transactionDate: number; category: string; categoryLabel: string; purpose: string | null; purposeLabel: string | null; title: string; cashboxName: string; authorName: string; attachmentId: string | null }>(`${ledger} SELECT pl.transaction_id AS id,pl.type,pl.amount_kopecks AS "amountKopecks",pl.transaction_date AS "transactionDate",pl.category,pl.purpose,pl.title,cb.name AS "cashboxName",u.display_name AS "authorName",
       (SELECT a.id FROM attachments a WHERE a.transaction_id=pl.transaction_id AND a.upload_status='LINKED' AND a.deleted_at IS NULL ORDER BY a.created_at LIMIT 1) AS "attachmentId"
-      FROM project_ledger pl JOIN cashboxes cb ON cb.id=pl.cashbox_id JOIN users u ON u.id=pl.author_user_id ORDER BY pl.transaction_date DESC,pl.transaction_id DESC`, [projectId]).then((items) => items.map((item) => ({ ...item, categoryLabel: financeCategoryLabel(item.category), purposeLabel: item.purpose ? financePurposeLabel(item.purpose) : null }))) : Promise.resolve([]),
+      FROM project_ledger pl JOIN cashboxes cb ON cb.id=pl.cashbox_id JOIN users u ON u.id=pl.author_user_id${operationTypes} ORDER BY pl.transaction_date DESC,pl.transaction_id DESC`, [projectId]).then((items) => items.map((item) => ({ ...item, categoryLabel: financeCategoryLabel(item.category), purposeLabel: item.purpose ? financePurposeLabel(item.purpose) : null }))) : Promise.resolve([]),
     query<{ id: string; version: number; totalKopecks: number; createdAt: number }>("SELECT id,version,total_kopecks AS \"totalKopecks\",created_at AS \"createdAt\" FROM estimate_versions WHERE project_id=$1 ORDER BY version DESC", [projectId]),
     query<{ id: string; name: string; status: string; plannedStart: number | null; plannedEnd: number | null }>("SELECT id,name,status,planned_start AS \"plannedStart\",planned_end AS \"plannedEnd\" FROM project_stages WHERE project_id=$1 ORDER BY sort_order", [projectId]),
-    query<{ id: string; originalFilename: string; createdAt: number }>("SELECT id,original_filename AS \"originalFilename\",created_at AS \"createdAt\" FROM attachments WHERE project_id=$1 AND category IN ('PROJECT_PHOTO','DAILY_REPORT') AND upload_status IN ('UPLOADED','LINKED') AND deleted_at IS NULL ORDER BY created_at DESC", [projectId]),
-    query<{ id: string; title: string; amountKopecks: number; status: string; version: number }>("SELECT id,title,amount_kopecks AS \"amountKopecks\",status,version FROM additional_work_versions WHERE project_id=$1 ORDER BY created_at DESC", [projectId]),
+    query<{ id: string; reportDate: number; workCompleted: string; comment: string | null; authorName: string; photoCount: number }>(`SELECT dr.id,dr.report_date AS "reportDate",dr.work_completed AS "workCompleted",dr.comment,e.full_name AS "authorName",
+      (SELECT COUNT(*)::int FROM attachments a WHERE a.project_id=dr.project_id AND a.entity_type='DailyReport' AND a.entity_id=dr.id AND a.category IN ('DAILY_REPORT','PROJECT_PHOTO') AND a.upload_status='LINKED' AND a.deleted_at IS NULL) AS "photoCount"
+      FROM daily_reports dr JOIN employees e ON e.id=dr.author_employee_id WHERE dr.project_id=$1 ORDER BY dr.report_date DESC`, [projectId]),
+    canReadDocuments ? query<{ id: string; originalFilename: string; category: string; createdAt: number; reportId: string | null }>("SELECT id,original_filename AS \"originalFilename\",category,created_at AS \"createdAt\",CASE WHEN entity_type='DailyReport' THEN entity_id ELSE NULL END AS \"reportId\" FROM attachments WHERE project_id=$1 AND category IN ('PROJECT_PHOTO','DAILY_REPORT') AND upload_status='LINKED' AND deleted_at IS NULL ORDER BY created_at DESC", [projectId]) : Promise.resolve([]),
+    canReadDocuments ? query<{ id: string; originalFilename: string; createdAt: number }>("SELECT id,original_filename AS \"originalFilename\",created_at AS \"createdAt\" FROM attachments WHERE project_id=$1 AND category='HIDDEN_WORK' AND upload_status='LINKED' AND deleted_at IS NULL ORDER BY created_at DESC", [projectId]) : Promise.resolve([]),
+    query<{ id: string; title: string; amountKopecks: number; status: string; version: number }>(`SELECT DISTINCT ON (additional_work_id) id,title,amount_kopecks AS "amountKopecks",status,version FROM additional_work_versions WHERE project_id=$1 ORDER BY additional_work_id,version DESC`, [projectId]),
     query<{ id: string; name: string; specialization: string; workTitle: string; status: string }>(`SELECT c.id,c.name,c.specialization,ca.work_title AS "workTitle",ca.status FROM contractor_agreements ca JOIN contractors c ON c.id=ca.contractor_id WHERE ca.project_id=$1 ORDER BY c.name`, [projectId]),
-    query<{ id: string; originalFilename: string; category: string; createdAt: number }>("SELECT id,original_filename AS \"originalFilename\",category,created_at AS \"createdAt\" FROM attachments WHERE project_id=$1 AND category NOT IN ('RECEIPT','PROJECT_PHOTO','DAILY_REPORT') AND upload_status IN ('UPLOADED','LINKED') AND deleted_at IS NULL ORDER BY created_at DESC", [projectId]),
+    canReadDocuments ? query<{ id: string; originalFilename: string; category: string; createdAt: number }>("SELECT id,original_filename AS \"originalFilename\",category,created_at AS \"createdAt\" FROM attachments WHERE project_id=$1 AND category IN ('CONTRACT','ACT','ESTIMATE','OTHER') AND upload_status='LINKED' AND deleted_at IS NULL ORDER BY created_at DESC", [projectId]) : Promise.resolve([]),
+    canReadTasks ? query<{ id: string; title: string; status: string; deadline: number | null; assigneeName: string | null }>("SELECT t.id,t.title,t.status,t.deadline,e.full_name AS \"assigneeName\" FROM tasks t LEFT JOIN employees e ON e.id=t.assignee_employee_id WHERE t.project_id=$1 ORDER BY CASE WHEN t.status IN ('DONE','COMPLETED','CLOSED') THEN 1 ELSE 0 END,t.deadline NULLS LAST,t.created_at DESC", [projectId]) : Promise.resolve([]),
   ]);
-  const finance = summary ? {
-    materialsIncomeKopecks: Number(summary.materials_income), worksIncomeKopecks: Number(summary.works_income), additionalWorksIncomeKopecks: Number(summary.additional_income),
-    materialsExpenseKopecks: Number(summary.materials_expense), objectExpenseKopecks: Number(summary.object_expense),
-    materialsBalanceKopecks: Number(summary.materials_income) - Number(summary.materials_expense), operations,
+  const finance = canReadFinance ? {
+    capabilities: { viewClientFunds: canViewClientFunds, viewCost: canViewCost, viewMargin: canViewMargin },
+    materialsIncomeKopecks: canViewClientFunds ? Number(summary?.materials_income ?? 0) : null,
+    worksIncomeKopecks: canViewClientFunds ? Number(summary?.works_income ?? 0) : null,
+    additionalWorksIncomeKopecks: canViewClientFunds ? Number(summary?.additional_income ?? 0) : null,
+    materialsExpenseKopecks: canViewCost ? Number(summary?.materials_expense ?? 0) : null,
+    objectExpenseKopecks: canViewCost ? Number(summary?.object_expense ?? 0) : null,
+    materialsBalanceKopecks: canViewClientFunds && canViewCost ? Number(summary?.materials_income ?? 0) - Number(summary?.materials_expense ?? 0) : null,
+    operations,
   } : null;
-  return { project: serialize(row), finance, estimates, stages, photos, additionalWorks, contractors, documents };
+  return { project: serialize(row, actor.role === "OWNER" || access.actions["projects.viewCost"]), finance, estimates, stages, reports, photos, hiddenWorks, additionalWorks, contractors, documents, tasks,
+    capabilities: { viewDocuments: canReadDocuments, viewTasks: canReadTasks, openClient: actor.role === "OWNER" || (access.modules.clients && access.actions["clients.view"]), assignEmployees: actor.role === "OWNER" || access.actions["projects.assignEmployees"] } };
 }
 
 export async function createProject(actor: AuthUser, input: ProjectInput) {
   await assertModuleAction(actor, "projects", "projects.create");
   const data = validate(input, actor);
+  await assertAssignmentChange(actor, data.responsibleUserId, data.foremanEmployeeId);
+  await assertFinancialPlanChange(actor, data.contractWorksAmountKopecks, data.estimatedMaterialsBudgetKopecks);
   const responsible = await assertRelations(data.clientId, data.responsibleUserId, data.foremanEmployeeId);
   const id = crypto.randomUUID();
   const timestamp = Math.floor(Date.now() / 1000);
@@ -218,6 +263,8 @@ export async function updateProject(actor: AuthUser, projectId: string, input: P
   await assertModuleAction(actor, "projects", "projects.edit");
   const before = await visibleRow(actor, projectId);
   const data = validate(input, actor, before);
+  await assertAssignmentChange(actor, data.responsibleUserId, data.foremanEmployeeId, before);
+  await assertFinancialPlanChange(actor, data.contractWorksAmountKopecks, data.estimatedMaterialsBudgetKopecks, before);
   const responsible = await assertRelations(data.clientId, data.responsibleUserId, data.foremanEmployeeId);
   const timestamp = Math.floor(Date.now() / 1000);
   const changedFields = [["clientId",before.client_id,data.clientId],["displayName",before.name,data.displayName],["residentialComplex",before.residential_complex,data.residentialComplex],["address",before.address,data.address],["apartment",before.apartment,data.apartment],["areaSqm",before.area_sqm==null?null:Number(before.area_sqm),data.areaSqm],["responsibleUserId",before.responsible_user_id,data.responsibleUserId],["foremanEmployeeId",before.foreman_employee_id,data.foremanEmployeeId],["status",before.status,data.status],["startDate",before.start_date,data.startDate],["plannedEndDate",before.planned_end_date,data.plannedEndDate],["forecastEndDate",before.forecast_end_date,data.forecastEndDate],["actualEndDate",before.actual_end_date,data.actualEndDate],["contractWorksAmount",Number(before.contract_amount_kopecks),data.contractWorksAmountKopecks],["estimatedMaterialsBudget",Number(before.estimated_materials_budget_kopecks),data.estimatedMaterialsBudgetKopecks],["comment",before.comment,data.comment]].filter(([,oldValue,newValue])=>oldValue!==newValue).map(([field])=>field);
@@ -227,7 +274,10 @@ export async function updateProject(actor: AuthUser, projectId: string, input: P
     { text: "INSERT INTO audit_logs (id,actor_user_id,action,entity_type,entity_id,occurred_at,metadata_json) VALUES ($1,$2,'PROJECT_UPDATED','Project',$3,$4,$5)", params: [crypto.randomUUID(),actor.id,projectId,timestamp,JSON.stringify({changedFields})] },
   ];
   if (before.responsible_user_id!==data.responsibleUserId) statements.push({ text: "INSERT INTO audit_logs (id,actor_user_id,action,entity_type,entity_id,occurred_at,metadata_json) VALUES ($1,$2,'PROJECT_RESPONSIBLE_CHANGED','Project',$3,$4,$5)", params: [crypto.randomUUID(),actor.id,projectId,timestamp,JSON.stringify({oldResponsibleUserId:before.responsible_user_id,newResponsibleUserId:data.responsibleUserId})] });
+  if (before.foreman_employee_id!==data.foremanEmployeeId) statements.push({ text: "INSERT INTO audit_logs (id,actor_user_id,action,entity_type,entity_id,occurred_at,metadata_json) VALUES ($1,$2,'PROJECT_FOREMAN_CHANGED','Project',$3,$4,$5)", params: [crypto.randomUUID(),actor.id,projectId,timestamp,JSON.stringify({oldForemanEmployeeId:before.foreman_employee_id,newForemanEmployeeId:data.foremanEmployeeId})] });
   if (before.status!==data.status) statements.push({ text: "INSERT INTO audit_logs (id,actor_user_id,action,entity_type,entity_id,occurred_at,metadata_json) VALUES ($1,$2,'PROJECT_STATUS_CHANGED','Project',$3,$4,$5)", params: [crypto.randomUUID(),actor.id,projectId,timestamp,JSON.stringify({oldStatus:before.status,newStatus:data.status})] });
+  if (before.start_date!==data.startDate || before.planned_end_date!==data.plannedEndDate || before.forecast_end_date!==data.forecastEndDate || before.actual_end_date!==data.actualEndDate) statements.push({ text: "INSERT INTO audit_logs (id,actor_user_id,action,entity_type,entity_id,occurred_at,metadata_json) VALUES ($1,$2,'PROJECT_DATES_CHANGED','Project',$3,$4,$5)", params: [crypto.randomUUID(),actor.id,projectId,timestamp,JSON.stringify({before:{startDate:before.start_date,plannedEndDate:before.planned_end_date,forecastEndDate:before.forecast_end_date,actualEndDate:before.actual_end_date},after:{startDate:data.startDate,plannedEndDate:data.plannedEndDate,forecastEndDate:data.forecastEndDate,actualEndDate:data.actualEndDate}})] });
+  if (Number(before.contract_amount_kopecks)!==data.contractWorksAmountKopecks || Number(before.estimated_materials_budget_kopecks)!==data.estimatedMaterialsBudgetKopecks) statements.push({ text: "INSERT INTO audit_logs (id,actor_user_id,action,entity_type,entity_id,occurred_at,metadata_json) VALUES ($1,$2,'PROJECT_FINANCIAL_PLAN_CHANGED','Project',$3,$4,$5)", params: [crypto.randomUUID(),actor.id,projectId,timestamp,JSON.stringify({before:{contractWorksAmountKopecks:Number(before.contract_amount_kopecks),estimatedMaterialsBudgetKopecks:Number(before.estimated_materials_budget_kopecks)},after:{contractWorksAmountKopecks:data.contractWorksAmountKopecks,estimatedMaterialsBudgetKopecks:data.estimatedMaterialsBudgetKopecks}})] });
   await transaction(statements);
   return getProject(actor, projectId);
 }

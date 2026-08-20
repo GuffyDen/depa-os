@@ -93,7 +93,7 @@ function ClientForm({ mode, client, currentUser, responsibleUsers, sources, onCl
   </div>;
 }
 
-function ClientCard({ clientId, access, onClose, onChanged, onEdit }: { clientId: string; access: AccessProfile; onClose: () => void; onChanged: () => void; onEdit: (client: Client) => void }) {
+function ClientCard({ clientId, access, onClose, onChanged, onEdit, onOpenProject }: { clientId: string; access: AccessProfile; onClose: () => void; onChanged: () => void; onEdit: (client: Client) => void; onOpenProject?: (id: string) => void }) {
   const [detail, setDetail] = useState<ClientDetail | null>(null);
   const [tab, setTab] = useState<ClientTab>("overview");
   const [error, setError] = useState("");
@@ -118,7 +118,7 @@ function ClientCard({ clientId, access, onClose, onChanged, onEdit }: { clientId
     <div className="client-card-content">
       {error ? <div className="form-error">{error}</div> : null}
       {tab === "overview" ? <div className="client-overview"><section className="panel client-facts"><div><span>Телефон</span><a href={`tel:${client.phoneNormalized}`}>{client.phone}</a></div><div><span>Дополнительный телефон</span><b>{client.secondaryPhone || "—"}</b></div><div><span>Email</span><b>{client.email || "—"}</b></div><div><span>Источник</span><b>{SOURCE_LABELS[client.source]}</b></div><div><span>Ответственный</span><b>{client.responsibleName}</b></div><div><span>Дата создания</span><b>{formatDate(client.createdAt)}</b></div></section><section className="client-kpis"><article className="panel"><span>Объектов</span><b>{detail.projects.length}</b></article><article className="panel"><span>Заказов</span><b>{detail.orders.length}</b></article><article className="panel"><span>Открытых задач</span><b>{detail.tasks.filter((task) => !["DONE", "COMPLETED", "CLOSED"].includes(task.status)).length}</b></article></section><section className="panel client-comment"><span className="eyebrow">КОММЕНТАРИЙ</span><p>{client.comment || "Комментарий пока не добавлен."}</p></section><div className="client-related-actions"><button className="secondary" disabled title="Будет подключено в модуле задач">Добавить задачу</button><button className="secondary" disabled title="Будет подключено в модуле заказов">Создать заказ</button>{access.actions["clients.edit"] ? <button className="link danger-text" onClick={() => archive(client.status === "ACTIVE")}>{client.status === "ACTIVE" ? "Архивировать" : "Восстановить"}</button> : null}</div></div> : null}
-      {tab === "projects" ? detail.projects.length ? <div className="client-linked-list">{detail.projects.map((project) => <article className="panel" key={project.id}><div><b>{project.name}</b><span>{project.address || "Адрес не указан"}</span></div><em>{project.status}</em></article>)}</div> : <EmptyTab title="Объектов пока нет." action="Создать объект" /> : null}
+      {tab === "projects" ? detail.projects.length ? <div className="client-linked-list">{detail.projects.map((project) => onOpenProject ? <button className="panel client-project-link" key={project.id} onClick={() => onOpenProject(project.id)}><div><b>{project.name}</b><span>{project.address || "Адрес не указан"}</span></div><em>{project.status} · Открыть →</em></button> : <article className="panel" key={project.id}><div><b>{project.name}</b><span>{project.address || "Адрес не указан"}</span></div><em>{project.status}</em></article>)}</div> : <EmptyTab title="Объектов пока нет." action="Создать объект" /> : null}
       {tab === "orders" ? detail.orders.length ? <div className="client-linked-list">{detail.orders.map((order) => <article className="panel" key={order.id}><div><b>{order.number} · {order.title}</b><span>{money(order.amountKopecks)}</span></div><em>{order.status}</em></article>)}</div> : <EmptyTab title="Заказов пока нет." /> : null}
       {tab === "finances" ? detail.finances.length ? <div className="panel client-finance-list"><div className="client-finance-row head"><span>Дата</span><span>Операция</span><span>Назначение</span><span>Объект</span><span>Сумма</span></div>{detail.finances.map((item) => <div className="client-finance-row" key={item.id}><span>{formatDate(item.transactionDate)}</span><span><b>{item.title}</b><small>{item.type}</small></span><span>{PURPOSE_LABELS[item.purpose || ""] || "—"}</span><span>{item.projectName || "—"}</span><strong>{money(item.amountKopecks)}</strong></div>)}</div> : <EmptyTab title="Финансовых операций пока нет." /> : null}
       {tab === "tasks" ? detail.tasks.length ? <div className="client-linked-list">{detail.tasks.map((task) => <article className="panel" key={task.id}><div><b>{task.title}</b><span>{task.deadline ? `До ${formatDate(task.deadline)}` : "Без срока"}</span></div><em>{task.status}</em></article>)}</div> : <EmptyTab title="Задач пока нет." /> : null}
@@ -127,7 +127,7 @@ function ClientCard({ clientId, access, onClose, onChanged, onEdit }: { clientId
   </aside></div>;
 }
 
-export function ClientsScreen({ currentUser, access, initialClientId = null, onClientClosed }: { currentUser: AuthUser; access: AccessProfile; initialClientId?: string | null; onClientClosed?: () => void }) {
+export function ClientsScreen({ currentUser, access, initialClientId = null, onClientClosed, onOpenProject }: { currentUser: AuthUser; access: AccessProfile; initialClientId?: string | null; onClientClosed?: () => void; onOpenProject?: (id: string) => void }) {
   const [items, setItems] = useState<Client[]>([]);
   const [responsibleUsers, setResponsibleUsers] = useState<Responsible[]>([]);
   const [sources, setSources] = useState<SourceOption[]>(Object.entries(SOURCE_LABELS).map(([value, label]) => ({ value, label })));
@@ -176,7 +176,7 @@ export function ClientsScreen({ currentUser, access, initialClientId = null, onC
       {loading ? <div className="finance-loading">Загружаем клиентов…</div> : null}
       {nextOffset != null && !loading ? <div className="client-load-more"><button className="secondary" onClick={loadMore}>Показать ещё</button></div> : null}
     </div>
-    {openClientId ? <ClientCard key={openClientId} clientId={openClientId} access={access} onClose={() => { setOpenClientId(null); onClientClosed?.(); }} onChanged={() => setRevision((value) => value + 1)} onEdit={(client) => setForm({ mode: "edit", client })} /> : null}
+    {openClientId ? <ClientCard key={openClientId} clientId={openClientId} access={access} onClose={() => { setOpenClientId(null); onClientClosed?.(); }} onChanged={() => setRevision((value) => value + 1)} onEdit={(client) => setForm({ mode: "edit", client })} onOpenProject={onOpenProject} /> : null}
     {form ? <ClientForm mode={form.mode} client={form.client} currentUser={currentUser} responsibleUsers={responsibleUsers} sources={sources} onClose={() => setForm(null)} onSaved={saved} onOpenDuplicate={(client) => { setForm(null); setOpenClientId(client.id); }} /> : null}
   </section>;
 }

@@ -75,6 +75,7 @@ export async function canViewCashbox(actor: AuthUser, cashboxId: string) {
 export async function canViewProject(actor: AuthUser, projectId: string) {
   if (actor.role === "OWNER") return true;
   const profile = await getAccessProfile(actor);
+  if (!profile.modules.projects || !profile.actions["projects.view"]) return false;
   if (profile.scopes.projects === "ALL") return true;
   const row = await first<{ id: string }>(`SELECT p.id FROM projects p
     LEFT JOIN user_project_access a ON a.project_id=p.id AND a.user_id=$2
