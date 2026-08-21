@@ -116,6 +116,18 @@ async function assertProjectUploadAccess(actor: AuthUser, projectId: string | nu
   if (!(await canViewProject(actor, projectId))) throw new FileError("Нет доступа к файлам этого объекта.", 403);
 }
 
+async function assertInspectionFileAccess(actor: AuthUser, entityType: string, entityId: string | null | undefined) {
+  if (!entityId || !["Inspection", "InspectionDefect"].includes(entityType)) throw new FileError("Некорректная связь фотографии приёмки.", 400);
+  const access = await getAccessProfile(actor);
+  const assigned = actor.role !== "OWNER" && access.scopes.clients !== "ALL";
+  const entityJoin = entityType === "Inspection"
+    ? "i.id=$1"
+    : "EXISTS (SELECT 1 FROM inspection_defects d WHERE d.id=$1 AND d.inspection_id=i.id)";
+  const order = await first<{ id: string }>(`SELECT o.id FROM inspections i JOIN orders o ON o.id=i.order_id JOIN clients c ON c.id=o.client_id
+    WHERE ${entityJoin}${assigned ? " AND (o.responsible_user_id=$2 OR c.responsible_user_id=$2)" : ""} LIMIT 1`, assigned ? [entityId, actor.id] : [entityId]);
+  if (!order) throw new FileError("Нет доступа к фотографиям этой приёмки.", 403);
+}
+
 export async function prepareAttachmentUpload(actor: AuthUser, pathname: string, clientPayload: string | null) {
   const payload = parsePayload(clientPayload);
   try {
@@ -126,6 +138,7 @@ export async function prepareAttachmentUpload(actor: AuthUser, pathname: string,
     throw error;
   }
   await assertProjectUploadAccess(actor, payload.projectId);
+  if (payload.category === "INSPECTION") await assertInspectionFileAccess(actor, payload.entityType, payload.entityId);
   const expectedPath = attachmentPath(payload.attachmentId, payload.category, payload.mimeType);
   if (pathname !== expectedPath) throw new FileError("Путь загрузки файла отклонён.");
   const timestamp = nowSeconds();
@@ -208,6 +221,9 @@ export async function getAuthorizedAttachment(actor: AuthUser, attachmentId: str
         await assertModuleAction(actor, "finance", "finance.view");
         if (!row.cashbox_id || !(await canViewCashbox(actor, row.cashbox_id))) throw new FileError("Нет доступа к этому чеку.", 403);
         if (row.expense_type === "ADMIN" && !(await getAccessProfile(actor)).actions["finance.viewAdministrativeExpenses"]) throw new FileError("Нет доступа к этому чеку.", 403);
+      } else if (row.category === "INSPECTION") {
+        await assertModuleAction(actor, "orders", "orders.view");
+        await assertInspectionFileAccess(actor, row.entity_type, row.entity_id);
       } else {
         await assertModuleAction(actor, "documents", "documents.view");
         if (row.project_id && !(await canViewProject(actor, row.project_id))) throw new FileError("Нет доступа к этому файлу.", 403);

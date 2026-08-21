@@ -34,6 +34,8 @@ test("CRM backend enforces assigned scope, backend filters and bounded paginatio
   assert.match(data, /l\.responsible_user_id=/);
   assert.match(data, /l\.normalized_phone LIKE/);
   assert.match(data, /ROW_NUMBER\(\) OVER\(PARTITION BY l\.stage/);
+  assert.match(data, /filterParams=\[\.\.\.params\]/);
+  assert.match(data, /GROUP BY l\.stage`,filterParams/);
   assert.match(data, /nextOffset/);
 });
 

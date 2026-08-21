@@ -45,12 +45,62 @@ export const orders = pgTable("orders", {
   id: text("id").primaryKey(),
   number: text("number").notNull(),
   clientId: text("client_id").notNull().references(() => clients.id, { onDelete: "restrict", onUpdate: "cascade" }),
-  type: text("type", { enum: ["ACCEPTANCE", "RENOVATION"] }).notNull(),
+  type: text("type", { enum: ["INSPECTION", "RENOVATION"] }).notNull(),
   title: text("title").notNull(),
   amountKopecks: integer("amount_kopecks").notNull(),
-  status: text("status").notNull(),
+  status: text("status", { enum: ["NEW", "SCHEDULED", "IN_PROGRESS", "COMPLETED", "CANCELLED"] }).notNull(),
+  responsibleUserId: text("responsible_user_id").notNull().references((): AnyPgColumn => users.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  scheduledAt: integer("scheduled_at"),
+  startedAt: integer("started_at"),
+  completedAt: integer("completed_at"),
+  cancelledAt: integer("cancelled_at"),
+  comment: text("comment"),
+  internalComment: text("internal_comment"),
+  createdByUserId: text("created_by_user_id").notNull().references((): AnyPgColumn => users.id, { onDelete: "restrict", onUpdate: "cascade" }),
   ...timestamps,
-}, (table) => [uniqueIndex("idx_orders_number").on(table.number), index("idx_orders_client").on(table.clientId)]);
+}, (table) => [
+  unique("orders_number_unique").on(table.number),
+  index("idx_orders_client_created").on(table.clientId, table.createdAt),
+  index("idx_orders_responsible_scheduled").on(table.responsibleUserId, table.scheduledAt),
+  index("idx_orders_status_scheduled").on(table.status, table.scheduledAt),
+  check("orders_type_check", sql`${table.type} IN ('INSPECTION','RENOVATION')`),
+  check("orders_status_check", sql`${table.status} IN ('NEW','SCHEDULED','IN_PROGRESS','COMPLETED','CANCELLED')`),
+  check("orders_amount_check", sql`${table.amountKopecks} >= 0`),
+]);
+
+export const inspections = pgTable("inspections", {
+  id: text("id").primaryKey(),
+  orderId: text("order_id").notNull().references(() => orders.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  residentialComplex: text("residential_complex"),
+  address: text("address").notNull(),
+  apartmentNumber: text("apartment_number").notNull(),
+  areaSqm: numeric("area_sqm", { precision: 10, scale: 2 }),
+  scheduledAt: integer("scheduled_at").notNull(),
+  inspectorUserId: text("inspector_user_id").notNull().references((): AnyPgColumn => users.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  resultComment: text("result_comment"),
+  ...timestamps,
+}, (table) => [
+  unique("inspections_order_unique").on(table.orderId),
+  index("idx_inspections_scheduled").on(table.scheduledAt),
+  check("inspections_area_check", sql`${table.areaSqm} IS NULL OR ${table.areaSqm} > 0`),
+]);
+
+export const inspectionDefects = pgTable("inspection_defects", {
+  id: text("id").primaryKey(),
+  inspectionId: text("inspection_id").notNull().references(() => inspections.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  room: text("room").notNull(),
+  category: text("category", { enum: ["WALLS", "FLOOR", "CEILING", "WINDOWS", "DOORS", "ELECTRICAL", "PLUMBING", "VENTILATION", "FINISHING", "OTHER"] }).notNull(),
+  description: text("description").notNull(),
+  severity: text("severity", { enum: ["LOW", "MEDIUM", "HIGH"] }).notNull(),
+  status: text("status", { enum: ["OPEN", "RESOLVED"] }).notNull().default("OPEN"),
+  createdByUserId: text("created_by_user_id").notNull().references((): AnyPgColumn => users.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  ...timestamps,
+}, (table) => [
+  index("idx_inspection_defects_inspection_created").on(table.inspectionId, table.createdAt),
+  check("inspection_defects_category_check", sql`${table.category} IN ('WALLS','FLOOR','CEILING','WINDOWS','DOORS','ELECTRICAL','PLUMBING','VENTILATION','FINISHING','OTHER')`),
+  check("inspection_defects_severity_check", sql`${table.severity} IN ('LOW','MEDIUM','HIGH')`),
+  check("inspection_defects_status_check", sql`${table.status} IN ('OPEN','RESOLVED')`),
+]);
 
 export const projects = pgTable("projects", {
   id: text("id").primaryKey(),

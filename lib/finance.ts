@@ -383,7 +383,7 @@ export async function getCashboxHistory(actor: AuthUser, filters: CashboxHistory
 
 export type CreateFinanceOperationInput = {
   type?: unknown; amount?: unknown; date?: unknown; cashboxId?: unknown; destinationCashboxId?: unknown; expenseType?: unknown;
-  category?: unknown; projectId?: unknown; clientId?: unknown; purpose?: unknown; source?: unknown; title?: unknown; comment?: unknown;
+  category?: unknown; projectId?: unknown; clientId?: unknown; orderId?: unknown; purpose?: unknown; source?: unknown; title?: unknown; comment?: unknown;
   showToClient?: unknown; originalTransactionId?: unknown; attachmentId?: unknown;
   allocations?: unknown;
 };
@@ -411,6 +411,7 @@ export async function createFinanceOperation(actor: AuthUser, input: CreateFinan
   let category = cleanText(input.category, 100);
   let projectId = cleanText(input.projectId, 100) || null;
   let clientId = cleanText(input.clientId, 100) || null;
+  const orderId = cleanText(input.orderId,100)||null;
   let purpose = cleanText(input.purpose, 40) || null;
   let showToClient = input.showToClient === true;
   let originalTransactionId = cleanText(input.originalTransactionId, 100) || null;
@@ -462,6 +463,7 @@ export async function createFinanceOperation(actor: AuthUser, input: CreateFinan
     const project = await projectForActor(actor, projectId);
     clientId = project.client_id;
   }
+  if(orderId){const access=await getAccessProfile(actor);if(actor.role!=="OWNER"&&(!access.modules.orders||!access.actions["orders.view"]))throw new FinanceError("Заказ недоступен.",403);const assigned=actor.role!=="OWNER"&&access.scopes.clients!=="ALL";const order=await first<{id:string;client_id:string}>(`SELECT o.id,o.client_id FROM orders o JOIN clients c ON c.id=o.client_id WHERE o.id=$1${assigned?" AND (o.responsible_user_id=$2 OR c.responsible_user_id=$2)":""} LIMIT 1`,assigned?[orderId,actor.id]:[orderId]);if(!order)throw new FinanceError("Заказ не найден или недоступен.",403);if(clientId&&clientId!==order.client_id)throw new FinanceError("Клиент не соответствует заказу.",409);clientId=order.client_id;}
   const title = suppliedTitle || (type === "TRANSFER" ? "Перемещение между кассами" : type === "INCOME" ? source || "Поступление" : financeCategoryLabel(category || type));
   if (allocations.length && type !== "EXPENSE") throw new FinanceError("Распределение доступно только для объектного расхода.");
 
@@ -486,7 +488,7 @@ export async function createFinanceOperation(actor: AuthUser, input: CreateFinan
     { text: "SELECT 1 / COUNT(*)::int FROM attachments WHERE id=$1 AND uploaded_by_user_id=$2 AND upload_status='UPLOADED' AND transaction_id IS NULL AND deleted_at IS NULL", params: [attachmentId, actor.id] },
   );
   statements.push(
-    { text: "INSERT INTO financial_transactions (id, amount_kopecks, transaction_date, type, expense_type, author_user_id, cashbox_id, destination_cashbox_id, original_transaction_id, client_id, project_id, category, source, purpose, title, comment, show_to_client, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)", params: [id, amountKopecks, transactionDate, type, expenseType || null, actor.id, sourceCashbox.id, destinationCashbox?.id ?? null, originalTransactionId, clientId, projectId, category, source, purpose, title, comment, showToClient ? 1 : 0, timestamp, timestamp] },
+    { text: "INSERT INTO financial_transactions (id, amount_kopecks, transaction_date, type, expense_type, author_user_id, cashbox_id, destination_cashbox_id, original_transaction_id, client_id, project_id, order_id, category, source, purpose, title, comment, show_to_client, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)", params: [id, amountKopecks, transactionDate, type, expenseType || null, actor.id, sourceCashbox.id, destinationCashbox?.id ?? null, originalTransactionId, clientId, projectId, orderId, category, source, purpose, title, comment, showToClient ? 1 : 0, timestamp, timestamp] },
     { text: "UPDATE cashboxes SET balance_kopecks = balance_kopecks + $1, updated_at = $2 WHERE id = $3 AND status = 'ACTIVE'", params: [sourceDelta, timestamp, sourceCashbox.id] },
   );
   const allocationPurpose = category === "MATERIALS" ? "MATERIALS" : category === "CONTRACTOR_WORK" ? "WORKS" : "OTHER";
@@ -503,7 +505,7 @@ export async function createFinanceOperation(actor: AuthUser, input: CreateFinan
     { text: "UPDATE attachments SET transaction_id=$1,project_id=$2,entity_type='FINANCIAL_TRANSACTION',entity_id=$1,upload_status='LINKED',linked_at=$3,updated_at=$4 WHERE id=$5 AND uploaded_by_user_id=$6 AND upload_status='UPLOADED' AND transaction_id IS NULL", params: [id, projectId, timestamp, timestamp, attachmentId, actor.id] },
     { text: "INSERT INTO audit_logs (id,actor_user_id,action,entity_type,entity_id,occurred_at,metadata_json) VALUES ($1,$2,'ATTACHMENT_LINKED','Attachment',$3,$4,$5)", params: [crypto.randomUUID(), actor.id, attachmentId, timestamp, JSON.stringify({ transactionId: id, projectId, allocationProjectIds: allocations.map((item) => item.projectId) })] },
   );
-  statements.push({ text: "INSERT INTO audit_logs (id, actor_user_id, action, entity_type, entity_id, occurred_at, metadata_json) VALUES ($1,$2,$3,'FinancialTransaction',$4,$5,$6)", params: [crypto.randomUUID(), actor.id, type === "TRANSFER" ? "TRANSFER_CREATED" : "FINANCIAL_TRANSACTION_CREATED", id, timestamp, JSON.stringify({ type, amountKopecks, cashboxId: sourceCashbox.id, destinationCashboxId: destinationCashbox?.id ?? null, projectId, allocations })] });
+  statements.push({ text: "INSERT INTO audit_logs (id, actor_user_id, action, entity_type, entity_id, occurred_at, metadata_json) VALUES ($1,$2,$3,'FinancialTransaction',$4,$5,$6)", params: [crypto.randomUUID(), actor.id, type === "TRANSFER" ? "TRANSFER_CREATED" : "FINANCIAL_TRANSACTION_CREATED", id, timestamp, JSON.stringify({ type, amountKopecks, cashboxId: sourceCashbox.id, destinationCashboxId: destinationCashbox?.id ?? null, projectId, orderId, allocations })] });
   await transaction(statements);
 
   const preview = destinationCashbox ? transferPreview(balanceBefore, number(destinationCashbox.balance_kopecks), amountKopecks) : null;

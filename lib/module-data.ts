@@ -27,9 +27,9 @@ export async function getModuleData(actor: AuthUser, module: ModuleKey) {
   }
   if (module === "orders") {
     const scope = await getScope(actor, "clients");
-    const params = scope === "ALL" ? [] : [actor.id, actor.employeeId];
+    const params = scope === "ALL" ? [] : [actor.id];
     return { items: await query(`SELECT DISTINCT o.id,o.number,o.type,o.title,o.amount_kopecks,o.status,o.client_id,c.name AS client_name FROM orders o JOIN clients c ON c.id=o.client_id
-      ${scope === "ALL" ? "" : "LEFT JOIN projects p ON p.order_id=o.id LEFT JOIN user_project_access a ON a.project_id=p.id AND a.user_id=$1 WHERE c.owner_employee_id=$2 OR a.id IS NOT NULL"}
+      ${scope === "ALL" ? "" : "WHERE o.responsible_user_id=$1 OR c.responsible_user_id=$1"}
       ORDER BY o.updated_at DESC LIMIT 200`, params) };
   }
   if (module === "projects") {
