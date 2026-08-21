@@ -14,9 +14,9 @@ export async function getModuleData(actor: AuthUser, module: ModuleKey) {
   if (module === "dashboard") return { items: [] };
   if (module === "crm") {
     const scope = await getScope(actor, "crm");
-    const params = scope === "ALL" ? [] : [actor.employeeId];
-    return { items: await query(`SELECT l.id,l.source,l.status,l.notes,l.next_action,l.next_contact_at,l.owner_employee_id,c.name AS client_name
-      FROM leads l JOIN clients c ON c.id=l.client_id ${scope === "ALL" ? "" : "WHERE l.owner_employee_id=$1"} ORDER BY l.updated_at DESC LIMIT 200`, params) };
+    const params = scope === "ALL" ? [] : [actor.id];
+    return { items: await query(`SELECT l.id,l.name,l.phone,l.source,l.stage,l.comment,l.next_action_type,l.next_action_at,l.responsible_user_id,c.name AS client_name
+      FROM leads l LEFT JOIN clients c ON c.id=l.linked_client_id ${scope === "ALL" ? "" : "WHERE l.responsible_user_id=$1"} ORDER BY l.updated_at DESC LIMIT 200`, params) };
   }
   if (module === "clients") {
     const scope = await getScope(actor, "clients");

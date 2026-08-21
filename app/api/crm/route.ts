@@ -1,0 +1,7 @@
+import { getRequestUser } from "../../../lib/auth";
+import { createLead, CrmError, duplicateCheck, listLeads, type LeadInput } from "../../../lib/crm";
+import { AccessError } from "../../../lib/permissions";
+export const dynamic="force-dynamic";
+function fail(error:unknown){if(error instanceof CrmError)return Response.json({error:error.message,...error.details},{status:error.status});if(error instanceof AccessError)return Response.json({error:error.message},{status:error.status});console.error("CRM API error",error);return Response.json({error:"Не удалось выполнить операцию CRM."},{status:500});}
+export async function GET(request:Request){const actor=await getRequestUser(request);if(!actor)return Response.json({error:"Требуется авторизация."},{status:401});try{const url=new URL(request.url);if(url.searchParams.get("duplicatePhone"))return Response.json(await duplicateCheck(actor,url.searchParams.get("duplicatePhone")||"",url.searchParams.get("excludeId")||undefined));return Response.json(await listLeads(actor,request.url),{headers:{"Cache-Control":"private, no-store"}});}catch(error){return fail(error);}}
+export async function POST(request:Request){const actor=await getRequestUser(request);if(!actor)return Response.json({error:"Требуется авторизация."},{status:401});try{const body=await request.json() as LeadInput&{forceDuplicate?:boolean};return Response.json(await createLead(actor,body,body.forceDuplicate===true),{status:201});}catch(error){return fail(error);}}

@@ -95,9 +95,9 @@ test("production-facing object UI contains no demo project values or live-lookin
   assert.match(ui, /disabled title="Создание будет подключено|Создание будет подключено/);
 });
 
-test("completion uses existing 0007 schema without a retroactive or extra migration", async () => {
+test("objects completion keeps its schema isolated from later module migrations", async () => {
   const files = await readdir(new URL("../drizzle/postgres", import.meta.url));
-  assert.equal(files.filter((name) => /^0008_/.test(name)).length, 0);
+  assert.equal(files.filter((name) => /^0007_objects_v1\.sql$/.test(name)).length, 1);
   const migration = await read("drizzle/postgres/0007_objects_v1.sql");
   assert.doesNotMatch(migration, /daily_reports|HIDDEN_WORK/);
 });

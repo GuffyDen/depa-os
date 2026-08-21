@@ -7,13 +7,14 @@ import { FinanceOperationModal, FinanceScreen, OperationPickerModal, money, read
 import { TeamAccessScreen } from "./team-access-ui";
 import { ClientsScreen } from "./clients-ui";
 import { ProjectsScreen } from "./projects-ui";
+import { CrmScreen, type Lead } from "./crm-ui";
 
 type Section = "dashboard" | "crm" | "clients" | "orders" | "objects" | "finance" | "tasks" | "team" | "contractors" | "docs";
 
 const nav: { group: string; items: { id: Section; label: string; icon: string; count?: number }[] }[] = [
   { group: "Компания", items: [
     { id: "dashboard", label: "Обзор", icon: "◫" },
-    { id: "crm", label: "CRM", icon: "↗", count: 12 },
+    { id: "crm", label: "CRM", icon: "↗" },
     { id: "clients", label: "Клиенты", icon: "◎" },
     { id: "orders", label: "Заказы", icon: "▤" },
   ]},
@@ -30,14 +31,6 @@ const nav: { group: string; items: { id: Section; label: string; icon: string; c
 ];
 
 const moduleBySection: Record<Section, ModuleKey> = { dashboard: "dashboard", crm: "crm", clients: "clients", orders: "orders", objects: "projects", tasks: "tasks", finance: "finance", team: "team", contractors: "contractors", docs: "documents" };
-const crmColumns = [
-  { title: "Новая заявка", count: 4, cards: ["Анна Романова", "Максим Титов"] },
-  { title: "Связались", count: 3, cards: ["Олег Фомин", "Елена Белова"] },
-  { title: "Расчёт ремонта", count: 2, cards: ["Дарья Ким", "Виктор Орлов"] },
-  { title: "КП / смета", count: 2, cards: ["Роман Савин", "Ирина Шестова"] },
-  { title: "Договор", count: 1, cards: ["Алексей Власов"] },
-];
-
 function Brand() {
   return <div className="brand" aria-label="ДЕПА СТРОЙ"><span>ДЕПА</span><b>СТРОЙ</b><i>OS</i></div>;
 }
@@ -46,7 +39,7 @@ function initials(name: string) {
   return name.split(" ").map((part) => part[0]).join("").slice(0, 2).toLocaleUpperCase("ru-RU");
 }
 
-function Sidebar({ section, onChange, open, onClose, user, access, onProfile }: { section: Section; onChange: (s: Section) => void; open: boolean; onClose: () => void; user: AuthUser; access: AccessProfile; onProfile: () => void }) {
+function Sidebar({ section, onChange, open, onClose, user, access, onProfile, crmCount }: { section: Section; onChange: (s: Section) => void; open: boolean; onClose: () => void; user: AuthUser; access: AccessProfile; onProfile: () => void; crmCount: number }) {
   const visibleNav = nav.map((group) => ({ ...group, items: group.items.filter((item) => access.modules[moduleBySection[item.id]]) })).filter((group) => group.items.length > 0);
   return <aside className={`sidebar ${open ? "open" : ""}`}>
     <div className="side-head"><Brand /><button className="icon-btn mobile-only" onClick={onClose} aria-label="Закрыть меню">×</button></div>
@@ -54,7 +47,7 @@ function Sidebar({ section, onChange, open, onClose, user, access, onProfile }: 
       {visibleNav.map(group => <div className="nav-group" key={group.group}>
         <small>{group.group}</small>
         {group.items.map(item => <button key={item.id} className={section === item.id ? "active" : ""} onClick={() => { onChange(item.id); onClose(); }}>
-          <span className="nav-icon">{item.icon}</span><span>{item.label}</span>{item.count ? <em>{item.count}</em> : null}
+          <span className="nav-icon">{item.icon}</span><span>{item.label}</span>{(item.id === "crm" ? crmCount : item.count) ? <em>{item.id === "crm" ? crmCount : item.count}</em> : null}
         </button>)}
       </div>)}
     </nav>
@@ -80,12 +73,13 @@ function Metric({ label, value, detail, tone }: { label: string; value: string; 
   return <div className="metric"><div className="metric-top"><span>{label}</span><i className={tone || ""}>↗</i></div><strong>{value}</strong><small>{detail}</small></div>;
 }
 
-function Dashboard({ onObject, onSection, user }: { onObject: () => void; onSection: (s: Section) => void; user: AuthUser }) {
+function Dashboard({ onObject, onSection, onLead, user }: { onObject: () => void; onSection: (s: Section) => void; onLead: (id:string) => void; user: AuthUser }) {
   const [finance, setFinance] = useState<FinanceData | null>(null);
   const [projectSummary, setProjectSummary] = useState<{ total: number; items: { id: string; displayName: string; clientName: string; status: string; responsibleName: string; plannedEndDate: number | null }[] }>({ total: 0, items: [] });
+  const [crmSummary, setCrmSummary] = useState<{ stageCounts: Record<string,number>; attention: Lead[] }>({ stageCounts: {}, attention: [] });
   useEffect(() => { let cancelled = false; readFinance().then((result) => { if (!cancelled) setFinance(result); }).catch(() => undefined); return () => { cancelled = true; }; }, []);
   useEffect(() => { let cancelled = false; fetch("/api/projects?status=WORKING&limit=4", { cache: "no-store" }).then((response) => response.ok ? response.json() : Promise.reject()).then((result: typeof projectSummary) => { if (!cancelled) setProjectSummary(result); }).catch(() => undefined); return () => { cancelled = true; }; }, []);
-  const financeAttention = finance?.attentionItems.slice(0, 3) ?? [];
+  useEffect(() => { let cancelled=false;Promise.all([fetch("/api/crm?view=list&status=ACTIVE&limit=1",{cache:"no-store"}),fetch("/api/crm?attention=1&status=ACTIVE",{cache:"no-store"})]).then(async ([summary,attention])=>{if(!summary.ok||!attention.ok)throw new Error();const [s,a]=await Promise.all([summary.json(),attention.json()]);if(!cancelled)setCrmSummary({stageCounts:s.stageCounts??{},attention:a.items??[]});}).catch(()=>undefined);return()=>{cancelled=true};},[]);
   return <>
     <section className="welcome"><div><span className="eyebrow">РАБОЧИЙ КОНТУР</span><h2>{user.name.split(" ")[0]}, текущая ситуация</h2><p>Только реальные данные доступных модулей.</p></div><div className="weather"><span>Владивосток</span><b>DEPA</b><small>production</small></div></section>
     <section className="metrics-grid">
@@ -96,10 +90,10 @@ function Dashboard({ onObject, onSection, user }: { onObject: () => void; onSect
     </section>
     <div className="dashboard-grid">
       <section className="panel attention-panel">
-        <div className="panel-head"><div><span className="eyebrow orange">ТРЕБУЕТ ВНИМАНИЯ</span><h3>Не упустить сегодня</h3></div><b className="badge-alert">{financeAttention.length}</b></div>
+        <div className="panel-head"><div><span className="eyebrow orange">ТРЕБУЕТ ВНИМАНИЯ</span><h3>Не упустить сегодня</h3></div><b className="badge-alert">{crmSummary.attention.length}</b></div>
         <div className="attention-list">
-          {financeAttention.map((item, index) => <button key={`${item.type}-${item.transactionId ?? item.projectId ?? item.cashboxId ?? index}`} onClick={() => onSection("finance")}><i>₽</i><div><strong>{item.title}</strong><span>{item.detail}</span></div><em>Финансы</em></button>)}
-          {!financeAttention.length ? <div className="finance-empty">Пунктов, требующих внимания, нет.</div> : null}
+          {crmSummary.attention.map((lead) => <button key={lead.id} onClick={() => onLead(lead.id)}><i>↗</i><div><strong>{lead.name}</strong><span>{lead.nextActionComment || lead.phone}</span></div><em>CRM</em></button>)}
+          {!crmSummary.attention.length ? <div className="finance-empty">CRM-действий, требующих внимания, нет.</div> : null}
         </div>
       </section>
       <section className="panel tasks-panel">
@@ -124,7 +118,7 @@ function Dashboard({ onObject, onSection, user }: { onObject: () => void; onSect
     <div className="dashboard-grid lower">
       <section className="panel funnel-panel">
         <div className="panel-head"><div><span className="eyebrow">CRM</span><h3>Воронка продаж</h3></div><button className="link" onClick={() => onSection("crm")}>Открыть CRM →</button></div>
-        <div className="funnel"><div style={{height:"88%"}}><b>4</b><span>Новые</span></div><div style={{height:"72%"}}><b>3</b><span>Связались</span></div><div style={{height:"50%"}}><b>2</b><span>Расчёт</span></div><div style={{height:"50%"}}><b>2</b><span>КП</span></div><div className="accent" style={{height:"28%"}}><b>1</b><span>Договор</span></div></div>
+        <div className="funnel">{[["NEW","Новые"],["CONTACTED","Связались"],["CALCULATION","Расчёт"],["PROPOSAL","КП"],["CONTRACT","Договор"]].map(([stage,label],index)=><div key={stage} className={index===4?"accent":""} style={{height:`${Math.max(18,Math.min(100,24+(crmSummary.stageCounts[stage]||0)*12))}%`}}><b>{crmSummary.stageCounts[stage]||0}</b><span>{label}</span></div>)}</div>
       </section>
       <section className="panel cash-panel">
         <div className="panel-head"><div><span className="eyebrow">КАССЫ</span><h3>Персональные</h3></div><button className="link" onClick={() => onSection("finance")}>Подробнее →</button></div>
@@ -146,12 +140,6 @@ function EmployeeDashboard({ user, access, onSection }: { user: AuthUser; access
     {access.actions["finance.viewClientFunds"] && finance?.clientFundsKopecks !== null ? <Metric label="СРЕДСТВА КЛИЕНТОВ" value={finance ? money(finance.clientFundsKopecks ?? 0) : "—"} detail="В доступной области" /> : null}
     {access.actions["finance.viewProfit"] && finance?.depaProfitKopecks !== null ? <Metric label="ПРИБЫЛЬ DEPA" value={finance ? money(finance.depaProfitKopecks ?? 0) : "—"} detail="Разрешено Owner" tone="orange" /> : null}
   </div><div className="panel employee-start"><div><span className="eyebrow">БЫСТРЫЙ ДОСТУП</span><h3>Рабочее пространство</h3><p>Прямые переходы и API также проверяют эти права.</p></div>{quickSections.map((section) => <button className={section === "finance" ? "primary" : "secondary"} key={section} onClick={() => onSection(section)}>{nav.flatMap((group) => group.items).find((item) => item.id === section)?.label}</button>)}</div></>;
-}
-
-function CrmScreen({ canCreate }: { canCreate: boolean }) {
-  return <section className="screen-section"><div className="screen-intro"><div><span className="eyebrow">ПРОДАЖИ</span><h2>CRM</h2><p>12 активных обращений · потенциал 18,4 млн ₽</p></div><div className="segmented"><button className="active">Воронка</button><button>Список</button></div></div>
-    <div className="kanban">{crmColumns.map((col, i) => <div className="kanban-col" key={col.title}><div className="kanban-head"><span><i className={i === 4 ? "orange-bg" : ""} />{col.title}</span><b>{col.count}</b></div>{col.cards.map((name,j) => <article key={name}><span className="source">{j % 2 ? "AVITO" : "САЙТ"}</span><h4>{name}</h4><p>Ремонт · 62 м²</p><div><small>{i < 2 ? "Связаться сегодня" : "Следующее действие 18 авг"}</small><span className="avatar mini">{j%2 ? "ПС" : "ДП"}</span></div></article>)}{canCreate ? <button className="kanban-add">＋ Добавить</button> : null}</div>)}</div>
-  </section>;
 }
 
 type GenericSection = Exclude<Section, "dashboard"|"crm"|"clients"|"objects"|"finance">;
@@ -230,21 +218,23 @@ function ProfileModal({ user, onClose }: { user: AuthUser; onClose: () => void }
   </div>;
 }
 
-function SearchModal({ access, onClose, onClient, onProject }: { access: AccessProfile; onClose: () => void; onClient: (id: string) => void; onProject: (id: string) => void }) {
+function SearchModal({ access, onClose, onClient, onProject, onLead }: { access: AccessProfile; onClose: () => void; onClient: (id: string) => void; onProject: (id: string) => void; onLead:(id:string)=>void }) {
   const [q, setQ] = useState("");
   const [clients, setClients] = useState<{ id: string; fullName: string; phone: string }[]>([]);
   const [projects, setProjects] = useState<{ id: string; displayName: string; address: string; apartment: string; residentialComplex: string | null; clientName: string }[]>([]);
+  const [leads, setLeads] = useState<Lead[]>([]);
   useEffect(() => {
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
-      if (!q.trim()) { setClients([]); setProjects([]); return; }
+      if (!q.trim()) { setClients([]); setProjects([]); setLeads([]); return; }
       const clientRequest = access.modules.clients && access.actions["clients.view"] ? fetch(`/api/clients?${new URLSearchParams({ search: q, status: "ALL", limit: "5" })}`, { cache: "no-store", signal: controller.signal }).then((response) => response.ok ? response.json() as Promise<{ items?: typeof clients }> : Promise.reject()) : Promise.resolve({ items: [] });
       const projectRequest = access.modules.projects && access.actions["projects.view"] ? fetch(`/api/projects?${new URLSearchParams({ search: q, status: "ALL", limit: "5" })}`, { cache: "no-store", signal: controller.signal }).then((response) => response.ok ? response.json() as Promise<{ items?: typeof projects }> : Promise.reject()) : Promise.resolve({ items: [] });
-      Promise.all([clientRequest, projectRequest]).then(([clientData, projectData]) => { setClients(clientData.items ?? []); setProjects(projectData.items ?? []); }).catch(() => undefined);
+      const leadRequest = access.modules.crm && access.actions["crm.view"] ? fetch(`/api/crm?${new URLSearchParams({ search: q, status: "ALL", view:"list", limit: "5" })}`, { cache: "no-store", signal: controller.signal }).then((response) => response.ok ? response.json() as Promise<{ items?: typeof leads }> : Promise.reject()) : Promise.resolve({ items: [] });
+      Promise.all([clientRequest, projectRequest,leadRequest]).then(([clientData, projectData,leadData]) => { setClients(clientData.items ?? []); setProjects(projectData.items ?? []);setLeads(leadData.items??[]); }).catch(() => undefined);
     }, 250);
     return () => { window.clearTimeout(timer); controller.abort(); };
   }, [q, access]);
-  return <div className="modal-wrap search-wrap" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className="search-modal"><div className="search-input"><span>⌕</span><input autoFocus value={q} onChange={(event) => setQ(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") onClose(); }} placeholder="Клиент, объект, адрес, ЖК или квартира"/><kbd>ESC</kbd></div><div className="search-results">{access.modules.projects && access.actions["projects.view"] ? <><small>ОБЪЕКТЫ</small>{projects.map((project) => <button key={project.id} onClick={() => { onClose(); onProject(project.id); }}><i>◇</i><span><b>{project.displayName}</b><small>{project.clientName} · {project.address}</small></span><em>↗</em></button>)}</> : null}{access.modules.clients && access.actions["clients.view"] ? <><small>КЛИЕНТЫ</small>{clients.map((client) => <button key={client.id} onClick={() => { onClose(); onClient(client.id); }}><i>◎</i><span><b>{client.fullName}</b><small>{client.phone}</small></span><em>↗</em></button>)}</> : null}{q.trim() && !clients.length && !projects.length ? <div className="finance-empty">Ничего не найдено.</div> : null}</div></div></div>;
+  return <div className="modal-wrap search-wrap" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className="search-modal"><div className="search-input"><span>⌕</span><input autoFocus value={q} onChange={(event) => setQ(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") onClose(); }} placeholder="Клиент, заявка, объект или адрес"/><kbd>ESC</kbd></div><div className="search-results">{access.modules.crm&&access.actions["crm.view"]?<><small>ЗАЯВКИ</small>{leads.map(lead=><button key={lead.id} onClick={()=>{onClose();onLead(lead.id)}}><i>↗</i><span><b>{lead.name}</b><small>{lead.phone} · {lead.responsibleName}</small></span><em>↗</em></button>)}</>:null}{access.modules.projects && access.actions["projects.view"] ? <><small>ОБЪЕКТЫ</small>{projects.map((project) => <button key={project.id} onClick={() => { onClose(); onProject(project.id); }}><i>◇</i><span><b>{project.displayName}</b><small>{project.clientName} · {project.address}</small></span><em>↗</em></button>)}</> : null}{access.modules.clients && access.actions["clients.view"] ? <><small>КЛИЕНТЫ</small>{clients.map((client) => <button key={client.id} onClick={() => { onClose(); onClient(client.id); }}><i>◎</i><span><b>{client.fullName}</b><small>{client.phone}</small></span><em>↗</em></button>)}</> : null}{q.trim() && !clients.length && !projects.length&&!leads.length ? <div className="finance-empty">Ничего не найдено.</div> : null}</div></div></div>;
 }
 
 function AccessDenied({ onNavigate }: { onNavigate: () => void }) {
@@ -260,12 +250,16 @@ export function DepaOS({ currentUser, access, initialSection, accessDenied }: { 
   const [financeRevision, setFinanceRevision] = useState(0);
   const [targetClientId, setTargetClientId] = useState<string | null>(null);
   const [targetProjectId, setTargetProjectId] = useState<string | null>(null);
+  const [targetLeadId,setTargetLeadId]=useState<string|null>(null);
+  const [crmCount,setCrmCount]=useState(0);
   const [financeContext, setFinanceContext] = useState<{ projectId: string; clientId: string } | null>(null);
   const [menuOpen,setMenuOpen]=useState(false);
   const title = nav.flatMap(g=>g.items).find(i=>i.id===section)?.label || "Обзор";
-  function select(s:Section){if (!access.modules[moduleBySection[s]]) { setDenied(true); return; } setTargetClientId(null);setTargetProjectId(null);setSection(s);setDenied(false)}
-  function openClient(id:string){setTargetProjectId(null);setTargetClientId(id);setSection("clients");setDenied(false)}
-  function openProject(id:string){setTargetClientId(null);setTargetProjectId(id);setSection("objects");setDenied(false)}
+  useEffect(()=>{if(!access.modules.crm||!access.actions["crm.view"])return;let active=true;fetch("/api/crm?view=list&status=ACTIVE&limit=1",{cache:"no-store"}).then(r=>r.ok?r.json():Promise.reject()).then(d=>{if(active)setCrmCount(d.total??0)}).catch(()=>undefined);return()=>{active=false};},[access,section]);
+  function select(s:Section){if (!access.modules[moduleBySection[s]]) { setDenied(true); return; } setTargetClientId(null);setTargetProjectId(null);setTargetLeadId(null);setSection(s);setDenied(false)}
+  function openClient(id:string){setTargetProjectId(null);setTargetLeadId(null);setTargetClientId(id);setSection("clients");setDenied(false)}
+  function openProject(id:string){setTargetClientId(null);setTargetLeadId(null);setTargetProjectId(id);setSection("objects");setDenied(false)}
+  function openLead(id:string){setTargetClientId(null);setTargetProjectId(null);setTargetLeadId(id);setSection("crm");setDenied(false)}
   function openFinance(mode: FinanceMode) { setFinanceContext(null); setFinanceMode(mode); setModal("finance"); }
   function openProjectFinance(mode: FinanceMode, project: { id: string; clientId: string }) { setFinanceContext({ projectId: project.id, clientId: project.clientId }); setFinanceMode(mode); setModal("finance"); }
   const firstAllowed = nav.flatMap((group) => group.items).find((item) => access.modules[moduleBySection[item.id]])?.id ?? "dashboard";
@@ -273,11 +267,11 @@ export function DepaOS({ currentUser, access, initialSection, accessDenied }: { 
   const allowedFinanceModes = { EXPENSE: financeAllowed && access.actions["finance.createExpense"], INCOME: financeAllowed && access.actions["finance.createIncome"], TRANSFER: financeAllowed && access.actions["finance.createTransfer"] };
   const canAddFinance = section === "finance" && Object.values(allowedFinanceModes).some(Boolean);
   return <div className="app-shell">
-    <Sidebar section={section} onChange={select} open={menuOpen} onClose={()=>setMenuOpen(false)} user={currentUser} access={access} onProfile={()=>setModal("profile")}/>
+    <Sidebar section={section} onChange={select} open={menuOpen} onClose={()=>setMenuOpen(false)} user={currentUser} access={access} onProfile={()=>setModal("profile")} crmCount={crmCount}/>
     {menuOpen&&<button className="scrim" onClick={()=>setMenuOpen(false)} aria-label="Закрыть меню"/>}
-    <main className="main"><Topbar title={title} onMenu={()=>setMenuOpen(true)} onAdd={canAddFinance ? ()=>setModal("picker") : undefined} onSearch={access.modules.clients || access.modules.projects ? ()=>setModal("search") : undefined}/><div className="content">
-      {denied ? <AccessDenied onNavigate={() => select(firstAllowed)} /> : section === "dashboard" ? (currentUser.role === "OWNER" ? <Dashboard onObject={()=>select("objects")} onSection={select} user={currentUser}/> : <EmployeeDashboard user={currentUser} access={access} onSection={select}/>) : section === "clients" ? <ClientsScreen key={targetClientId ?? "clients"} currentUser={currentUser} access={access} initialClientId={targetClientId} onClientClosed={()=>setTargetClientId(null)} onOpenProject={openProject}/> : section === "objects" ? <ProjectsScreen key={targetProjectId ?? "projects"} currentUser={currentUser} access={access} initialProjectId={targetProjectId} onProjectClosed={()=>setTargetProjectId(null)} onClients={()=>select("clients")} onOpenClient={openClient} onFinance={openProjectFinance}/> : section === "crm" ? (currentUser.role === "OWNER" ? <CrmScreen canCreate={access.actions["crm.create"]}/> : <ScopedModuleScreen section="crm"/>) : section === "finance" ? <FinanceScreen key={financeRevision} onNew={openFinance}/> : section === "team" && currentUser.role === "OWNER" ? <TeamAccessScreen/> : currentUser.role === "EMPLOYEE" ? <ScopedModuleScreen section={section as GenericSection|"crm"}/> : <GenericScreen section={section as GenericSection} access={access}/>}{" "}
+    <main className="main"><Topbar title={title} onMenu={()=>setMenuOpen(true)} onAdd={canAddFinance ? ()=>setModal("picker") : undefined} onSearch={access.modules.clients || access.modules.projects || access.modules.crm ? ()=>setModal("search") : undefined}/><div className="content">
+      {denied ? <AccessDenied onNavigate={() => select(firstAllowed)} /> : section === "dashboard" ? (currentUser.role === "OWNER" ? <Dashboard onObject={()=>select("objects")} onSection={select} onLead={openLead} user={currentUser}/> : <EmployeeDashboard user={currentUser} access={access} onSection={select}/>) : section === "clients" ? <ClientsScreen key={targetClientId ?? "clients"} currentUser={currentUser} access={access} initialClientId={targetClientId} onClientClosed={()=>setTargetClientId(null)} onOpenProject={openProject} onOpenLead={openLead}/> : section === "objects" ? <ProjectsScreen key={targetProjectId ?? "projects"} currentUser={currentUser} access={access} initialProjectId={targetProjectId} onProjectClosed={()=>setTargetProjectId(null)} onClients={()=>select("clients")} onOpenClient={openClient} onFinance={openProjectFinance}/> : section === "crm" ? <CrmScreen key={targetLeadId??"crm"} currentUser={currentUser} access={access} initialLeadId={targetLeadId} onLeadClosed={()=>setTargetLeadId(null)} onOpenClient={openClient}/> : section === "finance" ? <FinanceScreen key={financeRevision} onNew={openFinance}/> : section === "team" && currentUser.role === "OWNER" ? <TeamAccessScreen/> : currentUser.role === "EMPLOYEE" ? <ScopedModuleScreen section={section as GenericSection|"crm"}/> : <GenericScreen section={section as GenericSection} access={access}/>}{" "}
     </div></main>
-    {modal==="picker"&&<OperationPickerModal allowed={allowedFinanceModes} onClose={()=>setModal(null)} onSelect={openFinance}/>} {modal==="finance"&&<FinanceOperationModal key={`${financeMode}-${financeContext?.projectId ?? "global"}`} mode={financeMode} initialProjectId={financeContext?.projectId} initialClientId={financeContext?.clientId} onClose={()=>{setModal(null);setFinanceContext(null)}} onSaved={()=>setFinanceRevision((value)=>value+1)}/>} {modal==="search"&&<SearchModal access={access} onClose={()=>setModal(null)} onClient={openClient} onProject={openProject}/>} {modal==="profile"&&<ProfileModal user={currentUser} onClose={()=>setModal(null)}/>}{" "}
+    {modal==="picker"&&<OperationPickerModal allowed={allowedFinanceModes} onClose={()=>setModal(null)} onSelect={openFinance}/>} {modal==="finance"&&<FinanceOperationModal key={`${financeMode}-${financeContext?.projectId ?? "global"}`} mode={financeMode} initialProjectId={financeContext?.projectId} initialClientId={financeContext?.clientId} onClose={()=>{setModal(null);setFinanceContext(null)}} onSaved={()=>setFinanceRevision((value)=>value+1)}/>} {modal==="search"&&<SearchModal access={access} onClose={()=>setModal(null)} onClient={openClient} onProject={openProject} onLead={openLead}/>} {modal==="profile"&&<ProfileModal user={currentUser} onClose={()=>setModal(null)}/>}{" "}
   </div>;
 }

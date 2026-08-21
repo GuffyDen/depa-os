@@ -162,10 +162,12 @@ export async function getClient(actor: AuthUser, clientId: string) {
   const canReadFinances = actor.role === "OWNER" || (access.modules.finance && access.actions["finance.view"] && access.actions["finance.viewClientFunds"]);
   const canReadTasks = actor.role === "OWNER" || (access.modules.tasks && access.actions["tasks.view"]);
   const canReadDocuments = actor.role === "OWNER" || (access.modules.documents && access.actions["documents.view"]);
+  const canReadCrm = actor.role === "OWNER" || (access.modules.crm && access.actions["crm.view"]);
   const assignedProjectWhere = actor.role === "OWNER" || access.scopes.projects === "ALL" ? "" : ` AND (p.responsible_user_id=$2 OR EXISTS (SELECT 1 FROM user_project_access a WHERE a.project_id=p.id AND a.user_id=$2) OR p.manager_employee_id=$3 OR p.foreman_employee_id=$3)`;
   const assignedTaskWhere = actor.role === "OWNER" || access.scopes.tasks === "ALL" ? "" : " AND (t.assignee_employee_id=$2 OR t.created_by_user_id=$3)";
   const assignedDocumentWhere = actor.role === "OWNER" || access.scopes.documents === "ALL" ? "" : ` AND (a.entity_type='Client' OR EXISTS (SELECT 1 FROM projects p LEFT JOIN user_project_access upa ON upa.project_id=p.id AND upa.user_id=$2 WHERE p.id=a.project_id AND (p.responsible_user_id=$2 OR upa.id IS NOT NULL OR p.manager_employee_id=$3 OR p.foreman_employee_id=$3)))`;
-  const [projects, orders, finances, tasks, documents] = await Promise.all([
+  const assignedLeadWhere = actor.role === "OWNER" || access.scopes.crm === "ALL" ? "" : " AND l.responsible_user_id=$2";
+  const [projects, orders, finances, tasks, documents, leads] = await Promise.all([
     canReadProjects ? query<{ id: string; name: string; address: string | null; status: string }>(`SELECT p.id,p.name,p.address,p.status FROM projects p WHERE p.client_id=$1${assignedProjectWhere} ORDER BY p.created_at DESC`, assignedProjectWhere ? [clientId, actor.id, actor.employeeId] : [clientId]) : Promise.resolve([]),
     canReadOrders ? query<{ id: string; number: string; title: string; status: string; amountKopecks: number }>("SELECT id,number,title,status,amount_kopecks AS \"amountKopecks\" FROM orders WHERE client_id=$1 ORDER BY created_at DESC", [clientId]) : Promise.resolve([]),
     canReadFinances ? query<{ id: string; transactionDate: number; amountKopecks: number; type: string; purpose: string | null; title: string; projectName: string | null }>(`SELECT ft.id,ft.transaction_date AS "transactionDate",ft.amount_kopecks AS "amountKopecks",ft.type,ft.purpose,ft.title,p.name AS "projectName"
@@ -173,8 +175,9 @@ export async function getClient(actor: AuthUser, clientId: string) {
     canReadTasks ? query<{ id: string; title: string; deadline: number | null; status: string }>(`SELECT t.id,t.title,t.deadline,t.status FROM tasks t WHERE t.client_id=$1${assignedTaskWhere} ORDER BY t.created_at DESC`, assignedTaskWhere ? [clientId, actor.employeeId, actor.id] : [clientId]) : Promise.resolve([]),
     canReadDocuments ? query<{ id: string; originalFilename: string; category: string; createdAt: number }>(`SELECT a.id,a.original_filename AS "originalFilename",a.category,a.created_at AS "createdAt" FROM attachments a
       WHERE a.upload_status IN ('UPLOADED','LINKED') AND ((a.entity_type='Client' AND a.entity_id=$1) OR a.project_id IN (SELECT id FROM projects WHERE client_id=$1))${assignedDocumentWhere} ORDER BY a.created_at DESC`, assignedDocumentWhere ? [clientId, actor.id, actor.employeeId] : [clientId]) : Promise.resolve([]),
+    canReadCrm ? query<{id:string;name:string;phone:string;stage:string;source:string;createdAt:number}>(`SELECT l.id,l.name,l.phone,l.stage,l.source,l.created_at AS "createdAt" FROM leads l WHERE l.linked_client_id=$1${assignedLeadWhere} ORDER BY l.created_at DESC`,assignedLeadWhere?[clientId,actor.id]:[clientId]):Promise.resolve([]),
   ]);
-  return { client: serializeClient(row), projects, orders, finances, tasks, documents };
+  return { client: serializeClient(row), projects, orders, finances, tasks, documents, leads };
 }
 
 export async function updateClient(actor: AuthUser, clientId: string, input: ClientInput) {
