@@ -125,6 +125,17 @@ async function assertProjectUploadAccess(actor: AuthUser, projectId: string | nu
   if (!(await canViewProject(actor, projectId))) throw new FileError("Нет доступа к файлам этого объекта.", 403);
 }
 
+async function assertProductionFileProjectAccess(actor: AuthUser, projectId: string | null | undefined) {
+  if (!projectId) throw new FileError("Некорректная связь production-файла.");
+  if (actor.role === "OWNER") return;
+  const access = await getAccessProfile(actor);
+  if (access.scopes.production === "ALL") return;
+  const row = await first<{ id: string }>(`SELECT p.id FROM projects p
+    LEFT JOIN user_project_access a ON a.project_id=p.id AND a.user_id=$2
+    WHERE p.id=$1 AND (p.responsible_user_id=$2 OR a.id IS NOT NULL OR p.manager_employee_id=$3 OR p.foreman_employee_id=$3) LIMIT 1`, [projectId, actor.id, actor.employeeId]);
+  if (!row) throw new FileError("Нет доступа к production-файлам этого объекта.", 403);
+}
+
 async function assertInspectionFileAccess(actor: AuthUser, entityType: string, entityId: string | null | undefined) {
   if (!entityId || !["Inspection", "InspectionDefect"].includes(entityType)) throw new FileError("Некорректная связь фотографии приёмки.", 400);
   const access = await getAccessProfile(actor);
@@ -166,6 +177,8 @@ export async function prepareAttachmentUpload(actor: AuthUser, pathname: string,
   const isContractFile = CONTRACT_CATEGORIES.has(payload.category) || payload.entityType === "ContractVersion";
   try {
     if (payload.category === "RECEIPT") await assertModuleAction(actor, "finance", "finance.createExpense");
+    else if (payload.category === "DAILY_REPORT") await assertModuleAction(actor, "projects", "dailyReports.uploadPhotos");
+    else if (payload.category === "HIDDEN_WORK") await assertModuleAction(actor, "projects", "hiddenWorks.upload");
     else if (isContractFile) await assertModuleAction(actor, "orders", payload.category === "CONTRACT_DOCX" || payload.category === "CONTRACT_PDF" ? "contracts.generateDocuments" : "contracts.uploadSigned");
     else if (isDesignFile) await assertModuleAction(actor, "orders", "design.files.upload");
     else await assertModuleAction(actor, "documents", "documents.upload");
@@ -174,6 +187,7 @@ export async function prepareAttachmentUpload(actor: AuthUser, pathname: string,
     throw error;
   }
   await assertProjectUploadAccess(actor, payload.projectId);
+  if (payload.category === "DAILY_REPORT" || payload.category === "HIDDEN_WORK") await assertProductionFileProjectAccess(actor, payload.projectId);
   if (payload.category === "INSPECTION") await assertInspectionFileAccess(actor, payload.entityType, payload.entityId);
   if (isDesignFile) await assertDesignFileAccess(actor, payload.entityType, payload.entityId);
   if (isContractFile) await assertContractFileAccess(actor, payload.contractVersionId);
@@ -262,6 +276,9 @@ export async function getAuthorizedAttachment(actor: AuthUser, attachmentId: str
       } else if (row.category === "INSPECTION") {
         await assertModuleAction(actor, "orders", "orders.view");
         await assertInspectionFileAccess(actor, row.entity_type, row.entity_id);
+      } else if (row.category === "DAILY_REPORT" || row.category === "HIDDEN_WORK") {
+        await assertModuleAction(actor, "projects", "production.view");
+        await assertProductionFileProjectAccess(actor, row.project_id);
       } else if (row.design_project_id || DESIGN_DOCUMENT_CATEGORIES.has(row.category)) {
         await assertModuleAction(actor, "orders", "design.files.view");
         const designProjectId = row.design_project_id ??

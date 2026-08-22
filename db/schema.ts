@@ -536,6 +536,9 @@ export const projects = pgTable(
       (): AnyPgColumn => contracts.id,
       { onDelete: "restrict", onUpdate: "cascade" },
     ),
+    internalForecastEndDate: integer("internal_forecast_end_date"),
+    publishedForecastEndDate: integer("published_forecast_end_date"),
+    dailyReportResponsibleUserId: text("daily_report_responsible_user_id").references((): AnyPgColumn => users.id, { onDelete: "restrict", onUpdate: "cascade" }),
     comment: text("comment"),
     createdByUserId: text("created_by_user_id")
       .notNull()
@@ -947,6 +950,7 @@ export const attachments = pgTable(
       (): AnyPgColumn => contractVersions.id,
       { onDelete: "restrict", onUpdate: "cascade" },
     ),
+    photoRequirementId: text("photo_requirement_id"),
     previousVersionId: text("previous_version_id").references(
       (): AnyPgColumn => attachments.id,
       { onDelete: "restrict", onUpdate: "cascade" },
@@ -1046,6 +1050,13 @@ export const attachments = pgTable(
   ],
 );
 
+export const productionPlans = pgTable("production_plans", {
+  id: text("id").primaryKey(), projectId: text("project_id").notNull().references(() => projects.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  status: text("status").notNull().default("ACTIVE"), sourceTemplateId: text("source_template_id"), sourceTemplateVersion: integer("source_template_version"),
+  designWeight: numeric("design_weight", { precision: 5, scale: 2 }).notNull().default("0"), productionWeight: numeric("production_weight", { precision: 5, scale: 2 }).notNull().default("100"),
+  createdByUserId: text("created_by_user_id").notNull().references(() => users.id, { onDelete: "restrict", onUpdate: "cascade" }), ...timestamps,
+}, table => [uniqueIndex("production_plans_project_unique").on(table.projectId), index("idx_production_plans_project").on(table.projectId)]);
+
 export const projectStages = pgTable(
   "project_stages",
   {
@@ -1056,12 +1067,19 @@ export const projectStages = pgTable(
         onDelete: "restrict",
         onUpdate: "cascade",
       }),
+    productionPlanId: text("production_plan_id").references(() => productionPlans.id, { onDelete: "restrict", onUpdate: "cascade" }),
     name: text("name").notNull(),
     plannedStart: integer("planned_start"),
     plannedEnd: integer("planned_end"),
     actualStart: integer("actual_start"),
     actualEnd: integer("actual_end"),
     status: text("status").notNull(),
+    weightWithinProject: numeric("weight_within_project", { precision: 5, scale: 2 }).notNull().default("0"),
+    responsibleUserId: text("responsible_user_id").references(() => users.id, { onDelete: "restrict", onUpdate: "cascade" }),
+    clientAcceptanceRequired: integer("client_acceptance_required").notNull().default(0),
+    acceptanceStatus: text("acceptance_status").notNull().default("NOT_REQUIRED"),
+    stageCommercialAmountKopecks: integer("stage_commercial_amount_kopecks"),
+    acceptanceComment: text("acceptance_comment"), acceptedAt: integer("accepted_at"), rejectedAt: integer("rejected_at"), acceptanceByClientId: text("acceptance_by_client_id"), archivedAt: integer("archived_at"),
     responsibleEmployeeId: text("responsible_employee_id").references(
       () => employees.id,
       { onDelete: "restrict", onUpdate: "cascade" },
@@ -1089,11 +1107,15 @@ export const projectDelays = pgTable(
       onDelete: "restrict",
       onUpdate: "cascade",
     }),
+    taskId: text("task_id"),
+    category: text("category").notNull().default("OTHER"),
     reason: text("reason").notNull(),
     startDate: integer("start_date").notNull(),
     endDate: integer("end_date"),
     days: integer("days").notNull(),
     comment: text("comment"),
+    internalComment: text("internal_comment"), clientComment: text("client_comment"), clientVisible: integer("client_visible").notNull().default(0),
+    createdByUserId: text("created_by_user_id").references(() => users.id, { onDelete: "restrict", onUpdate: "cascade" }),
     ...timestamps,
   },
   (table) => [
@@ -1119,6 +1141,11 @@ export const tasks = pgTable(
       onDelete: "restrict",
       onUpdate: "cascade",
     }),
+    productionPlanId: text("production_plan_id").references(() => productionPlans.id, { onDelete: "restrict", onUpdate: "cascade" }), stageId: text("stage_id").references(() => projectStages.id, { onDelete: "restrict", onUpdate: "cascade" }),
+    description: text("description"), position: integer("position").notNull().default(0), progressType: text("progress_type"), unit: text("unit"),
+    plannedQuantity: numeric("planned_quantity", { precision: 14, scale: 2 }), completedQuantity: numeric("completed_quantity", { precision: 14, scale: 2 }),
+    weightWithinStage: numeric("weight_within_stage", { precision: 5, scale: 2 }), plannedStartDate: integer("planned_start_date"), plannedEndDate: integer("planned_end_date"), actualStartDate: integer("actual_start_date"), actualEndDate: integer("actual_end_date"),
+    responsibleUserId: text("responsible_user_id").references(() => users.id, { onDelete: "restrict", onUpdate: "cascade" }), plannedDurationDays: integer("planned_duration_days"), clientVisible: integer("client_visible").notNull().default(1), archivedAt: integer("archived_at"),
     clientId: text("client_id").references(() => clients.id, {
       onDelete: "restrict",
       onUpdate: "cascade",
@@ -1427,6 +1454,8 @@ export const dailyReports = pgTable(
       onDelete: "restrict",
       onUpdate: "cascade",
     }),
+    authorUserId: text("author_user_id").references(() => users.id, { onDelete: "restrict", onUpdate: "cascade" }),
+    commentClientVisible: integer("comment_client_visible").notNull().default(0),
     workersJson: text("workers_json"),
     workCompleted: text("work_completed").notNull(),
     comment: text("comment"),
@@ -1441,6 +1470,52 @@ export const dailyReports = pgTable(
     index("idx_daily_report_creator").on(table.createdByUserId),
   ],
 );
+
+export const taskDependencies = pgTable("task_dependencies", {
+  id:text("id").primaryKey(), projectId:text("project_id").notNull().references(()=>projects.id,{onDelete:"restrict",onUpdate:"cascade"}),
+  predecessorTaskId:text("predecessor_task_id").notNull().references(()=>tasks.id,{onDelete:"restrict",onUpdate:"cascade"}), successorTaskId:text("successor_task_id").notNull().references(()=>tasks.id,{onDelete:"restrict",onUpdate:"cascade"}),
+  type:text("type").notNull().default("FINISH_TO_START"), lagDays:integer("lag_days").notNull().default(0), createdByUserId:text("created_by_user_id").notNull().references(()=>users.id,{onDelete:"restrict",onUpdate:"cascade"}), createdAt:integer("created_at").notNull(),
+},table=>[uniqueIndex("task_dependencies_unique").on(table.predecessorTaskId,table.successorTaskId),index("idx_task_dependencies_predecessor").on(table.predecessorTaskId),index("idx_task_dependencies_successor").on(table.successorTaskId)]);
+
+export const taskContractors = pgTable("task_contractors", {
+  id:text("id").primaryKey(),taskId:text("task_id").notNull().references(()=>tasks.id,{onDelete:"restrict",onUpdate:"cascade"}),contractorAgreementId:text("contractor_agreement_id").notNull().references(()=>contractorAgreements.id,{onDelete:"restrict",onUpdate:"cascade"}),createdAt:integer("created_at").notNull(),
+},table=>[uniqueIndex("task_contractors_unique").on(table.taskId,table.contractorAgreementId)]);
+
+export const dailyReportWorkers = pgTable("daily_report_workers", {
+  id:text("id").primaryKey(),dailyReportId:text("daily_report_id").notNull().references(()=>dailyReports.id,{onDelete:"restrict",onUpdate:"cascade"}),workerType:text("worker_type").notNull(),employeeId:text("employee_id").references(()=>employees.id,{onDelete:"restrict",onUpdate:"cascade"}),contractorId:text("contractor_id").references(()=>contractors.id,{onDelete:"restrict",onUpdate:"cascade"}),createdAt:integer("created_at").notNull(),
+},table=>[index("idx_daily_report_workers_report").on(table.dailyReportId)]);
+
+export const dailyReportTasks = pgTable("daily_report_tasks", {
+  id:text("id").primaryKey(),dailyReportId:text("daily_report_id").notNull().references(()=>dailyReports.id,{onDelete:"restrict",onUpdate:"cascade"}),taskId:text("task_id").notNull().references(()=>tasks.id,{onDelete:"restrict",onUpdate:"cascade"}),createdAt:integer("created_at").notNull(),
+},table=>[uniqueIndex("daily_report_tasks_unique").on(table.dailyReportId,table.taskId)]);
+
+export const taskPhotoRequirements = pgTable("task_photo_requirements", {
+  id:text("id").primaryKey(),taskId:text("task_id").notNull().references(()=>tasks.id,{onDelete:"restrict",onUpdate:"cascade"}),name:text("name").notNull(),description:text("description"),type:text("type").notNull().default("HIDDEN_WORK"),requiredBeforeCompletion:integer("required_before_completion").notNull().default(1),position:integer("position").notNull(),...timestamps,
+},table=>[index("idx_photo_requirements_task").on(table.taskId,table.position)]);
+
+export const productionPlanTemplates = pgTable("production_plan_templates", {
+  id:text("id").primaryKey(),name:text("name").notNull(),status:text("status").notNull().default("ACTIVE"),version:integer("version").notNull().default(1),createdByUserId:text("created_by_user_id").notNull().references(()=>users.id,{onDelete:"restrict",onUpdate:"cascade"}),archivedAt:integer("archived_at"),...timestamps,
+},table=>[index("idx_production_templates_status").on(table.status)]);
+
+export const productionStageTemplates = pgTable("production_stage_templates", {
+  id:text("id").primaryKey(),templateId:text("template_id").notNull().references(()=>productionPlanTemplates.id,{onDelete:"restrict",onUpdate:"cascade"}),name:text("name").notNull(),position:integer("position").notNull(),weight:numeric("weight",{precision:5,scale:2}).notNull(),clientAcceptanceRequired:integer("client_acceptance_required").notNull().default(0),...timestamps,
+});
+
+export const productionTaskTemplates = pgTable("production_task_templates", {
+  id:text("id").primaryKey(),stageTemplateId:text("stage_template_id").notNull().references(()=>productionStageTemplates.id,{onDelete:"restrict",onUpdate:"cascade"}),name:text("name").notNull(),description:text("description"),position:integer("position").notNull(),weight:numeric("weight",{precision:5,scale:2}).notNull(),progressType:text("progress_type").notNull(),unit:text("unit"),typicalQuantity:numeric("typical_quantity",{precision:14,scale:2}),typicalDurationDays:integer("typical_duration_days").notNull(),clientVisible:integer("client_visible").notNull().default(1),...timestamps,
+});
+
+export const productionTaskDependencyTemplates = pgTable("production_task_dependency_templates", {
+  id:text("id").primaryKey(),templateId:text("template_id").notNull().references(()=>productionPlanTemplates.id,{onDelete:"restrict",onUpdate:"cascade"}),predecessorTaskTemplateId:text("predecessor_task_template_id").notNull().references(()=>productionTaskTemplates.id,{onDelete:"restrict",onUpdate:"cascade"}),successorTaskTemplateId:text("successor_task_template_id").notNull().references(()=>productionTaskTemplates.id,{onDelete:"restrict",onUpdate:"cascade"}),lagDays:integer("lag_days").notNull().default(0),createdAt:integer("created_at").notNull(),
+});
+
+export const productionPhotoRequirementTemplates = pgTable("production_photo_requirement_templates", {
+  id:text("id").primaryKey(),taskTemplateId:text("task_template_id").notNull().references(()=>productionTaskTemplates.id,{onDelete:"restrict",onUpdate:"cascade"}),name:text("name").notNull(),description:text("description"),position:integer("position").notNull(),requiredBeforeCompletion:integer("required_before_completion").notNull().default(1),createdAt:integer("created_at").notNull(),
+});
+
+export const projectScheduleEvents = pgTable("project_schedule_events", {
+  id:text("id").primaryKey(),projectId:text("project_id").notNull().references(()=>projects.id,{onDelete:"restrict",onUpdate:"cascade"}),actorUserId:text("actor_user_id").notNull().references(()=>users.id,{onDelete:"restrict",onUpdate:"cascade"}),type:text("type").notNull(),previousForecastEndDate:integer("previous_forecast_end_date"),newForecastEndDate:integer("new_forecast_end_date"),reason:text("reason"),metadataJson:jsonb("metadata_json").notNull().default({}),occurredAt:integer("occurred_at").notNull(),
+},table=>[index("idx_schedule_events_project_time").on(table.projectId,table.occurredAt)]);
 
 export const obligations = pgTable(
   "obligations",
