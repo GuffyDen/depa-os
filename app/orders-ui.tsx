@@ -3,9 +3,11 @@ import { FormEvent, useEffect, useRef, useState } from "react";
 import type { AuthUser } from "../lib/auth";
 import type { AccessProfile } from "../lib/permission-definitions";
 import { calendarRange, InspectionCalendar } from "./inspection-calendar";
+import { UniversalOrderForm, type OrderPrefill } from "./order-create-form";
+import { DesignOrderCard } from "./design-order-card";
+import { RenovationOrderCard } from "./renovation-order-card";
 
 export type User = { id: string; name: string };
-type Client = { id: string; fullName: string; phone: string };
 export type SchedulePreset = {
   date: string;
   startTime: string;
@@ -30,7 +32,7 @@ export type Order = {
   clientPhone: string;
   type: string;
   title: string;
-  priceKopecks: number;
+  priceKopecks: number | null;
   status: string;
   responsibleUserId: string;
   responsibleName: string;
@@ -42,10 +44,10 @@ export type Order = {
   internalComment: string | null;
   createdAt: number;
   updatedAt: number;
-  paidKopecks: number;
-  remainingKopecks: number;
-  overpaymentKopecks: number;
-  paymentStatus: string;
+  paidKopecks: number | null;
+  remainingKopecks: number | null;
+  overpaymentKopecks: number | null;
+  paymentStatus: string | null;
   inspection: {
     id: string;
     residentialComplex: string | null;
@@ -58,6 +60,26 @@ export type Order = {
     inspectorUserId: string;
     inspectorName: string;
     resultComment: string | null;
+  } | null;
+  design: {
+    id: string;
+    residentialComplex: string | null;
+    address: string;
+    apartmentNumber: string;
+    areaSqm: number | null;
+    status: string;
+    plannedStartDate: number | null;
+    plannedEndDate: number | null;
+    designerEmployeeId: string | null;
+    designerName: string | null;
+  } | null;
+  renovation: {
+    id: string;
+    residentialComplex: string | null;
+    address: string;
+    apartmentNumber: string;
+    areaSqm: number | null;
+    projectId: string | null;
   } | null;
   defectCount: number;
   photoCount: number;
@@ -129,6 +151,7 @@ const PAYMENT: Record<string, string> = {
 };
 const TYPE: Record<string, string> = {
   INSPECTION: "Приёмка квартиры",
+  DESIGN: "Дизайн-проект",
   RENOVATION: "Ремонт квартиры",
 };
 const CATEGORY: Record<string, string> = {
@@ -159,7 +182,8 @@ const HISTORY: Record<string, string> = {
   INSPECTION_DEFECT_STATUS_CHANGED: "Изменён статус замечания",
   ATTACHMENT_LINKED: "Добавлен файл",
 };
-function money(value: number) {
+function money(value: number | null) {
+  if (value == null) return "Скрыто правами доступа";
   return new Intl.NumberFormat("ru-RU", {
     style: "currency",
     currency: "RUB",
@@ -225,6 +249,15 @@ export function schedulePreset(
 }
 export function rangeLabel(order: Order) {
   return `${clock(order.inspection?.scheduledStartAt ?? order.scheduledAt)}–${clock(order.inspection?.scheduledEndAt ?? null)}`;
+}
+function orderAddress(order: Order) {
+  const location = order.inspection || order.design || order.renovation;
+  if (!location) return "Адрес не указан";
+  return `${location.residentialComplex ? `ЖК ${location.residentialComplex} · ` : ""}${location.address} · кв. ${location.apartmentNumber}`;
+}
+function orderDate(order: Order) {
+  if (order.type === "DESIGN") return order.design?.plannedEndDate ?? null;
+  return order.inspection?.scheduledStartAt ?? order.scheduledAt;
 }
 export class ApiError extends Error {
   constructor(
@@ -365,284 +398,6 @@ async function uploadPhoto(
     }),
   });
   return attachmentId;
-}
-
-function OrderForm({
-  currentUser,
-  access,
-  users,
-  initialClientId,
-  initialSchedule,
-  onClose,
-  onSaved,
-}: {
-  currentUser: AuthUser;
-  access: AccessProfile;
-  users: User[];
-  initialClientId?: string | null;
-  initialSchedule?: SchedulePreset | null;
-  onClose: () => void;
-  onSaved: (detail: Detail) => void;
-}) {
-  const [query, setQuery] = useState(""),
-    [clients, setClients] = useState<Client[]>([]),
-    [clientId, setClientId] = useState(initialClientId || ""),
-    [error, setError] = useState(""),
-    [saving, setSaving] = useState(false),
-    [conflict, setConflict] = useState<ScheduleConflict | null>(null),
-    formRef = useRef<HTMLFormElement>(null),
-    startRef = useRef<HTMLInputElement>(null),
-    preset = initialSchedule || schedulePreset();
-  useEffect(() => {
-    if (initialClientId) return;
-    if (!query.trim()) return;
-    const controller = new AbortController(),
-      timer = setTimeout(
-        () =>
-          fetch(
-            `/api/clients?search=${encodeURIComponent(query)}&status=ACTIVE&limit=8`,
-            { signal: controller.signal },
-          )
-            .then((r) => json<{ items: Client[] }>(r))
-            .then((d) => setClients(d.items))
-            .catch(() => undefined),
-        220,
-      );
-    return () => {
-      clearTimeout(timer);
-      controller.abort();
-    };
-  }, [query, initialClientId]);
-  async function save(form: HTMLFormElement, allowConflict: boolean) {
-    setSaving(true);
-    setError("");
-    if (!allowConflict) setConflict(null);
-    const values = Object.fromEntries(new FormData(form)),
-      scheduledStartAt = dateKeyToEpoch(
-        String(values.scheduleDate),
-        String(values.startTime),
-      ),
-      scheduledEndAt = dateKeyToEpoch(
-        String(values.scheduleDate),
-        String(values.endTime),
-      );
-    try {
-      onSaved(
-        await json<Detail>(
-          await fetch("/api/orders", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              ...values,
-              clientId,
-              scheduledStartAt,
-              scheduledEndAt,
-              allowConflict,
-              type: "INSPECTION",
-            }),
-          }),
-        ),
-      );
-    } catch (reason) {
-      if (
-        reason instanceof ApiError &&
-        reason.code === "SCHEDULE_CONFLICT" &&
-        reason.conflict
-      )
-        setConflict(reason.conflict);
-      else
-        setError(
-          reason instanceof Error
-            ? reason.message
-            : "Не удалось создать приёмку.",
-        );
-    } finally {
-      setSaving(false);
-    }
-  }
-  return (
-    <div
-      className="modal-wrap order-drawer-wrap"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <aside className="order-drawer">
-        <header>
-          <div>
-            <span className="eyebrow">НОВЫЙ ЗАКАЗ</span>
-            <h3>Приёмка квартиры</h3>
-          </div>
-          <button aria-label="Закрыть форму" onClick={onClose}>×</button>
-        </header>
-        <form
-          ref={formRef}
-          className="order-form"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void save(event.currentTarget, false);
-          }}
-        >
-          <label className="wide">
-            <span>Клиент *</span>
-            {initialClientId ? (
-              <input value="Клиент выбран из карточки" readOnly />
-            ) : (
-              <>
-                <input
-                  value={query}
-                  onChange={(e) => {
-                    setQuery(e.target.value);
-                    setClientId("");
-                    if (!e.target.value.trim()) setClients([]);
-                  }}
-                  placeholder="ФИО или телефон"
-                  required={!clientId}
-                />
-                {clients.map((c) => (
-                  <button
-                    type="button"
-                    className={
-                      clientId === c.id
-                        ? "client-option selected"
-                        : "client-option"
-                    }
-                    key={c.id}
-                    onClick={() => {
-                      setClientId(c.id);
-                      setQuery(`${c.fullName} · ${c.phone}`);
-                      setClients([]);
-                    }}
-                  >
-                    <b>{c.fullName}</b>
-                    <span>{c.phone}</span>
-                  </button>
-                ))}
-              </>
-            )}
-          </label>
-          <label>
-            <span>ЖК</span>
-            <input name="residentialComplex" />
-          </label>
-          <label>
-            <span>Адрес *</span>
-            <input name="address" required />
-          </label>
-          <label>
-            <span>Квартира *</span>
-            <input name="apartmentNumber" required />
-          </label>
-          <label>
-            <span>Площадь, м²</span>
-            <input name="areaSqm" inputMode="decimal" />
-          </label>
-          <fieldset className="wide schedule-fields">
-            <legend>Расписание</legend>
-            <label>
-              <span>Дата *</span>
-              <input
-                name="scheduleDate"
-                type="date"
-                defaultValue={preset.date}
-                required
-              />
-            </label>
-            <label>
-              <span>Начало *</span>
-              <input
-                ref={startRef}
-                name="startTime"
-                type="time"
-                step="900"
-                defaultValue={preset.startTime}
-                required
-              />
-            </label>
-            <label>
-              <span>Окончание *</span>
-              <input
-                name="endTime"
-                type="time"
-                step="900"
-                defaultValue={preset.endTime}
-                required
-              />
-            </label>
-          </fieldset>
-          <label>
-            <span>Стоимость *</span>
-            <input
-              name="price"
-              inputMode="decimal"
-              required
-              placeholder="7 000"
-            />
-          </label>
-          <label>
-            <span>Ответственный *</span>
-            <select
-              name="responsibleUserId"
-              defaultValue={currentUser.id}
-              disabled={!access.actions["orders.edit"]}
-            >
-              {users.map((u) => (
-                <option key={u.id} value={u.id}>
-                  {u.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            <span>Приёмку проводит *</span>
-            <select name="inspectorUserId" defaultValue={currentUser.id}>
-              {users.map((u) => (
-                <option key={u.id} value={u.id}>
-                  {u.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="wide">
-            <span>Комментарий клиента / менеджера</span>
-            <textarea name="comment" rows={4} />
-          </label>
-          <label className="wide">
-            <span>Внутренний комментарий</span>
-            <textarea name="internalComment" rows={3} />
-          </label>
-          {conflict ? (
-            <div className="wide">
-              <ConflictWarning
-                conflict={conflict}
-                busy={saving}
-                onChangeTime={() => {
-                  setConflict(null);
-                  startRef.current?.focus();
-                }}
-                onConfirm={() => {
-                  if (formRef.current) void save(formRef.current, true);
-                }}
-              />
-            </div>
-          ) : null}
-          {error ? (
-            <div className="form-error wide" role="alert">
-              {error}
-            </div>
-          ) : null}
-          <div className="order-form-actions wide">
-            <button type="button" className="secondary" onClick={onClose}>
-              Отмена
-            </button>
-            <button className="primary" disabled={saving || !clientId}>
-              {saving ? "Создаём…" : "Создать приёмку"}
-            </button>
-          </div>
-        </form>
-      </aside>
-    </div>
-  );
 }
 
 function ScheduleEditor({
@@ -786,15 +541,23 @@ function ScheduleEditor({
 function OrderCard({
   id,
   users,
+  access,
   onClose,
   onChanged,
   onPayment,
+  onOpenOrder,
+  onCreateRelated,
+  onOpenProject = () => window.location.assign("/projects"),
 }: {
   id: string;
   users: User[];
+  access: AccessProfile;
   onClose: () => void;
   onChanged: () => void;
   onPayment: (order: Order) => void;
+  onOpenOrder: (orderId: string) => void;
+  onCreateRelated: (type: "DESIGN" | "RENOVATION", order: Order) => void;
+  onOpenProject?: (projectId: string) => void;
 }) {
   const [detail, setDetail] = useState<Detail | null>(null),
     [tab, setTab] = useState("overview"),
@@ -886,7 +649,9 @@ function OrderCard({
         <aside className="order-card">
           <header>
             <h3>Заказ</h3>
-            <button aria-label="Закрыть карточку" onClick={onClose}>×</button>
+            <button aria-label="Закрыть карточку" onClick={onClose}>
+              ×
+            </button>
           </header>
           <div className={error ? "form-error" : "finance-loading"}>
             {error || "Загружаем заказ…"}
@@ -903,6 +668,36 @@ function OrderCard({
       ["files", "Файлы"],
       ["history", "История"],
     ];
+  if (o.type === "DESIGN")
+    return (
+      <DesignOrderCard
+        orderId={id}
+        onClose={onClose}
+        onChanged={onChanged}
+        onOpenOrder={onOpenOrder}
+        onPayment={(designOrder) =>
+          onPayment({
+            ...o,
+            priceKopecks: designOrder.priceKopecks ?? 0,
+            paidKopecks: designOrder.paidKopecks ?? 0,
+            remainingKopecks: designOrder.remainingKopecks ?? 0,
+            overpaymentKopecks: designOrder.overpaymentKopecks ?? 0,
+          })
+        }
+      />
+    );
+  if (o.type === "RENOVATION")
+    return (
+      <RenovationOrderCard
+        order={o}
+        canAddPayment={detail.capabilities.addPayment}
+        canCreateProject={Boolean(access.actions["projects.create"])}
+        onClose={onClose}
+        onPayment={onPayment}
+        onOpenProject={onOpenProject}
+        onChanged={onChanged}
+      />
+    );
   return (
     <div
       className="modal-wrap order-drawer-wrap"
@@ -926,9 +721,25 @@ function OrderCard({
             </span>
           </div>
           <div className="order-card-actions">
-            {detail.capabilities.addPayment && o.remainingKopecks > 0 ? (
+            {detail.capabilities.addPayment && (o.remainingKopecks ?? 0) > 0 ? (
               <button className="primary" onClick={() => onPayment(o)}>
                 ＋ Добавить оплату
+              </button>
+            ) : null}
+            {detail.capabilities.edit && o.type === "INSPECTION" ? (
+              <button
+                className="secondary"
+                onClick={() => onCreateRelated("DESIGN", o)}
+              >
+                Создать дизайн-проект
+              </button>
+            ) : null}
+            {detail.capabilities.edit && o.type === "INSPECTION" ? (
+              <button
+                className="secondary"
+                onClick={() => onCreateRelated("RENOVATION", o)}
+              >
+                Создать заказ на ремонт
               </button>
             ) : null}
             {detail.capabilities.edit &&
@@ -957,7 +768,9 @@ function OrderCard({
                 Завершить приёмку
               </button>
             ) : null}
-            <button aria-label="Закрыть карточку" onClick={onClose}>×</button>
+            <button aria-label="Закрыть карточку" onClick={onClose}>
+              ×
+            </button>
           </div>
         </header>
         {error ? <div className="form-error order-error">{error}</div> : null}
@@ -1016,7 +829,9 @@ function OrderCard({
                 <article className="panel">
                   <span>{o.overpaymentKopecks ? "Переплата" : "Остаток"}</span>
                   <b>{money(o.overpaymentKopecks || o.remainingKopecks)}</b>
-                  <small>{PAYMENT[o.paymentStatus]}</small>
+                  <small>
+                    {o.paymentStatus ? PAYMENT[o.paymentStatus] : "Скрыто"}
+                  </small>
                 </article>
               </section>
               <section className="panel order-address">
@@ -1310,15 +1125,19 @@ export function OrdersScreen({
   access,
   initialOrderId = null,
   initialClientId = null,
+  initialSourceLeadId = null,
   onOrderClosed,
   onPayment,
+  onOpenProject = () => window.location.assign("/projects"),
 }: {
   currentUser: AuthUser;
   access: AccessProfile;
   initialOrderId?: string | null;
   initialClientId?: string | null;
+  initialSourceLeadId?: string | null;
   onOrderClosed?: () => void;
   onPayment: (order: Order) => void;
+  onOpenProject?: (projectId: string) => void;
 }) {
   const [items, setItems] = useState<Order[]>([]),
     [meta, setMeta] = useState<Omit<ListData, "items"> | null>(null),
@@ -1334,6 +1153,19 @@ export function OrdersScreen({
     [error, setError] = useState(""),
     [form, setForm] = useState(Boolean(initialClientId)),
     [formPreset, setFormPreset] = useState<SchedulePreset | null>(null),
+    [formContext, setFormContext] = useState<{
+      clientId: string | null;
+      type: "INSPECTION" | "DESIGN" | "RENOVATION" | null;
+      sourceOrderId: string | null;
+      sourceLeadId: string | null;
+      prefill: OrderPrefill | null;
+    }>({
+      clientId: initialClientId,
+      type: null,
+      sourceOrderId: null,
+      sourceLeadId: initialSourceLeadId,
+      prefill: null,
+    }),
     [openId, setOpenId] = useState<string | null>(initialOrderId),
     [revision, setRevision] = useState(0),
     [view, setView] = useState<"list" | "calendar">("list"),
@@ -1439,6 +1271,31 @@ export function OrdersScreen({
   }
   function openCreate(preset: SchedulePreset | null = null) {
     setFormPreset(preset);
+    setFormContext({
+      clientId: initialClientId,
+      type: preset ? "INSPECTION" : null,
+      sourceOrderId: null,
+      sourceLeadId: initialSourceLeadId,
+      prefill: null,
+    });
+    setForm(true);
+  }
+  function createRelated(type: "DESIGN" | "RENOVATION", order: Order) {
+    const location = order.inspection;
+    setFormPreset(null);
+    setFormContext({
+      clientId: order.clientId,
+      type,
+      sourceOrderId: order.id,
+      sourceLeadId: null,
+      prefill: {
+        residentialComplex: location?.residentialComplex,
+        address: location?.address,
+        apartmentNumber: location?.apartmentNumber,
+        areaSqm: location?.areaSqm,
+        responsibleUserId: order.responsibleUserId,
+      },
+    });
     setForm(true);
   }
   const users = calendarUsers.length
@@ -1608,17 +1465,12 @@ export function OrdersScreen({
                 </span>
                 <span>
                   <b>{TYPE[o.type]}</b>
-                  <small>
-                    {o.inspection?.residentialComplex
-                      ? `ЖК ${o.inspection.residentialComplex} · `
-                      : ""}
-                    {o.inspection?.address} · кв.{" "}
-                    {o.inspection?.apartmentNumber}
-                  </small>
+                  <small>{orderAddress(o)}</small>
                 </span>
                 <span>{o.clientName}</span>
                 <span>
-                  {rangeLabel(o)} · {date(o.scheduledAt)}
+                  {o.type === "INSPECTION" ? `${rangeLabel(o)} · ` : ""}
+                  {date(orderDate(o))}
                 </span>
                 <span>{o.responsibleName}</span>
                 <span>
@@ -1629,11 +1481,15 @@ export function OrdersScreen({
                   </em>
                 </span>
                 <span>
-                  <em
-                    className={`payment-status payment-${o.paymentStatus.toLowerCase()}`}
-                  >
-                    {PAYMENT[o.paymentStatus]}
-                  </em>
+                  {o.paymentStatus ? (
+                    <em
+                      className={`payment-status payment-${o.paymentStatus.toLowerCase()}`}
+                    >
+                      {PAYMENT[o.paymentStatus]}
+                    </em>
+                  ) : (
+                    <small>Скрыто</small>
+                  )}
                 </span>
                 <span>
                   <b>{money(o.priceKopecks)}</b>
@@ -1672,21 +1528,29 @@ export function OrdersScreen({
         />
       </div>
       {form && meta ? (
-        <OrderForm
+        <UniversalOrderForm
           currentUser={currentUser}
           access={access}
           users={meta.responsibleUsers}
-          initialClientId={initialClientId}
+          initialClientId={formContext.clientId}
+          initialType={formContext.type}
           initialSchedule={formPreset}
+          sourceLeadId={formContext.sourceLeadId}
+          sourceOrderId={formContext.sourceOrderId}
+          prefill={formContext.prefill}
           onClose={() => {
             setForm(false);
             setFormPreset(null);
           }}
-          onSaved={(d) => {
+          onCreated={(orderId) => {
             setForm(false);
             setFormPreset(null);
-            setOpenId(d.order.id);
+            setOpenId(orderId);
             setRevision((x) => x + 1);
+          }}
+          onOpenExisting={(orderId) => {
+            setForm(false);
+            setOpenId(orderId);
           }}
         />
       ) : null}
@@ -1694,12 +1558,16 @@ export function OrdersScreen({
         <OrderCard
           id={openId}
           users={users}
+          access={access}
           onClose={() => {
             setOpenId(null);
             onOrderClosed?.();
           }}
           onChanged={() => setRevision((x) => x + 1)}
           onPayment={onPayment}
+          onOpenOrder={setOpenId}
+          onOpenProject={onOpenProject}
+          onCreateRelated={createRelated}
         />
       ) : null}
     </section>

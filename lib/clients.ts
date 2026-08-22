@@ -167,9 +167,13 @@ export async function getClient(actor: AuthUser, clientId: string) {
   const assignedTaskWhere = actor.role === "OWNER" || access.scopes.tasks === "ALL" ? "" : " AND (t.assignee_employee_id=$2 OR t.created_by_user_id=$3)";
   const assignedDocumentWhere = actor.role === "OWNER" || access.scopes.documents === "ALL" ? "" : ` AND (a.entity_type='Client' OR EXISTS (SELECT 1 FROM projects p LEFT JOIN user_project_access upa ON upa.project_id=p.id AND upa.user_id=$2 WHERE p.id=a.project_id AND (p.responsible_user_id=$2 OR upa.id IS NOT NULL OR p.manager_employee_id=$3 OR p.foreman_employee_id=$3)))`;
   const assignedLeadWhere = actor.role === "OWNER" || access.scopes.crm === "ALL" ? "" : " AND l.responsible_user_id=$2";
+  const assignedOrderWhere = actor.role === "OWNER" || access.scopes.orders === "ALL" ? "" : ` AND (o.responsible_user_id=$2 OR i.inspector_user_id=$2 OR du.id=$2 OR EXISTS(SELECT 1 FROM design_project_stages ds WHERE ds.design_project_id=dp.id AND ds.responsible_user_id=$2 AND ds.archived_at IS NULL))`;
+  const designOrderWhere = actor.role === "OWNER" || access.actions["design.view"] ? "" : " AND o.type<>'DESIGN'";
   const [projects, orders, finances, tasks, documents, leads] = await Promise.all([
     canReadProjects ? query<{ id: string; name: string; address: string | null; status: string }>(`SELECT p.id,p.name,p.address,p.status FROM projects p WHERE p.client_id=$1${assignedProjectWhere} ORDER BY p.created_at DESC`, assignedProjectWhere ? [clientId, actor.id, actor.employeeId] : [clientId]) : Promise.resolve([]),
-    canReadOrders ? query<{ id: string; number: string; title: string; status: string; amountKopecks: number }>("SELECT id,number,title,status,amount_kopecks AS \"amountKopecks\" FROM orders WHERE client_id=$1 ORDER BY created_at DESC", [clientId]) : Promise.resolve([]),
+    canReadOrders ? query<{ id: string; number: string; type: string; title: string; status: string; amountKopecks: number }>(`SELECT o.id,o.number,o.type,o.title,o.status,o.amount_kopecks AS "amountKopecks" FROM orders o
+      LEFT JOIN inspections i ON i.order_id=o.id LEFT JOIN design_projects dp ON dp.order_id=o.id LEFT JOIN users du ON du.employee_id=dp.designer_employee_id
+      WHERE o.client_id=$1${assignedOrderWhere}${designOrderWhere} ORDER BY o.created_at DESC`, assignedOrderWhere ? [clientId, actor.id] : [clientId]) : Promise.resolve([]),
     canReadFinances ? query<{ id: string; transactionDate: number; amountKopecks: number; type: string; purpose: string | null; title: string; projectName: string | null }>(`SELECT ft.id,ft.transaction_date AS "transactionDate",ft.amount_kopecks AS "amountKopecks",ft.type,ft.purpose,ft.title,p.name AS "projectName"
       FROM financial_transactions ft LEFT JOIN projects p ON p.id=ft.project_id WHERE ft.client_id=$1 AND (ft.type IN ('INCOME','REFUND') OR ft.show_to_client=1) ORDER BY ft.transaction_date DESC,ft.created_at DESC`, [clientId]) : Promise.resolve([]),
     canReadTasks ? query<{ id: string; title: string; deadline: number | null; status: string }>(`SELECT t.id,t.title,t.deadline,t.status FROM tasks t WHERE t.client_id=$1${assignedTaskWhere} ORDER BY t.created_at DESC`, assignedTaskWhere ? [clientId, actor.employeeId, actor.id] : [clientId]) : Promise.resolve([]),
@@ -177,7 +181,8 @@ export async function getClient(actor: AuthUser, clientId: string) {
       WHERE a.upload_status IN ('UPLOADED','LINKED') AND ((a.entity_type='Client' AND a.entity_id=$1) OR a.project_id IN (SELECT id FROM projects WHERE client_id=$1))${assignedDocumentWhere} ORDER BY a.created_at DESC`, assignedDocumentWhere ? [clientId, actor.id, actor.employeeId] : [clientId]) : Promise.resolve([]),
     canReadCrm ? query<{id:string;name:string;phone:string;stage:string;source:string;createdAt:number}>(`SELECT l.id,l.name,l.phone,l.stage,l.source,l.created_at AS "createdAt" FROM leads l WHERE l.linked_client_id=$1${assignedLeadWhere} ORDER BY l.created_at DESC`,assignedLeadWhere?[clientId,actor.id]:[clientId]):Promise.resolve([]),
   ]);
-  return { client: serializeClient(row), projects, orders, finances, tasks, documents, leads };
+  const safeOrders = orders.map((order) => ({ ...order, amountKopecks: actor.role === "OWNER" || (order.type === "DESIGN" ? access.actions["design.viewFinance"] : access.actions["orders.viewFinance"]) ? order.amountKopecks : null }));
+  return { client: serializeClient(row), projects, orders: safeOrders, finances, tasks, documents, leads };
 }
 
 export async function updateClient(actor: AuthUser, clientId: string, input: ClientInput) {

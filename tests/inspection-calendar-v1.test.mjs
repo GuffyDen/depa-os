@@ -23,7 +23,7 @@ test("calendar reads and conflict checks are scoped on the backend", async () =>
   assert.match(orders, /export async function listInspectionCalendar/);
   assert.match(
     orders,
-    /addScope\(\s*actor,\s*access\.scopes\.clients\s*===\s*"ALL"/,
+    /addScope\(\s*actor,\s*access\.scopes\.orders\s*===\s*"ALL"/,
   );
   assert.match(orders, /i\.scheduled_start_at<\$2 AND i\.scheduled_end_at>\$3/);
   assert.match(orders, /code:\s*"SCHEDULE_CONFLICT"/);

@@ -94,7 +94,9 @@ export const orders = pgTable(
         onDelete: "restrict",
         onUpdate: "cascade",
       }),
-    type: text("type", { enum: ["INSPECTION", "RENOVATION"] }).notNull(),
+    type: text("type", {
+      enum: ["INSPECTION", "DESIGN", "RENOVATION"],
+    }).notNull(),
     title: text("title").notNull(),
     amountKopecks: integer("amount_kopecks").notNull(),
     status: text("status", {
@@ -118,6 +120,14 @@ export const orders = pgTable(
         onDelete: "restrict",
         onUpdate: "cascade",
       }),
+    sourceLeadId: text("source_lead_id").references(
+      (): AnyPgColumn => leads.id,
+      { onDelete: "restrict", onUpdate: "cascade" },
+    ),
+    sourceOrderId: text("source_order_id").references(
+      (): AnyPgColumn => orders.id,
+      { onDelete: "restrict", onUpdate: "cascade" },
+    ),
     ...timestamps,
   },
   (table) => [
@@ -128,15 +138,176 @@ export const orders = pgTable(
       table.scheduledAt,
     ),
     index("idx_orders_status_scheduled").on(table.status, table.scheduledAt),
+    index("idx_orders_type").on(table.type),
+    index("idx_orders_source_lead").on(table.sourceLeadId),
+    index("idx_orders_source_order").on(table.sourceOrderId),
     check(
       "orders_type_check",
-      sql`${table.type} IN ('INSPECTION','RENOVATION')`,
+      sql`${table.type} IN ('INSPECTION','DESIGN','RENOVATION')`,
     ),
     check(
       "orders_status_check",
       sql`${table.status} IN ('NEW','SCHEDULED','IN_PROGRESS','COMPLETED','CANCELLED')`,
     ),
     check("orders_amount_check", sql`${table.amountKopecks} >= 0`),
+  ],
+);
+
+export const designProjects = pgTable(
+  "design_projects",
+  {
+    id: text("id").primaryKey(),
+    orderId: text("order_id")
+      .notNull()
+      .references(() => orders.id, {
+        onDelete: "restrict",
+        onUpdate: "cascade",
+      }),
+    residentialComplex: text("residential_complex"),
+    residentialComplexId: text("residential_complex_id"),
+    address: text("address").notNull(),
+    apartmentNumber: text("apartment_number").notNull(),
+    areaSqm: numeric("area_sqm", { precision: 10, scale: 2 }),
+    designerEmployeeId: text("designer_employee_id").references(
+      () => employees.id,
+      { onDelete: "restrict", onUpdate: "cascade" },
+    ),
+    plannedStartDate: integer("planned_start_date"),
+    plannedEndDate: integer("planned_end_date"),
+    actualEndDate: integer("actual_end_date"),
+    status: text("status", {
+      enum: [
+        "PLANNING",
+        "IN_PROGRESS",
+        "WAITING_CLIENT",
+        "COMPLETED",
+        "PAUSED",
+        "CANCELLED",
+      ],
+    })
+      .notNull()
+      .default("PLANNING"),
+    comment: text("comment"),
+    ...timestamps,
+  },
+  (table) => [
+    unique("design_projects_order_unique").on(table.orderId),
+    index("idx_design_projects_designer").on(table.designerEmployeeId),
+    index("idx_design_projects_status").on(table.status),
+    index("idx_design_projects_planned_end").on(table.plannedEndDate),
+    check(
+      "design_projects_area_check",
+      sql`${table.areaSqm} IS NULL OR ${table.areaSqm} > 0`,
+    ),
+    check(
+      "design_projects_status_check",
+      sql`${table.status} IN ('PLANNING','IN_PROGRESS','WAITING_CLIENT','COMPLETED','PAUSED','CANCELLED')`,
+    ),
+  ],
+);
+
+export const designProjectStages = pgTable(
+  "design_project_stages",
+  {
+    id: text("id").primaryKey(),
+    designProjectId: text("design_project_id")
+      .notNull()
+      .references(() => designProjects.id, {
+        onDelete: "restrict",
+        onUpdate: "cascade",
+      }),
+    name: text("name").notNull(),
+    position: integer("position").notNull(),
+    status: text("status", {
+      enum: ["NOT_STARTED", "IN_PROGRESS", "WAITING_CLIENT", "COMPLETED"],
+    })
+      .notNull()
+      .default("NOT_STARTED"),
+    plannedStartDate: integer("planned_start_date"),
+    plannedEndDate: integer("planned_end_date"),
+    completedAt: integer("completed_at"),
+    responsibleUserId: text("responsible_user_id").references(() => users.id, {
+      onDelete: "restrict",
+      onUpdate: "cascade",
+    }),
+    comment: text("comment"),
+    archivedAt: integer("archived_at"),
+    ...timestamps,
+  },
+  (table) => [
+    index("idx_design_stages_project_position").on(
+      table.designProjectId,
+      table.position,
+    ),
+    index("idx_design_stages_status").on(table.status),
+    check("design_project_stages_position_check", sql`${table.position} >= 0`),
+    check(
+      "design_project_stages_status_check",
+      sql`${table.status} IN ('NOT_STARTED','IN_PROGRESS','WAITING_CLIENT','COMPLETED')`,
+    ),
+  ],
+);
+
+export const designProjectEvents = pgTable(
+  "design_project_events",
+  {
+    id: text("id").primaryKey(),
+    designProjectId: text("design_project_id")
+      .notNull()
+      .references(() => designProjects.id, {
+        onDelete: "restrict",
+        onUpdate: "cascade",
+      }),
+    orderId: text("order_id")
+      .notNull()
+      .references(() => orders.id, {
+        onDelete: "restrict",
+        onUpdate: "cascade",
+      }),
+    actorUserId: text("actor_user_id")
+      .notNull()
+      .references(() => users.id, {
+        onDelete: "restrict",
+        onUpdate: "cascade",
+      }),
+    type: text("type").notNull(),
+    occurredAt: integer("occurred_at").notNull(),
+    metadataJson: jsonb("metadata_json")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+  },
+  (table) => [
+    index("idx_design_events_project_time").on(
+      table.designProjectId,
+      table.occurredAt,
+    ),
+  ],
+);
+
+export const renovationOrderDetails = pgTable(
+  "renovation_order_details",
+  {
+    id: text("id").primaryKey(),
+    orderId: text("order_id")
+      .notNull()
+      .references(() => orders.id, {
+        onDelete: "restrict",
+        onUpdate: "cascade",
+      }),
+    residentialComplex: text("residential_complex"),
+    residentialComplexId: text("residential_complex_id"),
+    address: text("address").notNull(),
+    apartmentNumber: text("apartment_number").notNull(),
+    areaSqm: numeric("area_sqm", { precision: 10, scale: 2 }),
+    ...timestamps,
+  },
+  (table) => [
+    unique("renovation_order_details_order_unique").on(table.orderId),
+    check(
+      "renovation_order_details_area_check",
+      sql`${table.areaSqm} IS NULL OR ${table.areaSqm} > 0`,
+    ),
   ],
 );
 
@@ -308,6 +479,9 @@ export const projects = pgTable(
     ),
     index("idx_projects_client").on(table.clientId),
     index("idx_projects_order").on(table.orderId),
+    uniqueIndex("idx_projects_order_unique")
+      .on(table.orderId)
+      .where(sql`${table.orderId} IS NOT NULL`),
     index("idx_projects_manager").on(table.managerEmployeeId),
     index("idx_projects_foreman").on(table.foremanEmployeeId),
     index("idx_projects_responsible_status_created").on(
@@ -684,6 +858,22 @@ export const attachments = pgTable(
       onDelete: "restrict",
       onUpdate: "cascade",
     }),
+    designProjectId: text("design_project_id").references(
+      () => designProjects.id,
+      { onDelete: "restrict", onUpdate: "cascade" },
+    ),
+    designStageId: text("design_stage_id").references(
+      () => designProjectStages.id,
+      { onDelete: "restrict", onUpdate: "cascade" },
+    ),
+    previousVersionId: text("previous_version_id").references(
+      (): AnyPgColumn => attachments.id,
+      { onDelete: "restrict", onUpdate: "cascade" },
+    ),
+    logicalName: text("logical_name"),
+    version: integer("version").notNull().default(1),
+    isCurrent: integer("is_current").notNull().default(1),
+    archivedAt: integer("archived_at"),
     storageProvider: text("storage_provider").notNull().default("VERCEL_BLOB"),
     storageKey: text("storage_key").notNull(),
     blobUrl: text("blob_url"),
@@ -719,6 +909,26 @@ export const attachments = pgTable(
     unique("attachments_storage_key_unique").on(table.storageKey),
     index("idx_attachments_transaction").on(table.transactionId),
     index("idx_attachments_project").on(table.projectId),
+    index("idx_attachments_design_project").on(
+      table.designProjectId,
+      table.category,
+      table.logicalName,
+      table.version,
+    ),
+    index("idx_attachments_design_stage").on(table.designStageId),
+    uniqueIndex("idx_attachments_design_version_unique")
+      .on(
+        table.designProjectId,
+        table.category,
+        table.logicalName,
+        table.version,
+      )
+      .where(sql`${table.designProjectId} IS NOT NULL`),
+    uniqueIndex("idx_attachments_design_current_unique")
+      .on(table.designProjectId, table.category, table.logicalName)
+      .where(
+        sql`${table.designProjectId} IS NOT NULL AND ${table.isCurrent}=1 AND ${table.archivedAt} IS NULL AND ${table.deletedAt} IS NULL`,
+      ),
     index("idx_attachments_entity").on(table.entityType, table.entityId),
     index("idx_attachments_uploaded_by").on(table.uploadedByUserId),
     index("idx_attachments_created_at").on(table.createdAt),
@@ -732,11 +942,16 @@ export const attachments = pgTable(
     ),
     check(
       "attachments_category_check",
-      sql`${table.category} IN ('RECEIPT','PROJECT_PHOTO','DAILY_REPORT','HIDDEN_WORK','CONTRACT','ACT','ESTIMATE','INSPECTION','WARRANTY','OTHER')`,
+      sql`${table.category} IN ('RECEIPT','PROJECT_PHOTO','DAILY_REPORT','HIDDEN_WORK','CONTRACT','ACT','ESTIMATE','INSPECTION','WARRANTY','MEASUREMENT_PLAN','LAYOUT','CONCEPT','VISUALIZATION','WORKING_DRAWINGS','SPECIFICATION','FINAL_ALBUM','OTHER')`,
     ),
     check(
       "attachments_visibility_check",
       sql`${table.visibility} IN ('INTERNAL','PROJECT','CLIENT')`,
+    ),
+    check("attachments_version_check", sql`${table.version} > 0`),
+    check(
+      "attachments_is_current_check",
+      sql`${table.isCurrent} IN (0,1)`,
     ),
     check(
       "attachments_status_check",

@@ -67,7 +67,7 @@ test("working CRM UI replaces fake cards and supports mobile list fallback", asy
   assert.match(shell, /<CrmScreen/);
   assert.doesNotMatch(shell, /Анна Романова|18,4 млн/);
   assert.match(ui, /matchMedia\("\(max-width: 780px\)"\)/);
-  assert.match(ui, /mobile\|\|mode==="list"/);
+  assert.match(ui, /mobile\s*\|\|\s*mode\s*===\s*"list"/);
   assert.match(css, /crm-kanban/);
 });
 
@@ -79,8 +79,10 @@ test("dashboard, global search and client history use real CRM data", async () =
   assert.match(clients, /l\.linked_client_id=\$1/);
 });
 
-test("future order action is explicit and disabled", async () => {
+test("won lead can create a real order for its linked client", async () => {
   const ui = await read("app/crm-ui.tsx");
   assert.match(ui, /Создать заказ/);
-  assert.match(ui, /Модуль заказов будет подключён позже/);
+  assert.match(ui, /detail\.capabilities\.createOrder/);
+  assert.match(ui, /onCreateOrder/);
+  assert.doesNotMatch(ui, /Модуль заказов будет подключён позже/);
 });

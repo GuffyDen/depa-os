@@ -1,14 +1,15 @@
 import { del, head, type PutBlobResult } from "@vercel/blob";
 import type { AuthUser } from "./auth";
 import { first, query, transaction } from "./postgres";
-import { AccessError, assertModuleAction, canViewCashbox, canViewProject, getAccessProfile } from "./permissions";
+import { AccessError, assertModuleAction, canViewCashbox, canViewDesignProject, canViewProject, getAccessProfile } from "./permissions";
 
-export const FILE_CATEGORIES = ["RECEIPT", "PROJECT_PHOTO", "DAILY_REPORT", "HIDDEN_WORK", "CONTRACT", "ACT", "ESTIMATE", "INSPECTION", "WARRANTY", "OTHER"] as const;
+export const FILE_CATEGORIES = ["RECEIPT", "PROJECT_PHOTO", "DAILY_REPORT", "HIDDEN_WORK", "CONTRACT", "ACT", "ESTIMATE", "INSPECTION", "WARRANTY", "MEASUREMENT_PLAN", "LAYOUT", "CONCEPT", "VISUALIZATION", "WORKING_DRAWINGS", "SPECIFICATION", "FINAL_ALBUM", "OTHER"] as const;
 export type FileCategory = (typeof FILE_CATEGORIES)[number];
 export type FileVisibility = "INTERNAL" | "PROJECT" | "CLIENT";
 
 const PHOTO_CATEGORIES = new Set<FileCategory>(["PROJECT_PHOTO", "DAILY_REPORT", "HIDDEN_WORK", "INSPECTION", "WARRANTY"]);
-const DOCUMENT_CATEGORIES = new Set<FileCategory>(["CONTRACT", "ACT", "ESTIMATE", "OTHER"]);
+const DESIGN_DOCUMENT_CATEGORIES = new Set<FileCategory>(["MEASUREMENT_PLAN", "LAYOUT", "CONCEPT", "VISUALIZATION", "WORKING_DRAWINGS", "SPECIFICATION", "FINAL_ALBUM"]);
+const DOCUMENT_CATEGORIES = new Set<FileCategory>(["CONTRACT", "ACT", "ESTIMATE", ...DESIGN_DOCUMENT_CATEGORIES, "OTHER"]);
 const IMAGE_MIME_TYPES = ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"];
 const RECEIPT_MIME_TYPES = [...IMAGE_MIME_TYPES, "application/pdf"];
 const DOCUMENT_MIME_TYPES = ["application/pdf", ...IMAGE_MIME_TYPES];
@@ -37,6 +38,7 @@ type AttachmentRow = {
   id: string;
   transaction_id: string | null;
   project_id: string | null;
+  design_project_id: string | null;
   storage_key: string;
   blob_url: string | null;
   original_filename: string;
@@ -119,19 +121,38 @@ async function assertProjectUploadAccess(actor: AuthUser, projectId: string | nu
 async function assertInspectionFileAccess(actor: AuthUser, entityType: string, entityId: string | null | undefined) {
   if (!entityId || !["Inspection", "InspectionDefect"].includes(entityType)) throw new FileError("Некорректная связь фотографии приёмки.", 400);
   const access = await getAccessProfile(actor);
-  const assigned = actor.role !== "OWNER" && access.scopes.clients !== "ALL";
+  const assigned = actor.role !== "OWNER" && access.scopes.orders !== "ALL";
   const entityJoin = entityType === "Inspection"
     ? "i.id=$1"
     : "EXISTS (SELECT 1 FROM inspection_defects d WHERE d.id=$1 AND d.inspection_id=i.id)";
   const order = await first<{ id: string }>(`SELECT o.id FROM inspections i JOIN orders o ON o.id=i.order_id JOIN clients c ON c.id=o.client_id
-    WHERE ${entityJoin}${assigned ? " AND (o.responsible_user_id=$2 OR c.responsible_user_id=$2)" : ""} LIMIT 1`, assigned ? [entityId, actor.id] : [entityId]);
+    WHERE ${entityJoin}${assigned ? " AND (o.responsible_user_id=$2 OR i.inspector_user_id=$2)" : ""} LIMIT 1`, assigned ? [entityId, actor.id] : [entityId]);
   if (!order) throw new FileError("Нет доступа к фотографиям этой приёмки.", 403);
+}
+
+async function assertDesignFileAccess(
+  actor: AuthUser,
+  entityType: string,
+  entityId: string | null | undefined,
+) {
+  if (!entityId || !["DesignProject", "DesignStage"].includes(entityType))
+    throw new FileError("Некорректная связь файла дизайн-проекта.", 400);
+  const project = await first<{ id: string }>(
+    entityType === "DesignProject"
+      ? "SELECT id FROM design_projects WHERE id=$1 LIMIT 1"
+      : "SELECT design_project_id id FROM design_project_stages WHERE id=$1 AND archived_at IS NULL LIMIT 1",
+    [entityId],
+  );
+  if (!project || !(await canViewDesignProject(actor, project.id)))
+    throw new FileError("Нет доступа к файлам этого дизайн-проекта.", 403);
 }
 
 export async function prepareAttachmentUpload(actor: AuthUser, pathname: string, clientPayload: string | null) {
   const payload = parsePayload(clientPayload);
+  const isDesignFile = DESIGN_DOCUMENT_CATEGORIES.has(payload.category) || ["DesignProject", "DesignStage"].includes(payload.entityType);
   try {
     if (payload.category === "RECEIPT") await assertModuleAction(actor, "finance", "finance.createExpense");
+    else if (isDesignFile) await assertModuleAction(actor, "orders", "design.files.upload");
     else await assertModuleAction(actor, "documents", "documents.upload");
   } catch (error) {
     if (error instanceof AccessError) throw new FileError("Нет права загружать этот файл.", 403);
@@ -139,6 +160,7 @@ export async function prepareAttachmentUpload(actor: AuthUser, pathname: string,
   }
   await assertProjectUploadAccess(actor, payload.projectId);
   if (payload.category === "INSPECTION") await assertInspectionFileAccess(actor, payload.entityType, payload.entityId);
+  if (isDesignFile) await assertDesignFileAccess(actor, payload.entityType, payload.entityId);
   const expectedPath = attachmentPath(payload.attachmentId, payload.category, payload.mimeType);
   if (pathname !== expectedPath) throw new FileError("Путь загрузки файла отклонён.");
   const timestamp = nowSeconds();
@@ -224,6 +246,14 @@ export async function getAuthorizedAttachment(actor: AuthUser, attachmentId: str
       } else if (row.category === "INSPECTION") {
         await assertModuleAction(actor, "orders", "orders.view");
         await assertInspectionFileAccess(actor, row.entity_type, row.entity_id);
+      } else if (row.design_project_id || DESIGN_DOCUMENT_CATEGORIES.has(row.category)) {
+        await assertModuleAction(actor, "orders", "design.files.view");
+        const designProjectId = row.design_project_id ??
+          (row.entity_type === "DesignProject"
+            ? row.entity_id
+            : (await first<{ id: string }>("SELECT design_project_id id FROM design_project_stages WHERE id=$1 LIMIT 1", [row.entity_id]))?.id);
+        if (!designProjectId || !(await canViewDesignProject(actor, designProjectId)))
+          throw new FileError("Нет доступа к этому файлу.", 403);
       } else {
         await assertModuleAction(actor, "documents", "documents.view");
         if (row.project_id && !(await canViewProject(actor, row.project_id))) throw new FileError("Нет доступа к этому файлу.", 403);

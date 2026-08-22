@@ -83,6 +83,33 @@ export async function canViewProject(actor: AuthUser, projectId: string) {
   return Boolean(row);
 }
 
+export async function canViewDesignProject(
+  actor: AuthUser,
+  designProjectId: string,
+) {
+  if (actor.role === "OWNER") return true;
+  const profile = await getAccessProfile(actor);
+  if (
+    !profile.modules.orders ||
+    !profile.actions["orders.view"] ||
+    !profile.actions["design.view"]
+  )
+    return false;
+  const all =
+    profile.scopes.orders === "ALL" && profile.scopes.design === "ALL";
+  const row = await first<{ id: string }>(
+    `SELECT dp.id FROM design_projects dp JOIN orders o ON o.id=dp.order_id
+      LEFT JOIN users du ON du.employee_id=dp.designer_employee_id
+      WHERE dp.id=$1${
+        all
+          ? ""
+          : " AND (o.responsible_user_id=$2 OR du.id=$2 OR EXISTS(SELECT 1 FROM design_project_stages ds WHERE ds.design_project_id=dp.id AND ds.responsible_user_id=$2 AND ds.archived_at IS NULL))"
+      } LIMIT 1`,
+    all ? [designProjectId] : [designProjectId, actor.id],
+  );
+  return Boolean(row);
+}
+
 export async function getScope(actor: AuthUser, scope: ScopeKey): Promise<ScopeValue> {
   if (actor.role === "OWNER") return "ALL";
   return (await getAccessProfile(actor)).scopes[scope];

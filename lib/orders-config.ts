@@ -1,5 +1,6 @@
 export const ORDER_TYPES = [
   { value: "INSPECTION", label: "Приёмка квартиры" },
+  { value: "DESIGN", label: "Дизайн-проект" },
   { value: "RENOVATION", label: "Ремонт квартиры" },
 ] as const;
 

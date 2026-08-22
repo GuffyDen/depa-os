@@ -10,13 +10,14 @@ export class ProjectError extends Error {
 }
 
 export type ProjectInput = {
+  orderId?: unknown;
   clientId?: unknown; residentialComplex?: unknown; address?: unknown; apartment?: unknown; areaSqm?: unknown; displayName?: unknown;
   responsibleUserId?: unknown; foremanEmployeeId?: unknown; status?: unknown; startDate?: unknown; plannedEndDate?: unknown;
   forecastEndDate?: unknown; actualEndDate?: unknown; contractWorksAmount?: unknown; estimatedMaterialsBudget?: unknown; comment?: unknown;
 };
 
 type ProjectRow = {
-  id: string; client_id: string; client_name: string; client_phone: string; name: string; residential_complex: string | null;
+  id: string; order_id: string | null; order_number: string | null; order_type: string | null; client_id: string; client_name: string; client_phone: string; name: string; residential_complex: string | null;
   address: string; apartment: string; area_sqm: string | number | null; responsible_user_id: string; responsible_name: string;
   foreman_employee_id: string | null; foreman_name: string | null; status: ProjectStatus; start_date: number | null; planned_end_date: number | null;
   forecast_end_date: number | null; actual_end_date: number | null; contract_amount_kopecks: number | string;
@@ -75,16 +76,16 @@ function validate(input: ProjectInput, actor: AuthUser, previous?: ProjectRow) {
 }
 
 function baseSelect() {
-  return `SELECT p.id,p.client_id,c.name AS client_name,c.phone AS client_phone,p.name,p.residential_complex,p.address,p.apartment,p.area_sqm,
+  return `SELECT p.id,p.order_id,o.number order_number,o.type order_type,p.client_id,c.name AS client_name,c.phone AS client_phone,p.name,p.residential_complex,p.address,p.apartment,p.area_sqm,
     p.responsible_user_id,ru.display_name AS responsible_name,p.foreman_employee_id,fe.full_name AS foreman_name,p.status,p.start_date,
     p.planned_end_date,p.forecast_end_date,p.actual_end_date,p.contract_amount_kopecks,p.estimated_materials_budget_kopecks,p.comment,
     p.created_by_user_id,p.archived_at,p.created_at,p.updated_at
-    FROM projects p JOIN clients c ON c.id=p.client_id JOIN users ru ON ru.id=p.responsible_user_id LEFT JOIN employees fe ON fe.id=p.foreman_employee_id`;
+    FROM projects p JOIN clients c ON c.id=p.client_id JOIN users ru ON ru.id=p.responsible_user_id LEFT JOIN employees fe ON fe.id=p.foreman_employee_id LEFT JOIN orders o ON o.id=p.order_id`;
 }
 
 function serialize(row: ProjectRow, canViewFinancialPlan = true) {
   return {
-    id: row.id, clientId: row.client_id, clientName: row.client_name, clientPhone: row.client_phone, displayName: row.name,
+    id: row.id, orderId: row.order_id, orderNumber: row.order_number, orderType: row.order_type, clientId: row.client_id, clientName: row.client_name, clientPhone: row.client_phone, displayName: row.name,
     residentialComplex: row.residential_complex, address: row.address, apartment: row.apartment,
     areaSqm: row.area_sqm == null ? null : Number(row.area_sqm), responsibleUserId: row.responsible_user_id,
     responsibleName: row.responsible_name, foremanEmployeeId: row.foreman_employee_id, foremanName: row.foreman_name,
@@ -249,12 +250,20 @@ export async function createProject(actor: AuthUser, input: ProjectInput) {
   await assertAssignmentChange(actor, data.responsibleUserId, data.foremanEmployeeId);
   await assertFinancialPlanChange(actor, data.contractWorksAmountKopecks, data.estimatedMaterialsBudgetKopecks);
   const responsible = await assertRelations(data.clientId, data.responsibleUserId, data.foremanEmployeeId);
+  const orderId = clean(input.orderId, 100);
+  if (orderId) {
+    const order = await first<{ client_id: string; type: string; project_id: string | null }>("SELECT o.client_id,o.type,p.id project_id FROM orders o LEFT JOIN projects p ON p.order_id=o.id WHERE o.id=$1 LIMIT 1", [orderId]);
+    if (!order || order.type !== "RENOVATION") throw new ProjectError("Объект можно связать только с заказом на ремонт.", 409);
+    if (order.client_id !== data.clientId) throw new ProjectError("Заказ на ремонт относится к другому клиенту.", 409);
+    if (order.project_id) throw new ProjectError("Для этого заказа объект уже создан.", 409);
+  }
   const id = crypto.randomUUID();
   const timestamp = Math.floor(Date.now() / 1000);
   await transaction([
     { text: `INSERT INTO projects (id,order_id,client_id,name,residential_complex,address,apartment,area_sqm,responsible_user_id,manager_employee_id,foreman_employee_id,status,start_date,planned_end_date,forecast_end_date,actual_end_date,contract_amount_kopecks,estimated_materials_budget_kopecks,comment,created_by_user_id,created_at,updated_at)
-      VALUES ($1,NULL,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`, params: [id, data.clientId, data.displayName, data.residentialComplex, data.address, data.apartment, data.areaSqm, data.responsibleUserId, responsible.employee_id, data.foremanEmployeeId, data.status, data.startDate, data.plannedEndDate, data.forecastEndDate, data.actualEndDate, data.contractWorksAmountKopecks, data.estimatedMaterialsBudgetKopecks, data.comment, actor.id, timestamp, timestamp] },
-    { text: "INSERT INTO audit_logs (id,actor_user_id,action,entity_type,entity_id,occurred_at,metadata_json) VALUES ($1,$2,'PROJECT_CREATED','Project',$3,$4,$5)", params: [crypto.randomUUID(), actor.id, id, timestamp, JSON.stringify({ clientId: data.clientId, responsibleUserId: data.responsibleUserId, status: data.status })] },
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`, params: [id, orderId, data.clientId, data.displayName, data.residentialComplex, data.address, data.apartment, data.areaSqm, data.responsibleUserId, responsible.employee_id, data.foremanEmployeeId, data.status, data.startDate, data.plannedEndDate, data.forecastEndDate, data.actualEndDate, data.contractWorksAmountKopecks, data.estimatedMaterialsBudgetKopecks, data.comment, actor.id, timestamp, timestamp] },
+    { text: "INSERT INTO audit_logs (id,actor_user_id,action,entity_type,entity_id,occurred_at,metadata_json) VALUES ($1,$2,'PROJECT_CREATED','Project',$3,$4,$5)", params: [crypto.randomUUID(), actor.id, id, timestamp, JSON.stringify({ orderId, clientId: data.clientId, responsibleUserId: data.responsibleUserId, status: data.status })] },
+    ...(orderId ? [{ text: "INSERT INTO audit_logs (id,actor_user_id,action,entity_type,entity_id,occurred_at,metadata_json) VALUES ($1,$2,'RENOVATION_PROJECT_LINKED','Order',$3,$4,$5)", params: [crypto.randomUUID(), actor.id, orderId, timestamp, JSON.stringify({ projectId: id })] }] : []),
   ]);
   return getProject(actor, id);
 }

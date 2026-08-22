@@ -7,7 +7,7 @@ const root = new URL("../", import.meta.url);
 const read = (path) => readFile(new URL(path, root), "utf8");
 
 test("order, inspection and defect dictionaries are centralized", () => {
-  assert.deepEqual(ORDER_TYPES.map((item) => item.value), ["INSPECTION", "RENOVATION"]);
+  assert.deepEqual(ORDER_TYPES.map((item) => item.value), ["INSPECTION", "DESIGN", "RENOVATION"]);
   assert.deepEqual(ORDER_STATUSES.map((item) => item.value), ["NEW", "SCHEDULED", "IN_PROGRESS", "COMPLETED", "CANCELLED"]);
   assert.equal(DEFECT_CATEGORIES.length, 10);
   assert.deepEqual(DEFECT_SEVERITIES.map(([value]) => value), ["LOW", "MEDIUM", "HIGH"]);
@@ -38,7 +38,7 @@ test("order list derives payment from finance and filters entirely in SQL", asyn
   const data = await read("lib/orders.ts");
   assert.match(data, /financial_transactions ft WHERE ft\.order_id=o\.id AND ft\.type='INCOME'/);
   for (const term of ["o.number ILIKE", "c.name ILIKE", "c.phone_normalized LIKE", "i.address ILIKE", "i.residential_complex ILIKE", "i.apartment_number ILIKE"]) assert.match(data, new RegExp(term.replaceAll(".", "\\.")));
-  assert.match(data, /access\.scopes\.clients/);
+  assert.match(data, /access\.scopes\.orders/);
   assert.match(data, /nextOffset/);
   assert.match(data, /REQUEST_PAYMENT/);
 });

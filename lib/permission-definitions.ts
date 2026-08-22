@@ -24,6 +24,15 @@ export const ACTION_GROUPS = [
   ] },
   { module: "orders", label: "Заказы", actions: [
     ["orders.view", "Просматривать"], ["orders.create", "Создавать"], ["orders.edit", "Редактировать"],
+    ["orders.complete", "Завершать"], ["orders.cancel", "Отменять"], ["orders.viewFinance", "Просматривать финансы заказа"],
+  ] },
+  { module: "orders", label: "Дизайн-проекты", actions: [
+    ["design.view", "Просматривать"], ["design.create", "Создавать"], ["design.edit", "Редактировать"],
+    ["design.assignDesigner", "Назначать дизайнера"], ["design.stages.view", "Просматривать этапы"],
+    ["design.stages.edit", "Управлять этапами"], ["design.stages.complete", "Завершать этапы"],
+    ["design.files.view", "Просматривать файлы"], ["design.files.upload", "Загружать файлы"],
+    ["design.files.manageVersions", "Управлять версиями"], ["design.files.archive", "Архивировать файлы"],
+    ["design.viewFinance", "Просматривать коммерческие финансы"], ["design.complete", "Завершать дизайн-проект"],
   ] },
   { module: "projects", label: "Объекты", actions: [
     ["projects.view", "Просматривать"], ["projects.create", "Создавать"], ["projects.edit", "Редактировать"],
@@ -57,6 +66,8 @@ export type ActionPermission = (typeof ACTION_GROUPS)[number]["actions"][number]
 export const SCOPE_DEFINITIONS = [
   { key: "crm", permission: "crm.scope", module: "crm", label: "Просмотр лидов", ownLabel: "Только назначенные", allLabel: "Все лиды", default: "ASSIGNED" },
   { key: "clients", permission: "clients.scope", module: "clients", label: "Просмотр клиентов", ownLabel: "Только назначенные", allLabel: "Все клиенты", default: "ASSIGNED" },
+  { key: "orders", permission: "orders.scope", module: "orders", label: "Просмотр заказов", ownLabel: "Только назначенные", allLabel: "Все заказы", default: "ASSIGNED" },
+  { key: "design", permission: "design.scope", module: "orders", label: "Просмотр дизайн-проектов", ownLabel: "Только назначенные", allLabel: "Все дизайн-проекты", default: "ASSIGNED" },
   { key: "projects", permission: "projects.scope", module: "projects", label: "Просмотр объектов", ownLabel: "Только назначенные", allLabel: "Все объекты", default: "ASSIGNED" },
   { key: "tasks", permission: "tasks.scope", module: "tasks", label: "Просмотр задач", ownLabel: "Только назначенные", allLabel: "Все задачи", default: "ASSIGNED" },
   { key: "cashboxes", permission: "finance.cashboxes.scope", module: "finance", label: "Просмотр касс", ownLabel: "Только своя", allLabel: "Все кассы", default: "OWN" },
@@ -114,14 +125,14 @@ export const ACCESS_PRESETS = {
   ACCOUNTANT: {
     label: "Бухгалтер",
     modules: ["dashboard", "clients", "orders", "projects", "tasks", "finance", "team", "contractors", "documents"],
-    actions: ["clients.view", "clients.edit", "orders.view", "orders.edit", "projects.view", "tasks.view", "finance.view", "finance.editTransaction", "finance.viewClientFunds", "finance.viewProfit", "finance.viewAdministrativeExpenses", "team.view", "contractors.view", "documents.view", "documents.upload", "documents.edit"],
-    scopes: { clients: "ALL", projects: "ALL", tasks: "ALL", cashboxes: "ALL", documents: "ALL" }, ownCashbox: false,
+    actions: ["clients.view", "clients.edit", "orders.view", "orders.edit", "orders.viewFinance", "design.view", "design.viewFinance", "design.stages.view", "design.files.view", "projects.view", "tasks.view", "finance.view", "finance.editTransaction", "finance.viewClientFunds", "finance.viewProfit", "finance.viewAdministrativeExpenses", "team.view", "contractors.view", "documents.view", "documents.upload", "documents.edit"],
+    scopes: { clients: "ALL", orders: "ALL", design: "ALL", projects: "ALL", tasks: "ALL", cashboxes: "ALL", documents: "ALL" }, ownCashbox: false,
   },
   MANAGER: {
     label: "Менеджер",
     modules: ["dashboard", "crm", "clients", "orders", "projects", "tasks", "documents"],
-    actions: ["crm.view", "crm.create", "crm.edit", "crm.changeStatus", "crm.assign", "crm.close", "clients.view", "clients.create", "clients.edit", "orders.view", "orders.create", "orders.edit", "projects.view", "tasks.view", "tasks.create", "tasks.edit", "tasks.complete", "documents.view", "documents.upload"],
-    scopes: { crm: "ASSIGNED", clients: "ASSIGNED", projects: "ASSIGNED", tasks: "ASSIGNED", documents: "ASSIGNED_PROJECTS" }, ownCashbox: false,
+    actions: ["crm.view", "crm.create", "crm.edit", "crm.changeStatus", "crm.assign", "crm.close", "clients.view", "clients.create", "clients.edit", "orders.view", "orders.create", "orders.edit", "orders.complete", "orders.cancel", "orders.viewFinance", "design.view", "design.create", "design.edit", "design.assignDesigner", "design.stages.view", "design.stages.edit", "design.stages.complete", "design.files.view", "design.files.upload", "design.files.manageVersions", "design.viewFinance", "design.complete", "projects.view", "tasks.view", "tasks.create", "tasks.edit", "tasks.complete", "documents.view", "documents.upload"],
+    scopes: { crm: "ASSIGNED", clients: "ASSIGNED", orders: "ASSIGNED", design: "ASSIGNED", projects: "ASSIGNED", tasks: "ASSIGNED", documents: "ASSIGNED_PROJECTS" }, ownCashbox: false,
   },
   CUSTOM: { label: "Настроить вручную", modules: [], actions: [], scopes: {}, ownCashbox: false },
 } as const satisfies Record<string, { label: string; modules: readonly ModuleKey[]; actions: readonly ActionPermission[]; scopes: Partial<Record<ScopeKey, ScopeValue>>; ownCashbox: boolean }>;

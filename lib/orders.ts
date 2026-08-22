@@ -1,6 +1,7 @@
 import type { AuthUser } from "./auth";
 import { confirmAttachmentUpload, FileError } from "./files";
 import { parseAmountKopecks } from "./finance-rules";
+import { assertOrderSourceRelations } from "./design";
 import {
   DEFECT_CATEGORIES,
   DEFECT_SEVERITIES,
@@ -14,6 +15,7 @@ import { first, query, transaction } from "./postgres";
 import {
   AccessError,
   assertModuleAction,
+  canViewDesignProject,
   getAccessProfile,
 } from "./permissions";
 
@@ -36,6 +38,8 @@ type OrderRow = {
   comment: string | null;
   internal_comment: string | null;
   created_by_user_id: string;
+  source_lead_id: string | null;
+  source_order_id: string | null;
   created_at: number;
   updated_at: number;
   inspection_id: string | null;
@@ -48,6 +52,22 @@ type OrderRow = {
   inspector_user_id: string | null;
   inspector_name: string | null;
   result_comment: string | null;
+  design_project_id: string | null;
+  design_residential_complex: string | null;
+  design_address: string | null;
+  design_apartment_number: string | null;
+  design_area_sqm: string | number | null;
+  design_status: string | null;
+  design_planned_start_date: number | null;
+  design_planned_end_date: number | null;
+  designer_employee_id: string | null;
+  designer_name: string | null;
+  renovation_detail_id: string | null;
+  renovation_residential_complex: string | null;
+  renovation_address: string | null;
+  renovation_apartment_number: string | null;
+  renovation_area_sqm: string | number | null;
+  project_id: string | null;
   paid_kopecks: number | string;
   defect_count: number | string;
   photo_count: number | string;
@@ -89,9 +109,19 @@ function paymentStatus(paid: number, price: number): PaymentStatus {
   return paid <= 0 ? "UNPAID" : paid < price ? "PARTIALLY_PAID" : "PAID";
 }
 function baseSelect() {
-  return `SELECT o.id,o.number,o.client_id,c.name client_name,c.phone client_phone,o.type,o.title,o.amount_kopecks,o.status,o.responsible_user_id,ru.display_name responsible_name,o.scheduled_at,o.started_at,o.completed_at,o.cancelled_at,o.comment,o.internal_comment,o.created_by_user_id,o.created_at,o.updated_at,i.id inspection_id,i.residential_complex,i.address,i.apartment_number,i.area_sqm,i.scheduled_start_at,i.scheduled_end_at,i.inspector_user_id,iu.display_name inspector_name,i.result_comment,COALESCE((SELECT SUM(ft.amount_kopecks) FROM financial_transactions ft WHERE ft.order_id=o.id AND ft.type='INCOME'),0) paid_kopecks,COALESCE((SELECT COUNT(*) FROM inspection_defects d WHERE d.inspection_id=i.id),0) defect_count,COALESCE((SELECT COUNT(*) FROM attachments a WHERE a.category='INSPECTION' AND a.upload_status='LINKED' AND a.deleted_at IS NULL AND ((a.entity_type='Inspection' AND a.entity_id=i.id) OR (a.entity_type='InspectionDefect' AND a.entity_id IN (SELECT id FROM inspection_defects WHERE inspection_id=i.id)))),0) photo_count FROM orders o JOIN clients c ON c.id=o.client_id JOIN users ru ON ru.id=o.responsible_user_id LEFT JOIN inspections i ON i.order_id=o.id LEFT JOIN users iu ON iu.id=i.inspector_user_id`;
+  return `SELECT o.id,o.number,o.client_id,c.name client_name,c.phone client_phone,o.type,o.title,o.amount_kopecks,o.status,o.responsible_user_id,ru.display_name responsible_name,o.scheduled_at,o.started_at,o.completed_at,o.cancelled_at,o.comment,o.internal_comment,o.created_by_user_id,o.source_lead_id,o.source_order_id,o.created_at,o.updated_at,
+    i.id inspection_id,i.residential_complex,i.address,i.apartment_number,i.area_sqm,i.scheduled_start_at,i.scheduled_end_at,i.inspector_user_id,iu.display_name inspector_name,i.result_comment,
+    dp.id design_project_id,dp.residential_complex design_residential_complex,dp.address design_address,dp.apartment_number design_apartment_number,dp.area_sqm design_area_sqm,dp.status design_status,dp.planned_start_date design_planned_start_date,dp.planned_end_date design_planned_end_date,dp.designer_employee_id,de.full_name designer_name,
+    rd.id renovation_detail_id,rd.residential_complex renovation_residential_complex,rd.address renovation_address,rd.apartment_number renovation_apartment_number,rd.area_sqm renovation_area_sqm,p.id project_id,
+    COALESCE((SELECT SUM(ft.amount_kopecks) FROM financial_transactions ft WHERE ft.order_id=o.id AND ft.type='INCOME'),0) paid_kopecks,
+    COALESCE((SELECT COUNT(*) FROM inspection_defects d WHERE d.inspection_id=i.id),0) defect_count,
+    COALESCE((SELECT COUNT(*) FROM attachments a WHERE a.category='INSPECTION' AND a.upload_status='LINKED' AND a.deleted_at IS NULL AND ((a.entity_type='Inspection' AND a.entity_id=i.id) OR (a.entity_type='InspectionDefect' AND a.entity_id IN (SELECT id FROM inspection_defects WHERE inspection_id=i.id)))),0) photo_count
+    FROM orders o JOIN clients c ON c.id=o.client_id JOIN users ru ON ru.id=o.responsible_user_id
+    LEFT JOIN inspections i ON i.order_id=o.id LEFT JOIN users iu ON iu.id=i.inspector_user_id
+    LEFT JOIN design_projects dp ON dp.order_id=o.id LEFT JOIN employees de ON de.id=dp.designer_employee_id
+    LEFT JOIN renovation_order_details rd ON rd.order_id=o.id LEFT JOIN projects p ON p.order_id=o.id`;
 }
-function serialize(row: OrderRow) {
+function serialize(row: OrderRow, canViewFinance = true) {
   const price = Number(row.amount_kopecks),
     paid = Number(row.paid_kopecks),
     remaining = Math.max(price - paid, 0),
@@ -108,7 +138,7 @@ function serialize(row: OrderRow) {
     clientPhone: row.client_phone,
     type: row.type,
     title: row.title,
-    priceKopecks: price,
+    priceKopecks: canViewFinance ? price : null,
     status: row.status,
     responsibleUserId: row.responsible_user_id,
     responsibleName: row.responsible_name,
@@ -118,12 +148,14 @@ function serialize(row: OrderRow) {
     cancelledAt: row.cancelled_at,
     comment: row.comment,
     internalComment: row.internal_comment,
+    sourceLeadId: row.source_lead_id,
+    sourceOrderId: row.source_order_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
-    paidKopecks: paid,
-    remainingKopecks: remaining,
-    overpaymentKopecks: overpayment,
-    paymentStatus: paymentStatus(paid, price),
+    paidKopecks: canViewFinance ? paid : null,
+    remainingKopecks: canViewFinance ? remaining : null,
+    overpaymentKopecks: canViewFinance ? overpayment : null,
+    paymentStatus: canViewFinance ? paymentStatus(paid, price) : null,
     inspection: row.inspection_id
       ? {
           id: row.inspection_id,
@@ -137,6 +169,34 @@ function serialize(row: OrderRow) {
           inspectorUserId: row.inspector_user_id,
           inspectorName: row.inspector_name,
           resultComment: row.result_comment,
+        }
+      : null,
+    design: row.design_project_id
+      ? {
+          id: row.design_project_id,
+          residentialComplex: row.design_residential_complex,
+          address: row.design_address,
+          apartmentNumber: row.design_apartment_number,
+          areaSqm:
+            row.design_area_sqm == null ? null : Number(row.design_area_sqm),
+          status: row.design_status,
+          plannedStartDate: row.design_planned_start_date,
+          plannedEndDate: row.design_planned_end_date,
+          designerEmployeeId: row.designer_employee_id,
+          designerName: row.designer_name,
+        }
+      : null,
+    renovation: row.renovation_detail_id
+      ? {
+          id: row.renovation_detail_id,
+          residentialComplex: row.renovation_residential_complex,
+          address: row.renovation_address,
+          apartmentNumber: row.renovation_apartment_number,
+          areaSqm:
+            row.renovation_area_sqm == null
+              ? null
+              : Number(row.renovation_area_sqm),
+          projectId: row.project_id,
         }
       : null,
     defectCount: Number(row.defect_count),
@@ -171,14 +231,14 @@ async function assertClient(actor: AuthUser, id: string) {
 }
 function addScope(
   actor: AuthUser,
-  allClients: boolean,
+  allOrders: boolean,
   conditions: string[],
   params: unknown[],
 ) {
-  if (actor.role !== "OWNER" && !allClients) {
+  if (actor.role !== "OWNER" && !allOrders) {
     params.push(actor.id);
     conditions.push(
-      `(o.responsible_user_id=$${params.length} OR c.responsible_user_id=$${params.length})`,
+      `(o.responsible_user_id=$${params.length} OR i.inspector_user_id=$${params.length} OR EXISTS(SELECT 1 FROM users du WHERE du.employee_id=dp.designer_employee_id AND du.id=$${params.length}) OR EXISTS(SELECT 1 FROM design_project_stages ds WHERE ds.design_project_id=dp.id AND ds.responsible_user_id=$${params.length} AND ds.archived_at IS NULL))`,
     );
   }
 }
@@ -238,12 +298,14 @@ export async function listOrders(actor: AuthUser, requestUrl: string) {
     params.push(value);
     return `$${params.length}`;
   };
-  addScope(actor, access.scopes.clients === "ALL", conditions, params);
+  addScope(actor, access.scopes.orders === "ALL", conditions, params);
+  if (actor.role !== "OWNER" && !access.actions["design.view"])
+    conditions.push("o.type<>'DESIGN'");
   if (search) {
     const term = `%${search}%`,
       digits = search.replace(/\D/g, "");
     conditions.push(
-      `(o.number ILIKE ${add(term)} OR c.name ILIKE ${add(term)} OR c.phone_normalized LIKE ${add(digits ? `%${digits}%` : "__NO_PHONE__")} OR i.address ILIKE ${add(term)} OR i.residential_complex ILIKE ${add(term)} OR i.apartment_number ILIKE ${add(term)})`,
+      `(o.number ILIKE ${add(term)} OR c.name ILIKE ${add(term)} OR c.phone_normalized LIKE ${add(digits ? `%${digits}%` : "__NO_PHONE__")} OR i.address ILIKE ${add(term)} OR i.residential_complex ILIKE ${add(term)} OR i.apartment_number ILIKE ${add(term)} OR dp.address ILIKE ${add(term)} OR dp.residential_complex ILIKE ${add(term)} OR dp.apartment_number ILIKE ${add(term)} OR rd.address ILIKE ${add(term)} OR rd.residential_complex ILIKE ${add(term)} OR rd.apartment_number ILIKE ${add(term)})`,
     );
   }
   if (ORDER_TYPES.some((x) => x.value === type))
@@ -259,22 +321,29 @@ export async function listOrders(actor: AuthUser, requestUrl: string) {
   );
   if (range.start != null)
     conditions.push(
-      `COALESCE(o.scheduled_at,o.created_at)>=${add(range.start)}`,
+      `COALESCE(i.scheduled_start_at,dp.planned_start_date,o.scheduled_at,o.created_at)>=${add(range.start)}`,
     );
   if (range.end != null)
-    conditions.push(`COALESCE(o.scheduled_at,o.created_at)<=${add(range.end)}`);
+    conditions.push(
+      `COALESCE(i.scheduled_start_at,dp.planned_start_date,o.scheduled_at,o.created_at)<=${add(range.end)}`,
+    );
   const paid = `COALESCE((SELECT SUM(ft.amount_kopecks) FROM financial_transactions ft WHERE ft.order_id=o.id AND ft.type='INCOME'),0)`;
-  if (payment === "UNPAID") conditions.push(`${paid}=0`);
-  else if (payment === "PARTIALLY_PAID")
+  const canFilterFinance =
+    actor.role === "OWNER" ||
+    access.actions["orders.viewFinance"] ||
+    access.actions["design.viewFinance"];
+  if (canFilterFinance && payment === "UNPAID") conditions.push(`${paid}=0`);
+  else if (canFilterFinance && payment === "PARTIALLY_PAID")
     conditions.push(`${paid}>0 AND ${paid}<o.amount_kopecks`);
-  else if (payment === "PAID") conditions.push(`${paid}>=o.amount_kopecks`);
+  else if (canFilterFinance && payment === "PAID")
+    conditions.push(`${paid}>=o.amount_kopecks`);
   if (attention)
     conditions.push(
       `o.type='INSPECTION' AND o.status='COMPLETED' AND ${paid}<o.amount_kopecks AND NOT EXISTS(SELECT 1 FROM leads l JOIN lead_activities la ON la.lead_id=l.id WHERE l.linked_client_id=o.client_id AND la.type='REQUEST_PAYMENT' AND la.status='SCHEDULED')`,
     );
   const where = conditions.length ? ` WHERE ${conditions.join(" AND ")}` : "",
     count = await first<{ count: number | string }>(
-      `SELECT COUNT(*) count FROM orders o JOIN clients c ON c.id=o.client_id LEFT JOIN inspections i ON i.order_id=o.id${where}`,
+      `SELECT COUNT(*) count FROM orders o JOIN clients c ON c.id=o.client_id LEFT JOIN inspections i ON i.order_id=o.id LEFT JOIN design_projects dp ON dp.order_id=o.id LEFT JOIN renovation_order_details rd ON rd.order_id=o.id${where}`,
       params,
     );
   const rows = await query<OrderRow>(
@@ -283,7 +352,17 @@ export async function listOrders(actor: AuthUser, requestUrl: string) {
   );
   const hasMore = !attention && rows.length > limit;
   return {
-    items: rows.slice(0, attention ? 5 : limit).map(serialize),
+    items: rows
+      .slice(0, attention ? 5 : limit)
+      .map((row) =>
+        serialize(
+          row,
+          actor.role === "OWNER" ||
+            (row.type === "DESIGN"
+              ? access.actions["design.viewFinance"]
+              : access.actions["orders.viewFinance"]),
+        ),
+      ),
     total: Number(count?.count || 0),
     hasMore,
     nextOffset: hasMore ? offset + limit : null,
@@ -322,7 +401,7 @@ export async function listInspectionCalendar(
       params.push(value);
       return `$${params.length}`;
     };
-  addScope(actor, access.scopes.clients === "ALL", conditions, params);
+  addScope(actor, access.scopes.orders === "ALL", conditions, params);
   conditions.push(
     `i.scheduled_start_at<${add(rangeEnd)}`,
     `i.scheduled_end_at>${add(rangeStart)}`,
@@ -334,7 +413,12 @@ export async function listInspectionCalendar(
     params,
   );
   return {
-    items: rows.map(serialize),
+    items: rows.map((row) =>
+      serialize(
+        row,
+        actor.role === "OWNER" || access.actions["orders.viewFinance"],
+      ),
+    ),
     inspectors: await listOrderUsers(),
     rangeStart,
     rangeEnd,
@@ -346,7 +430,7 @@ async function visibleOrder(actor: AuthUser, id: string) {
   const access = await getAccessProfile(actor),
     params: unknown[] = [id],
     conditions = ["o.id=$1"];
-  addScope(actor, access.scopes.clients === "ALL", conditions, params);
+  addScope(actor, access.scopes.orders === "ALL", conditions, params);
   const row = await first<OrderRow>(
     `${baseSelect()} WHERE ${conditions.join(" AND ")} LIMIT 1`,
     params,
@@ -361,6 +445,12 @@ async function visibleOrder(actor: AuthUser, id: string) {
       exists ? 403 : 404,
     );
   }
+  if (
+    row.type === "DESIGN" &&
+    row.design_project_id &&
+    !(await canViewDesignProject(actor, row.design_project_id))
+  )
+    throw new AccessError("Нет доступа к этому дизайн-проекту.", 403);
   return row;
 }
 export async function canViewOrder(actor: AuthUser, id: string) {
@@ -374,6 +464,11 @@ export async function canViewOrder(actor: AuthUser, id: string) {
 export async function getOrder(actor: AuthUser, id: string) {
   const row = await visibleOrder(actor, id),
     access = await getAccessProfile(actor);
+  const canViewCommercialFinance =
+    actor.role === "OWNER" ||
+    (row.type === "DESIGN"
+      ? access.actions["design.viewFinance"]
+      : access.actions["orders.viewFinance"]);
   const [defects, files, finances, history] = await Promise.all([
     row.inspection_id
       ? query<{
@@ -403,16 +498,18 @@ export async function getOrder(actor: AuthUser, id: string) {
           [row.inspection_id],
         )
       : Promise.resolve([]),
-    query<{
-      id: string;
-      amountKopecks: number;
-      transactionDate: number;
-      title: string;
-      cashboxName: string;
-    }>(
-      `SELECT ft.id,ft.amount_kopecks "amountKopecks",ft.transaction_date "transactionDate",ft.title,cb.name "cashboxName" FROM financial_transactions ft JOIN cashboxes cb ON cb.id=ft.cashbox_id WHERE ft.order_id=$1 AND ft.type='INCOME' ORDER BY ft.transaction_date DESC,ft.created_at DESC`,
-      [id],
-    ),
+    canViewCommercialFinance
+      ? query<{
+          id: string;
+          amountKopecks: number;
+          transactionDate: number;
+          title: string;
+          cashboxName: string;
+        }>(
+          `SELECT ft.id,ft.amount_kopecks "amountKopecks",ft.transaction_date "transactionDate",ft.title,cb.name "cashboxName" FROM financial_transactions ft JOIN cashboxes cb ON cb.id=ft.cashbox_id WHERE ft.order_id=$1 AND ft.type='INCOME' ORDER BY ft.transaction_date DESC,ft.created_at DESC`,
+          [id],
+        )
+      : Promise.resolve([]),
     query<{
       id: string;
       action: string;
@@ -425,7 +522,7 @@ export async function getOrder(actor: AuthUser, id: string) {
     ),
   ]);
   return {
-    order: serialize(row),
+    order: serialize(row, canViewCommercialFinance),
     defects: defects.map((d) => ({ ...d, photoCount: Number(d.photoCount) })),
     files,
     finances,
@@ -436,6 +533,7 @@ export async function getOrder(actor: AuthUser, id: string) {
         (actor.role === "OWNER" || access.actions["finance.createIncome"]) &&
         access.modules.finance &&
         access.ownCashbox,
+      viewFinance: canViewCommercialFinance,
       upload:
         (actor.role === "OWNER" || access.actions["documents.upload"]) &&
         access.modules.documents,
@@ -579,6 +677,8 @@ export async function createOrder(actor: AuthUser, input: OrderInput) {
       "На этой итерации доступно создание только приёмки квартиры.",
     );
   const data = await validateInspectionInput(actor, input),
+    sourceLeadId = clean(input.sourceLeadId, 100),
+    sourceOrderId = clean(input.sourceOrderId, 100),
     sequence = await first<{ value: string | number }>(
       "SELECT nextval('depa_order_number_seq') value",
     ),
@@ -586,9 +686,15 @@ export async function createOrder(actor: AuthUser, input: OrderInput) {
     inspectionId = crypto.randomUUID(),
     timestamp = now(),
     number = `ORD-${String(sequence?.value || 1).padStart(6, "0")}`;
+  await assertOrderSourceRelations(
+    actor,
+    data.clientId,
+    sourceLeadId,
+    sourceOrderId,
+  );
   await transaction([
     {
-      text: `INSERT INTO orders(id,number,client_id,type,title,amount_kopecks,status,responsible_user_id,scheduled_at,comment,internal_comment,created_by_user_id,created_at,updated_at) VALUES($1,$2,$3,'INSPECTION','Приёмка квартиры',$4,'SCHEDULED',$5,$6,$7,$8,$9,$10,$11)`,
+      text: `INSERT INTO orders(id,number,client_id,type,title,amount_kopecks,status,responsible_user_id,scheduled_at,comment,internal_comment,created_by_user_id,source_lead_id,source_order_id,created_at,updated_at) VALUES($1,$2,$3,'INSPECTION','Приёмка квартиры',$4,'SCHEDULED',$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
       params: [
         orderId,
         number,
@@ -599,6 +705,8 @@ export async function createOrder(actor: AuthUser, input: OrderInput) {
         data.comment,
         data.internalComment,
         actor.id,
+        sourceLeadId,
+        sourceOrderId,
         timestamp,
         timestamp,
       ],
@@ -626,7 +734,13 @@ export async function createOrder(actor: AuthUser, input: OrderInput) {
         actor.id,
         orderId,
         timestamp,
-        JSON.stringify({ type: "INSPECTION", number, clientId: data.clientId }),
+        JSON.stringify({
+          type: "INSPECTION",
+          number,
+          clientId: data.clientId,
+          sourceLeadId,
+          sourceOrderId,
+        }),
       ],
     },
     {

@@ -24,8 +24,8 @@ test("critical project edits have dedicated audit events", async () => {
 test("employee assignment and financial plan changes are enforced by the API layer", async () => {
   const [data, ui] = await Promise.all([read("lib/projects.ts"), read("app/projects-ui.tsx")]);
   assert.match(data, /projects\.assignEmployees/);
-  assert.match(data, /assertAssignmentChange\(actor/);
-  assert.match(data, /assertFinancialPlanChange\(actor/);
+  assert.match(data, /assertAssignmentChange\(\s*actor/);
+  assert.match(data, /assertFinancialPlanChange\(\s*actor/);
   assert.match(data, /projects\.viewCost/);
   assert.match(ui, /canAssignEmployees/);
   assert.match(ui, /canViewFinancialPlan/);
