@@ -7,6 +7,7 @@ import { UniversalOrderForm, type OrderPrefill } from "./order-create-form";
 import { DesignOrderCard } from "./design-order-card";
 import { RenovationOrderCard } from "./renovation-order-card";
 import { EstimatesWorkspace } from "./estimates-ui";
+import { ContractsWorkspace } from "./contracts-ui";
 
 export type User = { id: string; name: string };
 export type SchedulePreset = {
@@ -86,6 +87,9 @@ export type Order = {
     projectId: string | null;
     approvedEstimateVersionId: string | null;
     approvedEstimateId: string | null;
+    contractId: string | null;
+    contractNumber: string | null;
+    contractStatus: string | null;
   } | null;
   defectCount: number;
   photoCount: number;
@@ -1146,6 +1150,7 @@ export function OrdersScreen({
   onOpenProject = () => window.location.assign("/projects"),
   initialEstimateId = null,
   initialEstimateContext = null,
+  initialContractId = null,
 }: {
   currentUser: AuthUser;
   access: AccessProfile;
@@ -1157,6 +1162,7 @@ export function OrdersScreen({
   onOpenProject?: (projectId: string) => void;
   initialEstimateId?: string | null;
   initialEstimateContext?: {clientId:string;sourceLeadId?:string|null;sourceOrderId?:string|null;projectId?:string|null;responsibleUserId:string;residentialComplexId?:string|null;residentialComplex?:string|null;address?:string|null;apartmentNumber?:string|null;areaSqm?:number|null} | null;
+  initialContractId?: string | null;
 }) {
   const [items, setItems] = useState<Order[]>([]),
     [meta, setMeta] = useState<Omit<ListData, "items"> | null>(null),
@@ -1187,7 +1193,7 @@ export function OrdersScreen({
     }),
     [openId, setOpenId] = useState<string | null>(initialOrderId),
     [revision, setRevision] = useState(0),
-    [view, setView] = useState<"list" | "calendar" | "estimates">(initialEstimateId || initialEstimateContext ? "estimates" : "list"),
+    [view, setView] = useState<"list" | "calendar" | "estimates" | "contracts">(initialContractId ? "contracts" : initialEstimateId || initialEstimateContext ? "estimates" : "list"),
     [estimateContext,setEstimateContext]=useState(initialEstimateContext),
     [estimateTargetId,setEstimateTargetId]=useState(initialEstimateId),
     [calendarLevel, setCalendarLevel] = useState<"month" | "day">("month"),
@@ -1331,7 +1337,7 @@ export function OrdersScreen({
           <h2>Заказы и расчёты</h2>
           <p>{meta?.total || 0} заказов · реальные данные Neon</p>
         </div>
-        {view !== "estimates" && access.actions["orders.create"] ? (
+        {(view === "list" || view === "calendar") && access.actions["orders.create"] ? (
           <button className="primary" onClick={() => openCreate()}>
             ＋ Добавить заказ
           </button>
@@ -1359,6 +1365,7 @@ export function OrdersScreen({
           Календарь
         </button>
         {currentUser.role === "OWNER" || access.actions["estimates.view"] ? <button role="tab" aria-selected={view === "estimates"} className={view === "estimates" ? "active" : ""} onClick={() => setView("estimates")}>Сметы / КП</button> : null}
+        {currentUser.role === "OWNER" || access.actions["contracts.view"] ? <button role="tab" aria-selected={view === "contracts"} className={view === "contracts" ? "active" : ""} onClick={() => setView("contracts")}>Договоры</button> : null}
       </div>
       <div className="orders-list-view" hidden={view !== "list"}>
         <div className="panel order-filters">
@@ -1551,6 +1558,7 @@ export function OrdersScreen({
         />
       </div>
       <div hidden={view !== "estimates"}>{view === "estimates" ? <EstimatesWorkspace currentUser={currentUser} access={access} initialEstimateId={estimateTargetId} createContext={estimateContext} onEstimateClosed={()=>{setEstimateContext(null);setEstimateTargetId(null)}} onOpenOrder={(id)=>{setOpenId(id);setView("list")}} /> : null}</div>
+      <div hidden={view !== "contracts"}>{view === "contracts" ? <ContractsWorkspace access={access} initialContractId={initialContractId} /> : null}</div>
       {form && meta ? (
         <UniversalOrderForm
           currentUser={currentUser}

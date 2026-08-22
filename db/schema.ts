@@ -532,6 +532,10 @@ export const projects = pgTable(
       (): AnyPgColumn => estimateVersions.id,
       { onDelete: "restrict", onUpdate: "cascade" },
     ),
+    contractId: text("contract_id").references(
+      (): AnyPgColumn => contracts.id,
+      { onDelete: "restrict", onUpdate: "cascade" },
+    ),
     comment: text("comment"),
     createdByUserId: text("created_by_user_id")
       .notNull()
@@ -551,6 +555,7 @@ export const projects = pgTable(
     index("idx_projects_order").on(table.orderId),
     index("idx_projects_residential_complex").on(table.residentialComplexId),
     index("idx_projects_approved_estimate_version").on(table.approvedEstimateVersionId),
+    index("idx_projects_contract").on(table.contractId),
     uniqueIndex("idx_projects_order_unique")
       .on(table.orderId)
       .where(sql`${table.orderId} IS NOT NULL`),
@@ -938,6 +943,10 @@ export const attachments = pgTable(
       () => designProjectStages.id,
       { onDelete: "restrict", onUpdate: "cascade" },
     ),
+    contractVersionId: text("contract_version_id").references(
+      (): AnyPgColumn => contractVersions.id,
+      { onDelete: "restrict", onUpdate: "cascade" },
+    ),
     previousVersionId: text("previous_version_id").references(
       (): AnyPgColumn => attachments.id,
       { onDelete: "restrict", onUpdate: "cascade" },
@@ -988,6 +997,10 @@ export const attachments = pgTable(
       table.version,
     ),
     index("idx_attachments_design_stage").on(table.designStageId),
+    index("idx_attachments_contract_version").on(
+      table.contractVersionId,
+      table.createdAt,
+    ),
     uniqueIndex("idx_attachments_design_version_unique")
       .on(
         table.designProjectId,
@@ -1014,7 +1027,7 @@ export const attachments = pgTable(
     ),
     check(
       "attachments_category_check",
-      sql`${table.category} IN ('RECEIPT','PROJECT_PHOTO','DAILY_REPORT','HIDDEN_WORK','CONTRACT','ACT','ESTIMATE','INSPECTION','WARRANTY','MEASUREMENT_PLAN','LAYOUT','CONCEPT','VISUALIZATION','WORKING_DRAWINGS','SPECIFICATION','FINAL_ALBUM','OTHER')`,
+      sql`${table.category} IN ('RECEIPT','PROJECT_PHOTO','DAILY_REPORT','HIDDEN_WORK','CONTRACT','ACT','ESTIMATE','INSPECTION','WARRANTY','MEASUREMENT_PLAN','LAYOUT','CONCEPT','VISUALIZATION','WORKING_DRAWINGS','SPECIFICATION','FINAL_ALBUM','CONTRACT_DOCX','CONTRACT_PDF','SIGNED_CONTRACT','CONTRACT_OTHER','OTHER')`,
     ),
     check(
       "attachments_visibility_check",
@@ -1297,6 +1310,63 @@ export const estimateEvents = pgTable("estimate_events", {
   occurredAt: integer("occurred_at").notNull(),
   metadataJson: jsonb("metadata_json").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
 }, (table) => [index("idx_estimate_events_estimate_time").on(table.estimateId, table.occurredAt)]);
+
+export const companySettings = pgTable("company_settings", {
+  id: text("id").primaryKey(),
+  legalName: text("legal_name"), tradeName: text("trade_name"), inn: text("inn"), kpp: text("kpp"), ogrn: text("ogrn"),
+  legalAddress: text("legal_address"), postalAddress: text("postal_address"), bankName: text("bank_name"), bankAccount: text("bank_account"),
+  correspondentAccount: text("correspondent_account"), bik: text("bik"), directorName: text("director_name"), directorTitle: text("director_title"),
+  actingBasis: text("acting_basis"), phone: text("phone"), email: text("email"),
+  updatedByUserId: text("updated_by_user_id").notNull().references(() => users.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  ...timestamps,
+});
+
+export const contractTemplates = pgTable("contract_templates", {
+  id: text("id").primaryKey(), name: text("name").notNull(), contractType: text("contract_type").notNull().default("RENOVATION"),
+  status: text("status").notNull().default("DRAFT"), currentVersionId: text("current_version_id").references((): AnyPgColumn => contractTemplateVersions.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  createdByUserId: text("created_by_user_id").notNull().references(() => users.id, { onDelete: "restrict", onUpdate: "cascade" }), archivedAt: integer("archived_at"), ...timestamps,
+}, (table) => [check("contract_templates_type_check", sql`${table.contractType} IN ('RENOVATION','DESIGN','OTHER')`), check("contract_templates_status_check", sql`${table.status} IN ('DRAFT','ACTIVE','ARCHIVED')`)]);
+
+export const contractTemplateVersions = pgTable("contract_template_versions", {
+  id: text("id").primaryKey(), templateId: text("template_id").notNull().references(() => contractTemplates.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  version: integer("version").notNull(), status: text("status").notNull().default("DRAFT"), bodyJson: jsonb("body_json").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+  changeReason: text("change_reason"), createdByUserId: text("created_by_user_id").notNull().references(() => users.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  publishedAt: integer("published_at"), ...timestamps,
+}, (table) => [unique("contract_template_versions_number_unique").on(table.templateId, table.version), index("idx_contract_template_versions_template").on(table.templateId, table.version), check("contract_template_versions_version_check", sql`${table.version} > 0`), check("contract_template_versions_status_check", sql`${table.status} IN ('DRAFT','ACTIVE','SUPERSEDED')`)]);
+
+export const contracts = pgTable("contracts", {
+  id: text("id").primaryKey(), contractNumber: text("contract_number").notNull(),
+  clientId: text("client_id").notNull().references(() => clients.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  orderId: text("order_id").notNull().references(() => orders.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  projectId: text("project_id").references(() => projects.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  type: text("type").notNull().default("RENOVATION"), status: text("status").notNull().default("DRAFT"),
+  responsibleUserId: text("responsible_user_id").notNull().references(() => users.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  currentVersionId: text("current_version_id").references((): AnyPgColumn => contractVersions.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  signedVersionId: text("signed_version_id").references((): AnyPgColumn => contractVersions.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  createdByUserId: text("created_by_user_id").notNull().references(() => users.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  cancelledAt: integer("cancelled_at"), cancelledByUserId: text("cancelled_by_user_id").references(() => users.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  cancellationReason: text("cancellation_reason"), archivedAt: integer("archived_at"), ...timestamps,
+}, (table) => [unique("contracts_number_unique").on(table.contractNumber), unique("contracts_order_unique").on(table.orderId), index("idx_contracts_client").on(table.clientId), index("idx_contracts_responsible_status_created").on(table.responsibleUserId, table.status, table.createdAt), index("idx_contracts_project").on(table.projectId), check("contracts_type_check", sql`${table.type} IN ('RENOVATION','DESIGN','OTHER')`), check("contracts_status_check", sql`${table.status} IN ('DRAFT','READY','SENT','SIGNED','CANCELLED','SUPERSEDED')`)]);
+
+export const contractVersions = pgTable("contract_versions", {
+  id: text("id").primaryKey(), contractId: text("contract_id").notNull().references(() => contracts.id, { onDelete: "restrict", onUpdate: "cascade" }), version: integer("version").notNull(),
+  status: text("status").notNull().default("DRAFT"), contractDate: integer("contract_date"), estimateVersionId: text("estimate_version_id").references(() => estimateVersions.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  templateVersionId: text("template_version_id").references(() => contractTemplateVersions.id, { onDelete: "restrict", onUpdate: "cascade" }), templateVersionNumber: integer("template_version_number"),
+  contractAmountKopecks: integer("contract_amount_kopecks").notNull(), estimatedMaterialsBudgetKopecks: integer("estimated_materials_budget_kopecks"),
+  plannedStartDate: integer("planned_start_date"), plannedEndDate: integer("planned_end_date"), plannedDuration: text("planned_duration"), paymentTermsText: text("payment_terms_text"), warrantyTerm: text("warranty_term"),
+  clientSnapshotJson: jsonb("client_snapshot_json").$type<Record<string, unknown>>().notNull(), companySnapshotJson: jsonb("company_snapshot_json").$type<Record<string, unknown>>().notNull(),
+  propertySnapshotJson: jsonb("property_snapshot_json").$type<Record<string, unknown>>().notNull(), termsSnapshotJson: jsonb("terms_snapshot_json").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+  documentSnapshotJson: jsonb("document_snapshot_json").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`), changeReason: text("change_reason"),
+  sentAt: integer("sent_at"), sentByUserId: text("sent_by_user_id").references(() => users.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  signedAt: integer("signed_at"), signedByUserId: text("signed_by_user_id").references(() => users.id, { onDelete: "restrict", onUpdate: "cascade" }), signatureNote: text("signature_note"),
+  createdByUserId: text("created_by_user_id").notNull().references(() => users.id, { onDelete: "restrict", onUpdate: "cascade" }), ...timestamps,
+}, (table) => [unique("contract_versions_number_unique").on(table.contractId, table.version), index("idx_contract_versions_contract_created").on(table.contractId, table.version), index("idx_contract_versions_estimate").on(table.estimateVersionId), check("contract_versions_version_check", sql`${table.version} > 0`), check("contract_versions_status_check", sql`${table.status} IN ('DRAFT','READY','SENT','SIGNED','SUPERSEDED')`), check("contract_versions_amount_check", sql`${table.contractAmountKopecks} >= 0`), check("contract_versions_materials_check", sql`${table.estimatedMaterialsBudgetKopecks} IS NULL OR ${table.estimatedMaterialsBudgetKopecks} >= 0`)]);
+
+export const contractEvents = pgTable("contract_events", {
+  id: text("id").primaryKey(), contractId: text("contract_id").notNull().references(() => contracts.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  versionId: text("version_id").references(() => contractVersions.id, { onDelete: "restrict", onUpdate: "cascade" }), actorUserId: text("actor_user_id").notNull().references(() => users.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  type: text("type").notNull(), occurredAt: integer("occurred_at").notNull(), metadataJson: jsonb("metadata_json").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+}, (table) => [index("idx_contract_events_contract_time").on(table.contractId, table.occurredAt)]);
 
 export const additionalWorkVersions = pgTable(
   "additional_work_versions",

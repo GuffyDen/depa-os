@@ -9,7 +9,7 @@ export const LEAD_STAGES = [
 ] as const;
 export const ACTIVE_LEAD_STAGES = LEAD_STAGES.filter((item) => !["WON", "LOST"].includes(item.value));
 export const LEAD_ACTIONS = [
-  ["CALL", "Позвонить"], ["SEND_PROPOSAL", "Отправить КП"], ["FOLLOW_UP_PROPOSAL", "Уточнить решение по КП"],
+  ["CALL", "Позвонить"], ["SEND_PROPOSAL", "Отправить КП"], ["FOLLOW_UP_PROPOSAL", "Уточнить решение по КП"], ["FOLLOW_UP_CONTRACT", "Уточнить подписание договора"],
   ["SEND_CONTRACT", "Отправить договор"], ["FOLLOW_UP_CONTRACT", "Уточнить решение по договору"], ["REQUEST_PAYMENT", "Запросить оплату"],
   ["INSPECTION", "Приёмка"], ["MEETING", "Встреча"], ["OTHER", "Другое"],
 ] as const;

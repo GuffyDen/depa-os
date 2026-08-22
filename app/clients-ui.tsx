@@ -21,9 +21,10 @@ type ClientDetail = {
   tasks: { id: string; title: string; deadline: number | null; status: string }[];
   documents: { id: string; originalFilename: string; category: string; createdAt: number }[];
   leads: { id:string;name:string;phone:string;stage:string;source:string;createdAt:number }[];
+  contracts: {id:string;contractNumber:string;status:string;currentVersion:number;orderNumber:string;createdAt:number}[];
 };
 type ListResponse = { items: Client[]; total: number; hasMore: boolean; nextOffset: number | null; responsibleUsers: Responsible[]; sources: SourceOption[]; error?: string };
-type ClientTab = "overview" | "crm" | "projects" | "orders" | "estimates" | "finances" | "tasks" | "documents";
+type ClientTab = "overview" | "crm" | "projects" | "orders" | "estimates" | "contracts" | "finances" | "tasks" | "documents";
 
 function formatDate(seconds: number | null) {
   return seconds ? new Date(seconds * 1000).toLocaleDateString("ru-RU", { day: "2-digit", month: "short", year: "numeric" }) : "—";
@@ -94,7 +95,7 @@ function ClientForm({ mode, client, currentUser, responsibleUsers, sources, onCl
   </div>;
 }
 
-function ClientCard({ clientId, access, onClose, onChanged, onEdit, onOpenProject, onOpenLead, onOpenOrder, onCreateOrder, onOpenEstimate, onCreateEstimate }: { clientId: string; access: AccessProfile; onClose: () => void; onChanged: () => void; onEdit: (client: Client) => void; onOpenProject?: (id: string) => void; onOpenLead?:(id:string)=>void; onOpenOrder?:(id:string)=>void; onCreateOrder?:(clientId:string)=>void; onOpenEstimate?:(id:string)=>void; onCreateEstimate?:(context:{clientId:string;responsibleUserId:string})=>void }) {
+function ClientCard({ clientId, access, onClose, onChanged, onEdit, onOpenProject, onOpenLead, onOpenOrder, onCreateOrder, onOpenEstimate, onCreateEstimate,onOpenContract }: { clientId: string; access: AccessProfile; onClose: () => void; onChanged: () => void; onEdit: (client: Client) => void; onOpenProject?: (id: string) => void; onOpenLead?:(id:string)=>void; onOpenOrder?:(id:string)=>void; onCreateOrder?:(clientId:string)=>void; onOpenEstimate?:(id:string)=>void; onCreateEstimate?:(context:{clientId:string;responsibleUserId:string})=>void;onOpenContract?:(id:string)=>void }) {
   const [detail, setDetail] = useState<ClientDetail | null>(null);
   const [estimates,setEstimates]=useState<{id:string;currentVersion:number;currentStatus:string;worksTotalKopecks:number;address:string;residentialComplex:string|null}[]>([]);
   const [tab, setTab] = useState<ClientTab>("overview");
@@ -112,7 +113,7 @@ function ClientCard({ clientId, access, onClose, onChanged, onEdit, onOpenProjec
   if (!detail) return <div className="modal-wrap client-drawer-wrap"><aside className="client-drawer"><div className="finance-loading">Загружаем карточку…</div></aside></div>;
   const client = detail.client;
   const tabs: { id: ClientTab; label: string; count?: number }[] = [
-    { id: "overview", label: "Обзор" }, { id:"crm",label:"Заявки",count:detail.leads.length }, { id: "projects", label: "Объекты", count: detail.projects.length }, { id: "orders", label: "Заказы", count: detail.orders.length }, ...(access.actions["estimates.view"]?[{id:"estimates" as const,label:"Сметы",count:estimates.length}]:[]),
+    { id: "overview", label: "Обзор" }, { id:"crm",label:"Заявки",count:detail.leads.length }, { id: "projects", label: "Объекты", count: detail.projects.length }, { id: "orders", label: "Заказы", count: detail.orders.length }, ...(access.actions["estimates.view"]?[{id:"estimates" as const,label:"Сметы",count:estimates.length}]:[]), ...(access.actions["contracts.view"]?[{id:"contracts" as const,label:"Договоры",count:detail.contracts.length}]:[]),
     { id: "finances", label: "Финансы", count: detail.finances.length }, { id: "tasks", label: "Задачи", count: detail.tasks.length }, { id: "documents", label: "Документы", count: detail.documents.length },
   ];
   return <div className="modal-wrap client-drawer-wrap" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><aside className="client-card-drawer" role="dialog" aria-modal="true" aria-label={`Клиент ${client.fullName}`}>
@@ -125,6 +126,7 @@ function ClientCard({ clientId, access, onClose, onChanged, onEdit, onOpenProjec
       {tab === "projects" ? detail.projects.length ? <div className="client-linked-list">{detail.projects.map((project) => onOpenProject ? <button className="panel client-project-link" key={project.id} onClick={() => onOpenProject(project.id)}><div><b>{project.name}</b><span>{project.address || "Адрес не указан"}</span></div><em>{project.status} · Открыть →</em></button> : <article className="panel" key={project.id}><div><b>{project.name}</b><span>{project.address || "Адрес не указан"}</span></div><em>{project.status}</em></article>)}</div> : <EmptyTab title="Объектов пока нет." action="Создать объект" /> : null}
       {tab === "orders" ? detail.orders.length ? <div className="client-linked-list">{detail.orders.map((order) => <button className="panel client-linked-button" key={order.id} onClick={() => onOpenOrder?.(order.id)}><div><b>{order.number} · {order.title}</b><span>{order.amountKopecks==null?"Скрыто правами доступа":money(order.amountKopecks)}</span></div><em>{order.status}</em></button>)}</div> : <EmptyTab title="Заказов пока нет." /> : null}
       {tab === "estimates" ? estimates.length ? <div className="client-linked-list">{estimates.map(estimate=><button className="panel client-linked-button" key={estimate.id} onClick={()=>onOpenEstimate?.(estimate.id)}><div><b>Смета v{estimate.currentVersion} · {estimate.residentialComplex||estimate.address}</b><span>{money(estimate.worksTotalKopecks)}</span></div><em>{estimate.currentStatus} · Открыть →</em></button>)}</div>:<div className="client-tab-empty"><span>▤</span><h4>Смет пока нет.</h4>{access.actions["estimates.create"]&&onCreateEstimate?<button className="primary" onClick={()=>onCreateEstimate({clientId:client.id,responsibleUserId:client.responsibleUserId})}>Создать смету</button>:null}</div>:null}
+      {tab === "contracts" ? detail.contracts.length ? <div className="client-linked-list">{detail.contracts.map(contract=><button className="panel client-linked-button" key={contract.id} onClick={()=>onOpenContract?.(contract.id)}><div><b>{contract.contractNumber} · v{contract.currentVersion}</b><span>{contract.orderNumber} · {formatDate(contract.createdAt)}</span></div><em>{contract.status} · Открыть →</em></button>)}</div>:<EmptyTab title="Договоров пока нет."/>:null}
       {tab === "finances" ? detail.finances.length ? <div className="panel client-finance-list"><div className="client-finance-row head"><span>Дата</span><span>Операция</span><span>Назначение</span><span>Объект</span><span>Сумма</span></div>{detail.finances.map((item) => <div className="client-finance-row" key={item.id}><span>{formatDate(item.transactionDate)}</span><span><b>{item.title}</b><small>{item.type}</small></span><span>{PURPOSE_LABELS[item.purpose || ""] || "—"}</span><span>{item.projectName || "—"}</span><strong>{money(item.amountKopecks)}</strong></div>)}</div> : <EmptyTab title="Финансовых операций пока нет." /> : null}
       {tab === "tasks" ? detail.tasks.length ? <div className="client-linked-list">{detail.tasks.map((task) => <article className="panel" key={task.id}><div><b>{task.title}</b><span>{task.deadline ? `До ${formatDate(task.deadline)}` : "Без срока"}</span></div><em>{task.status}</em></article>)}</div> : <EmptyTab title="Задач пока нет." /> : null}
       {tab === "documents" ? detail.documents.length ? <div className="client-linked-list">{detail.documents.map((document) => <article className="panel" key={document.id}><div><b>{document.originalFilename}</b><span>{document.category} · {formatDate(document.createdAt)}</span></div></article>)}</div> : <EmptyTab title="Документов пока нет." /> : null}
@@ -132,7 +134,7 @@ function ClientCard({ clientId, access, onClose, onChanged, onEdit, onOpenProjec
   </aside></div>;
 }
 
-export function ClientsScreen({ currentUser, access, initialClientId = null, onClientClosed, onOpenProject,onOpenLead,onOpenOrder,onCreateOrder,onOpenEstimate,onCreateEstimate }: { currentUser: AuthUser; access: AccessProfile; initialClientId?: string | null; onClientClosed?: () => void; onOpenProject?: (id: string) => void;onOpenLead?:(id:string)=>void;onOpenOrder?:(id:string)=>void;onCreateOrder?:(clientId:string)=>void;onOpenEstimate?:(id:string)=>void;onCreateEstimate?:(context:{clientId:string;responsibleUserId:string})=>void }) {
+export function ClientsScreen({ currentUser, access, initialClientId = null, onClientClosed, onOpenProject,onOpenLead,onOpenOrder,onCreateOrder,onOpenEstimate,onCreateEstimate,onOpenContract }: { currentUser: AuthUser; access: AccessProfile; initialClientId?: string | null; onClientClosed?: () => void; onOpenProject?: (id: string) => void;onOpenLead?:(id:string)=>void;onOpenOrder?:(id:string)=>void;onCreateOrder?:(clientId:string)=>void;onOpenEstimate?:(id:string)=>void;onCreateEstimate?:(context:{clientId:string;responsibleUserId:string})=>void;onOpenContract?:(id:string)=>void }) {
   const [items, setItems] = useState<Client[]>([]);
   const [responsibleUsers, setResponsibleUsers] = useState<Responsible[]>([]);
   const [sources, setSources] = useState<SourceOption[]>(Object.entries(SOURCE_LABELS).map(([value, label]) => ({ value, label })));
@@ -181,7 +183,7 @@ export function ClientsScreen({ currentUser, access, initialClientId = null, onC
       {loading ? <div className="finance-loading">Загружаем клиентов…</div> : null}
       {nextOffset != null && !loading ? <div className="client-load-more"><button className="secondary" onClick={loadMore}>Показать ещё</button></div> : null}
     </div>
-    {openClientId ? <ClientCard key={openClientId} clientId={openClientId} access={access} onClose={() => { setOpenClientId(null); onClientClosed?.(); }} onChanged={() => setRevision((value) => value + 1)} onEdit={(client) => setForm({ mode: "edit", client })} onOpenProject={onOpenProject} onOpenLead={onOpenLead} onOpenOrder={onOpenOrder} onCreateOrder={onCreateOrder} onOpenEstimate={onOpenEstimate} onCreateEstimate={onCreateEstimate} /> : null}
+    {openClientId ? <ClientCard key={openClientId} clientId={openClientId} access={access} onClose={() => { setOpenClientId(null); onClientClosed?.(); }} onChanged={() => setRevision((value) => value + 1)} onEdit={(client) => setForm({ mode: "edit", client })} onOpenProject={onOpenProject} onOpenLead={onOpenLead} onOpenOrder={onOpenOrder} onCreateOrder={onCreateOrder} onOpenEstimate={onOpenEstimate} onCreateEstimate={onCreateEstimate} onOpenContract={onOpenContract} /> : null}
     {form ? <ClientForm mode={form.mode} client={form.client} currentUser={currentUser} responsibleUsers={responsibleUsers} sources={sources} onClose={() => setForm(null)} onSaved={saved} onOpenDuplicate={(client) => { setForm(null); setOpenClientId(client.id); }} /> : null}
   </section>;
 }

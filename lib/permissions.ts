@@ -110,6 +110,14 @@ export async function canViewDesignProject(
   return Boolean(row);
 }
 
+export async function canViewContract(actor: AuthUser, contractId: string) {
+  if (actor.role === "OWNER") return true;
+  const profile = await getAccessProfile(actor);
+  if (!profile.modules.orders || !profile.actions["contracts.view"]) return false;
+  if (profile.scopes.contracts === "ALL") return Boolean(await first<{ id: string }>("SELECT id FROM contracts WHERE id=$1", [contractId]));
+  return Boolean(await first<{ id: string }>("SELECT id FROM contracts WHERE id=$1 AND responsible_user_id=$2", [contractId, actor.id]));
+}
+
 export async function getScope(actor: AuthUser, scope: ScopeKey): Promise<ScopeValue> {
   if (actor.role === "OWNER") return "ALL";
   return (await getAccessProfile(actor)).scopes[scope];

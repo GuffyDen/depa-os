@@ -5,6 +5,7 @@
 @import "./crm.css";
 @import "./orders.css";
 @import "./estimates.css";
+@import "./contracts.css";
 
 /* Finance summary: three business metrics, with no role/access placeholder. */
 .metrics-grid.finance-summary{grid-template-columns:repeat(3,minmax(0,1fr))}

@@ -27,6 +27,7 @@ type ProjectRow = {
   forecast_end_date: number | null; actual_end_date: number | null; contract_amount_kopecks: number | string;
   estimated_materials_budget_kopecks: number | string; comment: string | null; created_by_user_id: string; archived_at: number | null;
   approved_estimate_version_id: string | null;
+  contract_id: string | null; contract_number: string | null; contract_status: string | null;
   created_at: number; updated_at: number;
 };
 
@@ -95,9 +96,9 @@ function validate(
 function baseSelect() {
   return `SELECT p.id,p.order_id,o.number order_number,o.type order_type,p.client_id,c.name AS client_name,c.phone AS client_phone,p.name,COALESCE(rc.name,p.residential_complex) residential_complex,p.residential_complex_id,p.address,p.apartment,p.area_sqm,
     p.responsible_user_id,ru.display_name AS responsible_name,p.foreman_employee_id,fe.full_name AS foreman_name,p.status,p.start_date,
-    p.planned_end_date,p.forecast_end_date,p.actual_end_date,p.contract_amount_kopecks,p.estimated_materials_budget_kopecks,p.approved_estimate_version_id,p.comment,
+    p.planned_end_date,p.forecast_end_date,p.actual_end_date,p.contract_amount_kopecks,p.estimated_materials_budget_kopecks,p.approved_estimate_version_id,p.contract_id,ct.contract_number,ct.status contract_status,p.comment,
     p.created_by_user_id,p.archived_at,p.created_at,p.updated_at
-    FROM projects p JOIN clients c ON c.id=p.client_id JOIN users ru ON ru.id=p.responsible_user_id LEFT JOIN employees fe ON fe.id=p.foreman_employee_id LEFT JOIN orders o ON o.id=p.order_id LEFT JOIN residential_complexes rc ON rc.id=p.residential_complex_id`;
+    FROM projects p JOIN clients c ON c.id=p.client_id JOIN users ru ON ru.id=p.responsible_user_id LEFT JOIN employees fe ON fe.id=p.foreman_employee_id LEFT JOIN orders o ON o.id=p.order_id LEFT JOIN residential_complexes rc ON rc.id=p.residential_complex_id LEFT JOIN contracts ct ON ct.id=p.contract_id`;
 }
 
 function serialize(row: ProjectRow, canViewFinancialPlan = true) {
@@ -108,7 +109,7 @@ function serialize(row: ProjectRow, canViewFinancialPlan = true) {
     responsibleName: row.responsible_name, foremanEmployeeId: row.foreman_employee_id, foremanName: row.foreman_name,
     status: row.status, startDate: row.start_date, plannedEndDate: row.planned_end_date, forecastEndDate: row.forecast_end_date,
     actualEndDate: row.actual_end_date, contractWorksAmountKopecks: canViewFinancialPlan ? Number(row.contract_amount_kopecks) : null,
-    estimatedMaterialsBudgetKopecks: canViewFinancialPlan ? Number(row.estimated_materials_budget_kopecks) : null, approvedEstimateVersionId: row.approved_estimate_version_id, comment: row.comment,
+    estimatedMaterialsBudgetKopecks: canViewFinancialPlan ? Number(row.estimated_materials_budget_kopecks) : null, approvedEstimateVersionId: row.approved_estimate_version_id, contractId: row.contract_id, contractNumber: row.contract_number, contractStatus: row.contract_status, comment: row.comment,
     createdByUserId: row.created_by_user_id, archivedAt: row.archived_at, createdAt: row.created_at, updatedAt: row.updated_at,
   };
 }
@@ -264,11 +265,11 @@ export async function getProject(actor: AuthUser, projectId: string) {
 export async function createProject(actor: AuthUser, input: ProjectInput) {
   await assertModuleAction(actor, "projects", "projects.create");
   const orderId = clean(input.orderId, 100);
-  let source: { client_id: string; type: string; project_id: string | null; residential_complex_id: string | null; residential_complex: string | null; address: string | null; apartment: string | null; area_sqm: string | number | null; approved_estimate_version_id: string | null; estimate_total_kopecks: string | number | null; estimate_materials_kopecks: string | number | null } | null = null;
+  let source: { client_id: string; type: string; project_id: string | null; residential_complex_id: string | null; residential_complex: string | null; address: string | null; apartment: string | null; area_sqm: string | number | null; approved_estimate_version_id: string | null; estimate_total_kopecks: string | number | null; estimate_materials_kopecks: string | number | null; contract_id:string|null; contract_status:string|null } | null = null;
   if (orderId) {
-    source = await first<{ client_id: string; type: string; project_id: string | null; residential_complex_id: string | null; residential_complex: string | null; address: string | null; apartment: string | null; area_sqm: string | number | null; approved_estimate_version_id: string | null; estimate_total_kopecks: string | number | null; estimate_materials_kopecks: string | number | null }>(`SELECT o.client_id,o.type,p.id project_id,rod.residential_complex_id,COALESCE(rc.name,rod.residential_complex) residential_complex,rod.address,rod.apartment_number apartment,rod.area_sqm,
-      rod.approved_estimate_version_id,ev.total_kopecks estimate_total_kopecks,ev.estimated_materials_budget_kopecks estimate_materials_kopecks
-      FROM orders o LEFT JOIN projects p ON p.order_id=o.id LEFT JOIN renovation_order_details rod ON rod.order_id=o.id LEFT JOIN residential_complexes rc ON rc.id=rod.residential_complex_id LEFT JOIN estimate_versions ev ON ev.id=rod.approved_estimate_version_id WHERE o.id=$1 LIMIT 1`, [orderId]);
+    source = await first<{ client_id: string; type: string; project_id: string | null; residential_complex_id: string | null; residential_complex: string | null; address: string | null; apartment: string | null; area_sqm: string | number | null; approved_estimate_version_id: string | null; estimate_total_kopecks: string | number | null; estimate_materials_kopecks: string | number | null; contract_id:string|null; contract_status:string|null }>(`SELECT o.client_id,o.type,p.id project_id,rod.residential_complex_id,COALESCE(rc.name,rod.residential_complex) residential_complex,rod.address,rod.apartment_number apartment,rod.area_sqm,
+      rod.approved_estimate_version_id,ev.total_kopecks estimate_total_kopecks,ev.estimated_materials_budget_kopecks estimate_materials_kopecks,ct.id contract_id,ct.status contract_status
+      FROM orders o LEFT JOIN projects p ON p.order_id=o.id LEFT JOIN renovation_order_details rod ON rod.order_id=o.id LEFT JOIN residential_complexes rc ON rc.id=rod.residential_complex_id LEFT JOIN estimate_versions ev ON ev.id=rod.approved_estimate_version_id LEFT JOIN contracts ct ON ct.order_id=o.id WHERE o.id=$1 LIMIT 1`, [orderId]);
     const order = source;
     if (!order || order.type !== "RENOVATION") throw new ProjectError("Объект можно связать только с заказом на ремонт.", 409);
     if (order.project_id) throw new ProjectError("Для этого заказа объект уже создан.", 409);
@@ -294,9 +295,10 @@ export async function createProject(actor: AuthUser, input: ProjectInput) {
   const timestamp = Math.floor(Date.now() / 1000);
   const relationAudit = residentialComplexRelationAudit(actor, "Project", id, null, data.residentialComplexId, timestamp);
   await transaction([
-    { text: `INSERT INTO projects (id,order_id,client_id,name,residential_complex,residential_complex_id,address,apartment,area_sqm,responsible_user_id,manager_employee_id,foreman_employee_id,status,start_date,planned_end_date,forecast_end_date,actual_end_date,contract_amount_kopecks,estimated_materials_budget_kopecks,approved_estimate_version_id,comment,created_by_user_id,created_at,updated_at)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)`, params: [id, orderId, data.clientId, data.displayName, data.residentialComplex, data.residentialComplexId, data.address, data.apartment, data.areaSqm, data.responsibleUserId, responsible.employee_id, data.foremanEmployeeId, data.status, data.startDate, data.plannedEndDate, data.forecastEndDate, data.actualEndDate, data.contractWorksAmountKopecks, data.estimatedMaterialsBudgetKopecks, source?.approved_estimate_version_id ?? null, data.comment, actor.id, timestamp, timestamp] },
+    { text: `INSERT INTO projects (id,order_id,client_id,name,residential_complex,residential_complex_id,address,apartment,area_sqm,responsible_user_id,manager_employee_id,foreman_employee_id,status,start_date,planned_end_date,forecast_end_date,actual_end_date,contract_amount_kopecks,estimated_materials_budget_kopecks,approved_estimate_version_id,contract_id,comment,created_by_user_id,created_at,updated_at)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)`, params: [id, orderId, data.clientId, data.displayName, data.residentialComplex, data.residentialComplexId, data.address, data.apartment, data.areaSqm, data.responsibleUserId, responsible.employee_id, data.foremanEmployeeId, data.status, data.startDate, data.plannedEndDate, data.forecastEndDate, data.actualEndDate, data.contractWorksAmountKopecks, data.estimatedMaterialsBudgetKopecks, source?.approved_estimate_version_id ?? null, source?.contract_id??null, data.comment, actor.id, timestamp, timestamp] },
     ...(source?.approved_estimate_version_id ? [{ text: "UPDATE estimates SET project_id=$1,updated_at=$2 WHERE approved_version_id=$3", params: [id, timestamp, source.approved_estimate_version_id] }] : []),
+    ...(source?.contract_id ? [{text:"UPDATE contracts SET project_id=$1,updated_at=$2 WHERE id=$3",params:[id,timestamp,source.contract_id]}] : []),
     { text: "INSERT INTO audit_logs (id,actor_user_id,action,entity_type,entity_id,occurred_at,metadata_json) VALUES ($1,$2,'PROJECT_CREATED','Project',$3,$4,$5)", params: [crypto.randomUUID(), actor.id, id, timestamp, JSON.stringify({ orderId, clientId: data.clientId, responsibleUserId: data.responsibleUserId, status: data.status })] },
     ...(orderId ? [{ text: "INSERT INTO audit_logs (id,actor_user_id,action,entity_type,entity_id,occurred_at,metadata_json) VALUES ($1,$2,'RENOVATION_PROJECT_LINKED','Order',$3,$4,$5)", params: [crypto.randomUUID(), actor.id, orderId, timestamp, JSON.stringify({ projectId: id })] }] : []),
     ...(relationAudit ? [relationAudit] : []),

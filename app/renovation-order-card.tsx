@@ -36,6 +36,7 @@ export function RenovationOrderCard({
   const details = order.renovation;
   async function createProject() {
     if (!details || details.projectId) return;
+    if (details.contractStatus !== "SIGNED" && !window.confirm("Подписанный договор не найден. Owner может продолжить создание объекта без договора. Продолжить?")) return;
     setBusy(true);
     setError("");
     try {
@@ -187,6 +188,7 @@ export function RenovationOrderCard({
             )}
           </section>
           {details?.approvedEstimateVersionId ? <section className="panel order-comment"><span className="eyebrow">СОГЛАСОВАННАЯ СМЕТА</span><p>Заказ создан из согласованной версии сметы. Стоимость заказа включает только работы.</p>{details.approvedEstimateId&&onOpenEstimate?<button className="secondary" onClick={()=>onOpenEstimate(details.approvedEstimateId!)}>Открыть смету</button>:null}</section> : null}
+          <section className="panel order-comment"><span className="eyebrow">ДОГОВОР</span><p>{details?.contractNumber ? `${details.contractNumber} · ${details.contractStatus}` : "Договор ещё не создан. Объект остаётся доступен для явного создания Owner с предупреждением."}</p></section>
           <section className="panel order-comment">
             <span className="eyebrow">КОММЕНТАРИЙ</span>
             <p>{order.comment || "Комментарий не добавлен."}</p>
