@@ -1,0 +1,4 @@
+import { getRequestUser } from "../../../../lib/auth";
+import { ClientPortalError,manuallyAcceptStage,resubmitStage } from "../../../../lib/client-portal";
+import { AccessError } from "../../../../lib/permissions";
+export async function POST(request:Request){const actor=await getRequestUser(request);if(!actor)return Response.json({error:"Требуется авторизация."},{status:401});try{const body=await request.json() as Record<string,unknown>;return Response.json(body.action==="RESUBMIT"?await resubmitStage(actor,String(body.stageId??""),String(body.comment??"")):body.action==="MANUAL_ACCEPT"?await manuallyAcceptStage(actor,String(body.stageId??""),String(body.comment??"")):(()=>{throw new ClientPortalError("Неизвестное действие.")})())}catch(error){return Response.json({error:error instanceof Error?error.message:"Не удалось выполнить действие."},{status:error instanceof ClientPortalError||error instanceof AccessError?error.status:500})}}

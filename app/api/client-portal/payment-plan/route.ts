@@ -1,0 +1,4 @@
+import { getRequestUser } from "../../../../lib/auth";
+import { activatePaymentPlan,ClientPortalError,saveStagePaymentTerms } from "../../../../lib/client-portal";
+import { AccessError } from "../../../../lib/permissions";
+export async function POST(request:Request){const actor=await getRequestUser(request);if(!actor)return Response.json({error:"Требуется авторизация."},{status:401});try{const body=await request.json() as Record<string,unknown>,projectId=String(body.projectId??"");return Response.json(body.action==="ACTIVATE"?await activatePaymentPlan(actor,projectId):await saveStagePaymentTerms(actor,projectId,Array.isArray(body.terms)?body.terms:[]))}catch(error){return Response.json({error:error instanceof Error?error.message:"Не удалось сохранить финансовый план."},{status:error instanceof ClientPortalError||error instanceof AccessError?error.status:500})}}

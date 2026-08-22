@@ -539,6 +539,9 @@ export const projects = pgTable(
     internalForecastEndDate: integer("internal_forecast_end_date"),
     publishedForecastEndDate: integer("published_forecast_end_date"),
     dailyReportResponsibleUserId: text("daily_report_responsible_user_id").references((): AnyPgColumn => users.id, { onDelete: "restrict", onUpdate: "cascade" }),
+    paymentPlanVersion: integer("payment_plan_version").notNull().default(0),
+    paymentPlanActivatedAt: integer("payment_plan_activated_at"),
+    paymentPlanActivatedByUserId: text("payment_plan_activated_by_user_id").references((): AnyPgColumn => users.id, { onDelete: "restrict", onUpdate: "cascade" }),
     comment: text("comment"),
     createdByUserId: text("created_by_user_id")
       .notNull()
@@ -843,6 +846,10 @@ export const financialTransactions = pgTable(
       onDelete: "restrict",
       onUpdate: "cascade",
     }),
+    clientPaymentClaimId: text("client_payment_claim_id").references(
+      (): AnyPgColumn => clientPaymentClaims.id,
+      { onDelete: "restrict", onUpdate: "cascade" },
+    ),
     category: text("category").notNull(),
     subcategory: text("subcategory"),
     source: text("source"),
@@ -878,6 +885,9 @@ export const financialTransactions = pgTable(
     index("idx_transactions_original").on(table.originalTransactionId),
     index("idx_transactions_author").on(table.authorUserId),
     index("idx_transactions_order").on(table.orderId),
+    uniqueIndex("financial_transactions_payment_claim_unique")
+      .on(table.clientPaymentClaimId)
+      .where(sql`${table.clientPaymentClaimId} IS NOT NULL`),
     index("idx_transactions_created_at").on(table.createdAt),
     index("idx_transactions_type_date").on(table.type, table.transactionDate),
     index("idx_transactions_category_date").on(
@@ -951,6 +961,11 @@ export const attachments = pgTable(
       { onDelete: "restrict", onUpdate: "cascade" },
     ),
     photoRequirementId: text("photo_requirement_id"),
+    clientPaymentClaimId: text("client_payment_claim_id").references(
+      (): AnyPgColumn => clientPaymentClaims.id,
+      { onDelete: "restrict", onUpdate: "cascade" },
+    ),
+    clientVisible: integer("client_visible").notNull().default(0),
     previousVersionId: text("previous_version_id").references(
       (): AnyPgColumn => attachments.id,
       { onDelete: "restrict", onUpdate: "cascade" },
@@ -1005,6 +1020,7 @@ export const attachments = pgTable(
       table.contractVersionId,
       table.createdAt,
     ),
+    index("idx_attachments_payment_claim").on(table.clientPaymentClaimId),
     uniqueIndex("idx_attachments_design_version_unique")
       .on(
         table.designProjectId,
@@ -1080,6 +1096,7 @@ export const projectStages = pgTable(
     acceptanceStatus: text("acceptance_status").notNull().default("NOT_REQUIRED"),
     stageCommercialAmountKopecks: integer("stage_commercial_amount_kopecks"),
     acceptanceComment: text("acceptance_comment"), acceptedAt: integer("accepted_at"), rejectedAt: integer("rejected_at"), acceptanceByClientId: text("acceptance_by_client_id"), archivedAt: integer("archived_at"),
+    acceptedByClientPortalUserId: text("accepted_by_client_portal_user_id").references((): AnyPgColumn => clientPortalUsers.id, { onDelete: "restrict", onUpdate: "cascade" }),
     responsibleEmployeeId: text("responsible_employee_id").references(
       () => employees.id,
       { onDelete: "restrict", onUpdate: "cascade" },
@@ -1532,6 +1549,15 @@ export const obligations = pgTable(
     paidKopecks: integer("paid_kopecks").notNull().default(0),
     dueDate: integer("due_date"),
     status: text("status").notNull(),
+    obligationType: text("obligation_type"),
+    stageId: text("stage_id").references(() => projectStages.id, {
+      onDelete: "restrict",
+      onUpdate: "cascade",
+    }),
+    paymentPlanVersion: integer("payment_plan_version").notNull().default(1),
+    sourceKey: text("source_key"),
+    currency: text("currency").notNull().default("RUB"),
+    cancelledAt: integer("cancelled_at"),
     ...timestamps,
   },
   (table) => [
@@ -1541,5 +1567,51 @@ export const obligations = pgTable(
       table.counterpartyId,
     ),
     index("idx_obligations_project").on(table.projectId),
+    index("idx_obligations_stage").on(table.stageId),
+    uniqueIndex("obligations_source_key_unique").on(table.sourceKey).where(sql`${table.sourceKey} IS NOT NULL`),
   ],
 );
+
+export const clientPortalUsers = pgTable("client_portal_users", {
+  id: text("id").primaryKey(), clientId: text("client_id").notNull().references(() => clients.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  loginIdentifier: text("login_identifier").notNull(), loginIdentifierNormalized: text("login_identifier_normalized").notNull(),
+  passwordHash: text("password_hash").notNull(), passwordSalt: text("password_salt").notNull(), passwordIterations: integer("password_iterations").notNull(),
+  status: text("status").notNull().default("ACTIVE"), lastLoginAt: integer("last_login_at"), ...timestamps,
+}, table => [uniqueIndex("client_portal_users_client_unique").on(table.clientId), uniqueIndex("client_portal_users_login_unique").on(table.loginIdentifierNormalized)]);
+
+export const clientPortalSessions = pgTable("client_portal_sessions", {
+  id: text("id").primaryKey(), portalUserId: text("portal_user_id").notNull().references(() => clientPortalUsers.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  tokenHash: text("token_hash").notNull(), createdAt: integer("created_at").notNull(), lastSeenAt: integer("last_seen_at").notNull(), expiresAt: integer("expires_at").notNull(), revokedAt: integer("revoked_at"), userAgent: text("user_agent"),
+}, table => [uniqueIndex("client_portal_sessions_token_unique").on(table.tokenHash), index("idx_client_portal_sessions_user_expires").on(table.portalUserId, table.expiresAt)]);
+
+export const clientPortalInvites = pgTable("client_portal_invites", {
+  id: text("id").primaryKey(), clientId: text("client_id").notNull().references(() => clients.id, { onDelete: "restrict", onUpdate: "cascade" }), tokenHash: text("token_hash").notNull(), loginIdentifier: text("login_identifier").notNull(), expiresAt: integer("expires_at").notNull(), usedAt: integer("used_at"), revokedAt: integer("revoked_at"), createdByUserId: text("created_by_user_id").notNull().references(() => users.id, { onDelete: "restrict", onUpdate: "cascade" }), createdAt: integer("created_at").notNull(),
+}, table => [uniqueIndex("client_portal_invites_token_unique").on(table.tokenHash), index("idx_client_portal_invites_client_created").on(table.clientId, table.createdAt)]);
+
+export const clientPortalAuditEvents = pgTable("client_portal_audit_events", {
+  id: text("id").primaryKey(), action: text("action").notNull(), entityType: text("entity_type").notNull(), entityId: text("entity_id").notNull(), clientId: text("client_id").references(() => clients.id, { onDelete: "restrict", onUpdate: "cascade" }), clientPortalUserId: text("client_portal_user_id").references(() => clientPortalUsers.id, { onDelete: "restrict", onUpdate: "cascade" }), employeeUserId: text("employee_user_id").references(() => users.id, { onDelete: "restrict", onUpdate: "cascade" }), metadataJson: jsonb("metadata_json").notNull().default({}), occurredAt: integer("occurred_at").notNull(),
+}, table => [index("idx_client_portal_audit_entity_time").on(table.entityType, table.entityId, table.occurredAt)]);
+
+export const stageAcceptanceEvents = pgTable("stage_acceptance_events", {
+  id: text("id").primaryKey(), projectId: text("project_id").notNull().references(() => projects.id, { onDelete: "restrict", onUpdate: "cascade" }), stageId: text("stage_id").notNull().references(() => projectStages.id, { onDelete: "restrict", onUpdate: "cascade" }), type: text("type").notNull(), clientPortalUserId: text("client_portal_user_id").references(() => clientPortalUsers.id, { onDelete: "restrict", onUpdate: "cascade" }), employeeUserId: text("employee_user_id").references(() => users.id, { onDelete: "restrict", onUpdate: "cascade" }), comment: text("comment"), createdAt: integer("created_at").notNull(),
+}, table => [index("idx_stage_acceptance_events_stage_time").on(table.stageId, table.createdAt)]);
+
+export const projectStagePaymentTerms = pgTable("project_stage_payment_terms", {
+  id: text("id").primaryKey(), projectId: text("project_id").notNull().references(() => projects.id, { onDelete: "restrict", onUpdate: "cascade" }), stageId: text("stage_id").notNull().references(() => projectStages.id, { onDelete: "restrict", onUpdate: "cascade" }), stageAmountKopecks: integer("stage_amount_kopecks").notNull(), requiredAdvanceKopecks: integer("required_advance_kopecks").notNull().default(0), currency: text("currency").notNull().default("RUB"), position: integer("position").notNull(), paymentPlanVersion: integer("payment_plan_version").notNull().default(1), active: integer("active").notNull().default(1), ...timestamps,
+}, table => [uniqueIndex("project_stage_payment_terms_stage_version_unique").on(table.stageId, table.paymentPlanVersion), index("idx_stage_payment_terms_project_position").on(table.projectId, table.paymentPlanVersion, table.position)]);
+
+export const clientPaymentClaims = pgTable("client_payment_claims", {
+  id: text("id").primaryKey(), clientId: text("client_id").notNull().references(() => clients.id, { onDelete: "restrict", onUpdate: "cascade" }), projectId: text("project_id").notNull().references(() => projects.id, { onDelete: "restrict", onUpdate: "cascade" }), portalUserId: text("portal_user_id").notNull().references(() => clientPortalUsers.id, { onDelete: "restrict", onUpdate: "cascade" }), claimedAmountKopecks: integer("claimed_amount_kopecks").notNull(), confirmedAmountKopecks: integer("confirmed_amount_kopecks"), paymentMethod: text("payment_method"), clientComment: text("client_comment"), status: text("status").notNull().default("PENDING"), claimedAt: integer("claimed_at").notNull(), receivedAt: integer("received_at"), confirmedAt: integer("confirmed_at"), confirmedByUserId: text("confirmed_by_user_id").references(() => users.id, { onDelete: "restrict", onUpdate: "cascade" }), rejectedAt: integer("rejected_at"), rejectedByUserId: text("rejected_by_user_id").references(() => users.id, { onDelete: "restrict", onUpdate: "cascade" }), rejectionComment: text("rejection_comment"), cancelledAt: integer("cancelled_at"), ...timestamps,
+}, table => [index("idx_client_payment_claims_project_status").on(table.projectId, table.status, table.createdAt)]);
+
+export const clientPaymentClaimObligations = pgTable("client_payment_claim_obligations", {
+  id: text("id").primaryKey(), claimId: text("claim_id").notNull().references(() => clientPaymentClaims.id, { onDelete: "restrict", onUpdate: "cascade" }), obligationId: text("obligation_id").notNull().references(() => obligations.id, { onDelete: "restrict", onUpdate: "cascade" }), intendedAmountKopecks: integer("intended_amount_kopecks").notNull(), position: integer("position").notNull(), createdAt: integer("created_at").notNull(),
+}, table => [uniqueIndex("client_payment_claim_obligations_unique").on(table.claimId, table.obligationId)]);
+
+export const obligationPaymentAllocations = pgTable("obligation_payment_allocations", {
+  id: text("id").primaryKey(), obligationId: text("obligation_id").notNull().references(() => obligations.id, { onDelete: "restrict", onUpdate: "cascade" }), financialTransactionId: text("financial_transaction_id").notNull().references(() => financialTransactions.id, { onDelete: "restrict", onUpdate: "cascade" }), amountKopecks: integer("amount_kopecks").notNull(), createdAt: integer("created_at").notNull(), createdByUserId: text("created_by_user_id").notNull().references(() => users.id, { onDelete: "restrict", onUpdate: "cascade" }),
+}, table => [uniqueIndex("obligation_allocations_unique").on(table.obligationId, table.financialTransactionId), index("idx_obligation_allocations_transaction").on(table.financialTransactionId)]);
+
+export const clientUnappliedFunds = pgTable("client_unapplied_funds", {
+  id: text("id").primaryKey(), clientId: text("client_id").notNull().references(() => clients.id, { onDelete: "restrict", onUpdate: "cascade" }), projectId: text("project_id").notNull().references(() => projects.id, { onDelete: "restrict", onUpdate: "cascade" }), financialTransactionId: text("financial_transaction_id").notNull().references(() => financialTransactions.id, { onDelete: "restrict", onUpdate: "cascade" }), amountKopecks: integer("amount_kopecks").notNull(), remainingKopecks: integer("remaining_kopecks").notNull(), createdAt: integer("created_at").notNull(),
+}, table => [uniqueIndex("client_unapplied_funds_transaction_unique").on(table.financialTransactionId)]);

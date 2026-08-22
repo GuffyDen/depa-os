@@ -43,12 +43,12 @@ function hexToBytes(value: string) {
   return bytes;
 }
 
-function randomToken(byteLength = 32) {
+export function randomToken(byteLength = 32) {
   const bytes = crypto.getRandomValues(new Uint8Array(byteLength));
   return btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
 }
 
-async function sha256(value: string) {
+export async function sha256(value: string) {
   return bytesToHex(new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(value))));
 }
 
@@ -69,14 +69,18 @@ export async function createLocalPasswordCredential(password: string) {
   return makePasswordHash(password);
 }
 
-async function verifyPassword(password: string, row: UserRow) {
-  if (!row.password_hash || !row.password_salt || !row.password_iterations) return false;
-  const candidate = hexToBytes(await derivePassword(password, row.password_salt, row.password_iterations));
-  const expected = hexToBytes(row.password_hash);
+export async function verifyLocalPasswordCredential(password: string, hash: string, salt: string, iterations: number) {
+  const candidate = hexToBytes(await derivePassword(password, salt, iterations));
+  const expected = hexToBytes(hash);
   if (candidate.length !== expected.length) return false;
   let difference = 0;
   for (let index = 0; index < candidate.length; index += 1) difference |= candidate[index] ^ expected[index];
   return difference === 0;
+}
+
+async function verifyPassword(password: string, row: UserRow) {
+  if (!row.password_hash || !row.password_salt || !row.password_iterations) return false;
+  return verifyLocalPasswordCredential(password, row.password_hash, row.password_salt, row.password_iterations);
 }
 
 function publicUser(row: UserRow): AuthUser {

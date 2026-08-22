@@ -1,0 +1,3 @@
+import { clientSessionCookie, ClientPortalError, loginClientPortal } from "../../../../../lib/client-portal";
+export const dynamic="force-dynamic";
+export async function POST(request:Request){try{const body=await request.json() as Record<string,unknown>,result=await loginClientPortal(String(body.identifier??""),String(body.password??""),request);return Response.json({user:result.user},{headers:{"Set-Cookie":clientSessionCookie(result.token,request.url)}})}catch(error){const status=error instanceof ClientPortalError?error.status:500;return Response.json({error:error instanceof Error?error.message:"Не удалось войти."},{status})}}

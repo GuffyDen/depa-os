@@ -1,0 +1,6 @@
+import { getRequestUser } from "../../../../lib/auth";
+import { ClientPortalError,createClientPortalInvite,disableClientPortal,getClientPortalAccess } from "../../../../lib/client-portal";
+import { AccessError } from "../../../../lib/permissions";
+function fail(error:unknown){return Response.json({error:error instanceof Error?error.message:"Не удалось управлять доступом."},{status:error instanceof ClientPortalError||error instanceof AccessError?error.status:500})}
+export async function GET(request:Request){const actor=await getRequestUser(request);if(!actor)return Response.json({error:"Требуется авторизация."},{status:401});try{return Response.json(await getClientPortalAccess(actor,new URL(request.url).searchParams.get("clientId")??""))}catch(error){return fail(error)}}
+export async function POST(request:Request){const actor=await getRequestUser(request);if(!actor)return Response.json({error:"Требуется авторизация."},{status:401});try{const body=await request.json() as Record<string,unknown>,clientId=String(body.clientId??"");return Response.json(body.action==="DISABLE"?await disableClientPortal(actor,clientId):await createClientPortalInvite(actor,clientId,body.action==="RESET"))}catch(error){return fail(error)}}

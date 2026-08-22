@@ -21,6 +21,7 @@ export const ACTION_GROUPS = [
   ] },
   { module: "clients", label: "Клиенты", actions: [
     ["clients.view", "Просматривать"], ["clients.create", "Создавать"], ["clients.edit", "Редактировать"],
+    ["clientPortal.manageAccess", "Управлять личным кабинетом"],
   ] },
   { module: "orders", label: "Заказы", actions: [
     ["orders.view", "Просматривать"], ["orders.create", "Создавать"], ["orders.edit", "Редактировать"],
@@ -68,6 +69,9 @@ export const ACTION_GROUPS = [
     ["dailyReports.manageClientVisibility", "Публиковать комментарий клиенту"], ["hiddenWorks.upload", "Загружать скрытые работы"],
     ["productionTemplates.view", "Просматривать шаблоны"], ["productionTemplates.create", "Создавать шаблоны"],
     ["productionTemplates.edit", "Редактировать шаблоны"], ["productionTemplates.archive", "Архивировать шаблоны"],
+    ["stageAcceptance.view", "Просматривать приёмку этапов"], ["stageAcceptance.resubmit", "Повторно передавать этапы"],
+    ["stagePaymentTerms.view", "Просматривать финансовый план этапов"], ["stagePaymentTerms.edit", "Редактировать финансовый план этапов"],
+    ["obligations.view", "Просматривать обязательства"], ["obligations.manage", "Управлять обязательствами"],
   ] },
   { module: "tasks", label: "Задачи", actions: [
     ["tasks.view", "Просматривать"], ["tasks.create", "Создавать"], ["tasks.edit", "Редактировать"],
@@ -78,6 +82,9 @@ export const ACTION_GROUPS = [
     ["finance.createTransfer", "Перемещать средства"], ["finance.editTransaction", "Редактировать операции"],
     ["finance.viewClientFunds", "Просматривать средства клиентов"], ["finance.viewProfit", "Просматривать прибыль DEPA"],
     ["finance.viewAdministrativeExpenses", "Просматривать административные расходы"],
+    ["clientPayments.view", "Просматривать заявления клиентов"], ["clientPayments.confirm", "Подтверждать оплаты клиентов"],
+    ["clientPayments.reject", "Отклонять заявления клиентов"], ["clientPayments.confirmToAnyCashbox", "Подтверждать в любую кассу"],
+    ["clientPayments.viewProof", "Просматривать подтверждения оплаты"],
   ] },
   { module: "team", label: "Команда", actions: [
     ["team.view", "Просматривать"], ["team.createEmployee", "Создавать сотрудников"], ["team.editEmployee", "Редактировать сотрудников"],
@@ -159,7 +166,7 @@ export const ACCESS_PRESETS = {
   ACCOUNTANT: {
     label: "Бухгалтер",
     modules: ["dashboard", "clients", "orders", "projects", "tasks", "finance", "team", "contractors", "documents"],
-    actions: ["clients.view", "clients.edit", "orders.view", "orders.edit", "orders.viewFinance", "design.view", "design.viewFinance", "design.stages.view", "design.files.view", "contracts.view", "contracts.viewCompanyDetails", "companySettings.view", "projects.view", "tasks.view", "finance.view", "finance.editTransaction", "finance.viewClientFunds", "finance.viewProfit", "finance.viewAdministrativeExpenses", "team.view", "contractors.view", "documents.view", "documents.upload", "documents.edit"],
+    actions: ["clients.view", "clients.edit", "orders.view", "orders.edit", "orders.viewFinance", "design.view", "design.viewFinance", "design.stages.view", "design.files.view", "contracts.view", "contracts.viewCompanyDetails", "companySettings.view", "projects.view", "stageAcceptance.view", "stagePaymentTerms.view", "obligations.view", "tasks.view", "finance.view", "finance.editTransaction", "finance.viewClientFunds", "finance.viewProfit", "finance.viewAdministrativeExpenses", "clientPayments.view", "clientPayments.confirm", "clientPayments.reject", "clientPayments.viewProof", "team.view", "contractors.view", "documents.view", "documents.upload", "documents.edit"],
     scopes: { clients: "ALL", orders: "ALL", design: "ALL", contracts: "ALL", projects: "ALL", production: "ALL", tasks: "ALL", cashboxes: "ALL", documents: "ALL" }, ownCashbox: false,
   },
   MANAGER: {

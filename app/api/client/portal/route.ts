@@ -1,0 +1,3 @@
+import { ClientPortalError,getClientPortalHome,getClientPortalUser } from "../../../../lib/client-portal";
+export const dynamic="force-dynamic";
+export async function GET(request:Request){const user=await getClientPortalUser(request);if(!user)return Response.json({error:"Требуется авторизация клиента."},{status:401});try{return Response.json(await getClientPortalHome(user,new URL(request.url).searchParams.get("objectId")??undefined),{headers:{"Cache-Control":"private, no-store"}})}catch(error){return Response.json({error:error instanceof Error?error.message:"Не удалось загрузить кабинет."},{status:error instanceof ClientPortalError?error.status:500})}}

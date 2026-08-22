@@ -1,0 +1,6 @@
+import { getRequestUser } from "../../../lib/auth";
+import { ClientPortalError,confirmPaymentClaim,listPaymentClaims,rejectPaymentClaim } from "../../../lib/client-portal";
+import { AccessError } from "../../../lib/permissions";
+function fail(error:unknown){return Response.json({error:error instanceof Error?error.message:"Не удалось обработать оплату."},{status:error instanceof ClientPortalError||error instanceof AccessError?error.status:500})}
+export async function GET(request:Request){const actor=await getRequestUser(request);if(!actor)return Response.json({error:"Требуется авторизация."},{status:401});try{return Response.json({items:await listPaymentClaims(actor)})}catch(error){return fail(error)}}
+export async function POST(request:Request){const actor=await getRequestUser(request);if(!actor)return Response.json({error:"Требуется авторизация."},{status:401});try{const body=await request.json() as Record<string,unknown>;return Response.json(body.action==="REJECT"?await rejectPaymentClaim(actor,String(body.claimId??""),String(body.comment??"")):await confirmPaymentClaim(actor,String(body.claimId??""),Number(body.actualAmountKopecks),String(body.cashboxId??""),Number(body.receivedAt),String(body.comment??"")))}catch(error){return fail(error)}}

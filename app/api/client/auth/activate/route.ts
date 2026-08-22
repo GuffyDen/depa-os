@@ -1,0 +1,3 @@
+import { activateClientPortalInvite, clientSessionCookie, ClientPortalError } from "../../../../../lib/client-portal";
+export const dynamic="force-dynamic";
+export async function POST(request:Request){try{const body=await request.json() as Record<string,unknown>,result=await activateClientPortalInvite(String(body.token??""),String(body.password??""),String(body.passwordRepeat??""),request);return Response.json({clientName:result.clientName},{headers:{"Set-Cookie":clientSessionCookie(result.token,request.url)}})}catch(error){return Response.json({error:error instanceof Error?error.message:"Не удалось создать доступ."},{status:error instanceof ClientPortalError?error.status:500})}}

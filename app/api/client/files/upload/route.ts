@@ -1,0 +1,5 @@
+import { handleUpload,type HandleUploadBody } from "@vercel/blob/client";
+import { ClientPortalError,getClientPortalUser } from "../../../../../lib/client-portal";
+import { finalizeClientPaymentProofUpload,prepareClientPaymentProofUpload } from "../../../../../lib/client-files";
+export const dynamic="force-dynamic";
+export async function POST(request:Request){let body:HandleUploadBody;try{body=await request.json() as HandleUploadBody}catch{return Response.json({error:"Некорректные параметры загрузки."},{status:400})}const user=body.type==="blob.generate-client-token"?await getClientPortalUser(request):null;if(body.type==="blob.generate-client-token"&&!user)return Response.json({error:"Требуется авторизация клиента."},{status:401});try{return Response.json(await handleUpload({request,body,onBeforeGenerateToken:(pathname,payload)=>prepareClientPaymentProofUpload(user!,pathname,payload),onUploadCompleted:({blob,tokenPayload})=>finalizeClientPaymentProofUpload(blob,tokenPayload)}))}catch(error){return Response.json({error:error instanceof Error?error.message:"Не удалось загрузить файл."},{status:error instanceof ClientPortalError?error.status:400})}}

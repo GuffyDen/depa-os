@@ -43,6 +43,7 @@ type AttachmentRow = {
   project_id: string | null;
   design_project_id: string | null;
   contract_version_id: string | null;
+  client_payment_claim_id: string | null;
   storage_key: string;
   blob_url: string | null;
   original_filename: string;
@@ -269,7 +270,11 @@ export async function getAuthorizedAttachment(actor: AuthUser, attachmentId: str
   if (!row) throw new FileError("Файл не найден.", 404);
   if (actor.role !== "OWNER") {
     try {
-      if (row.category === "RECEIPT") {
+      if (row.client_payment_claim_id) {
+        await assertModuleAction(actor, "finance", "clientPayments.viewProof");
+        const claim = await first<{ project_id: string }>("SELECT project_id FROM client_payment_claims WHERE id=$1", [row.client_payment_claim_id]);
+        if (!claim || !(await canViewProject(actor, claim.project_id))) throw new FileError("Нет доступа к подтверждению оплаты.", 403);
+      } else if (row.category === "RECEIPT") {
         await assertModuleAction(actor, "finance", "finance.view");
         if (!row.cashbox_id || !(await canViewCashbox(actor, row.cashbox_id))) throw new FileError("Нет доступа к этому чеку.", 403);
         if (row.expense_type === "ADMIN" && !(await getAccessProfile(actor)).actions["finance.viewAdministrativeExpenses"]) throw new FileError("Нет доступа к этому чеку.", 403);
