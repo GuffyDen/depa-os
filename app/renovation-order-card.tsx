@@ -20,6 +20,7 @@ export function RenovationOrderCard({
   onPayment,
   onOpenProject,
   onChanged,
+  onOpenEstimate,
 }: {
   order: Order;
   canAddPayment: boolean;
@@ -28,6 +29,7 @@ export function RenovationOrderCard({
   onPayment: (order: Order) => void;
   onOpenProject: (projectId: string) => void;
   onChanged: () => void;
+  onOpenEstimate?: (estimateId:string) => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -50,8 +52,6 @@ export function RenovationOrderCard({
           areaSqm: details.areaSqm,
           responsibleUserId: order.responsibleUserId,
           status: "PLANNING",
-          contractWorksAmount: 0,
-          estimatedMaterialsBudget: 0,
         }),
       });
       const result = (await response.json()) as {
@@ -186,6 +186,7 @@ export function RenovationOrderCard({
               </>
             )}
           </section>
+          {details?.approvedEstimateVersionId ? <section className="panel order-comment"><span className="eyebrow">СОГЛАСОВАННАЯ СМЕТА</span><p>Заказ создан из согласованной версии сметы. Стоимость заказа включает только работы.</p>{details.approvedEstimateId&&onOpenEstimate?<button className="secondary" onClick={()=>onOpenEstimate(details.approvedEstimateId!)}>Открыть смету</button>:null}</section> : null}
           <section className="panel order-comment">
             <span className="eyebrow">КОММЕНТАРИЙ</span>
             <p>{order.comment || "Комментарий не добавлен."}</p>

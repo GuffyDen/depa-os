@@ -6,6 +6,7 @@ import { calendarRange, InspectionCalendar } from "./inspection-calendar";
 import { UniversalOrderForm, type OrderPrefill } from "./order-create-form";
 import { DesignOrderCard } from "./design-order-card";
 import { RenovationOrderCard } from "./renovation-order-card";
+import { EstimatesWorkspace } from "./estimates-ui";
 
 export type User = { id: string; name: string };
 export type SchedulePreset = {
@@ -83,6 +84,8 @@ export type Order = {
     apartmentNumber: string;
     areaSqm: number | null;
     projectId: string | null;
+    approvedEstimateVersionId: string | null;
+    approvedEstimateId: string | null;
   } | null;
   defectCount: number;
   photoCount: number;
@@ -550,6 +553,8 @@ function OrderCard({
   onPayment,
   onOpenOrder,
   onCreateRelated,
+  onCreateEstimate,
+  onOpenEstimate,
   onOpenProject = () => window.location.assign("/projects"),
 }: {
   id: string;
@@ -560,6 +565,8 @@ function OrderCard({
   onPayment: (order: Order) => void;
   onOpenOrder: (orderId: string) => void;
   onCreateRelated: (type: "DESIGN" | "RENOVATION", order: Order) => void;
+  onCreateEstimate?: (context: {clientId:string;sourceOrderId:string;responsibleUserId:string;residentialComplexId:string|null;residentialComplex:string|null;address:string;apartmentNumber:string;areaSqm:number|null}) => void;
+  onOpenEstimate?: (estimateId:string) => void;
   onOpenProject?: (projectId: string) => void;
 }) {
   const [detail, setDetail] = useState<Detail | null>(null),
@@ -676,6 +683,8 @@ function OrderCard({
       <DesignOrderCard
         orderId={id}
         canCreateComplex={Boolean(access.actions["residentialComplexes.create"])}
+        canCreateEstimate={Boolean(access.actions["estimates.create"])}
+        onCreateEstimate={onCreateEstimate}
         onClose={onClose}
         onChanged={onChanged}
         onOpenOrder={onOpenOrder}
@@ -700,6 +709,7 @@ function OrderCard({
         onPayment={onPayment}
         onOpenProject={onOpenProject}
         onChanged={onChanged}
+        onOpenEstimate={onOpenEstimate}
       />
     );
   return (
@@ -738,6 +748,7 @@ function OrderCard({
                 Создать дизайн-проект
               </button>
             ) : null}
+            {access.actions["estimates.create"] && o.type === "INSPECTION" && i ? <button className="secondary" onClick={()=>onCreateEstimate?.({clientId:o.clientId,sourceOrderId:o.id,responsibleUserId:o.responsibleUserId,residentialComplexId:i.residentialComplexId,residentialComplex:i.residentialComplex,address:i.address,apartmentNumber:i.apartmentNumber,areaSqm:i.areaSqm})}>Создать смету на ремонт</button> : null}
             {detail.capabilities.edit && o.type === "INSPECTION" ? (
               <button
                 className="secondary"
@@ -1133,6 +1144,8 @@ export function OrdersScreen({
   onOrderClosed,
   onPayment,
   onOpenProject = () => window.location.assign("/projects"),
+  initialEstimateId = null,
+  initialEstimateContext = null,
 }: {
   currentUser: AuthUser;
   access: AccessProfile;
@@ -1142,6 +1155,8 @@ export function OrdersScreen({
   onOrderClosed?: () => void;
   onPayment: (order: Order) => void;
   onOpenProject?: (projectId: string) => void;
+  initialEstimateId?: string | null;
+  initialEstimateContext?: {clientId:string;sourceLeadId?:string|null;sourceOrderId?:string|null;projectId?:string|null;responsibleUserId:string;residentialComplexId?:string|null;residentialComplex?:string|null;address?:string|null;apartmentNumber?:string|null;areaSqm?:number|null} | null;
 }) {
   const [items, setItems] = useState<Order[]>([]),
     [meta, setMeta] = useState<Omit<ListData, "items"> | null>(null),
@@ -1172,7 +1187,9 @@ export function OrdersScreen({
     }),
     [openId, setOpenId] = useState<string | null>(initialOrderId),
     [revision, setRevision] = useState(0),
-    [view, setView] = useState<"list" | "calendar">("list"),
+    [view, setView] = useState<"list" | "calendar" | "estimates">(initialEstimateId || initialEstimateContext ? "estimates" : "list"),
+    [estimateContext,setEstimateContext]=useState(initialEstimateContext),
+    [estimateTargetId,setEstimateTargetId]=useState(initialEstimateId),
     [calendarLevel, setCalendarLevel] = useState<"month" | "day">("month"),
     [selectedDate, setSelectedDate] = useState(todayKey()),
     [selectedInspector, setSelectedInspector] = useState("ALL"),
@@ -1311,10 +1328,10 @@ export function OrdersScreen({
       <div className="screen-intro">
         <div>
           <span className="eyebrow">УСЛУГИ</span>
-          <h2>Заказы и приёмки</h2>
+          <h2>Заказы и расчёты</h2>
           <p>{meta?.total || 0} заказов · реальные данные Neon</p>
         </div>
-        {access.actions["orders.create"] ? (
+        {view !== "estimates" && access.actions["orders.create"] ? (
           <button className="primary" onClick={() => openCreate()}>
             ＋ Добавить заказ
           </button>
@@ -1341,6 +1358,7 @@ export function OrdersScreen({
         >
           Календарь
         </button>
+        {currentUser.role === "OWNER" || access.actions["estimates.view"] ? <button role="tab" aria-selected={view === "estimates"} className={view === "estimates" ? "active" : ""} onClick={() => setView("estimates")}>Сметы / КП</button> : null}
       </div>
       <div className="orders-list-view" hidden={view !== "list"}>
         <div className="panel order-filters">
@@ -1532,6 +1550,7 @@ export function OrdersScreen({
           onQuickCreate={openCreate}
         />
       </div>
+      <div hidden={view !== "estimates"}>{view === "estimates" ? <EstimatesWorkspace currentUser={currentUser} access={access} initialEstimateId={estimateTargetId} createContext={estimateContext} onEstimateClosed={()=>{setEstimateContext(null);setEstimateTargetId(null)}} onOpenOrder={(id)=>{setOpenId(id);setView("list")}} /> : null}</div>
       {form && meta ? (
         <UniversalOrderForm
           currentUser={currentUser}
@@ -1573,6 +1592,8 @@ export function OrdersScreen({
           onOpenOrder={setOpenId}
           onOpenProject={onOpenProject}
           onCreateRelated={createRelated}
+          onCreateEstimate={(context)=>{setOpenId(null);setEstimateContext(context);setView("estimates")}}
+          onOpenEstimate={(estimateId)=>{setOpenId(null);setEstimateContext(null);setEstimateTargetId(estimateId);setView("estimates")}}
         />
       ) : null}
     </section>

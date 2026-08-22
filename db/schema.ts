@@ -345,6 +345,10 @@ export const renovationOrderDetails = pgTable(
     address: text("address").notNull(),
     apartmentNumber: text("apartment_number").notNull(),
     areaSqm: numeric("area_sqm", { precision: 10, scale: 2 }),
+    approvedEstimateVersionId: text("approved_estimate_version_id").references(
+      (): AnyPgColumn => estimateVersions.id,
+      { onDelete: "restrict", onUpdate: "cascade" },
+    ),
     ...timestamps,
   },
   (table) => [
@@ -352,6 +356,9 @@ export const renovationOrderDetails = pgTable(
     index("idx_renovation_order_details_residential_complex").on(
       table.residentialComplexId,
     ),
+    uniqueIndex("idx_renovation_estimate_version_unique")
+      .on(table.approvedEstimateVersionId)
+      .where(sql`${table.approvedEstimateVersionId} IS NOT NULL`),
     check(
       "renovation_order_details_area_check",
       sql`${table.areaSqm} IS NULL OR ${table.areaSqm} > 0`,
@@ -521,6 +528,10 @@ export const projects = pgTable(
     )
       .notNull()
       .default(0),
+    approvedEstimateVersionId: text("approved_estimate_version_id").references(
+      (): AnyPgColumn => estimateVersions.id,
+      { onDelete: "restrict", onUpdate: "cascade" },
+    ),
     comment: text("comment"),
     createdByUserId: text("created_by_user_id")
       .notNull()
@@ -539,6 +550,7 @@ export const projects = pgTable(
     index("idx_projects_client").on(table.clientId),
     index("idx_projects_order").on(table.orderId),
     index("idx_projects_residential_complex").on(table.residentialComplexId),
+    index("idx_projects_approved_estimate_version").on(table.approvedEstimateVersionId),
     uniqueIndex("idx_projects_order_unique")
       .on(table.orderId)
       .where(sql`${table.orderId} IS NOT NULL`),
@@ -1172,19 +1184,71 @@ export const contractorAgreements = pgTable(
   ],
 );
 
+export const estimates = pgTable(
+  "estimates",
+  {
+    id: text("id").primaryKey(),
+    clientId: text("client_id").notNull().references(() => clients.id, { onDelete: "restrict", onUpdate: "cascade" }),
+    responsibleUserId: text("responsible_user_id").notNull().references(() => users.id, { onDelete: "restrict", onUpdate: "cascade" }),
+    residentialComplexId: text("residential_complex_id").references(() => residentialComplexes.id, { onDelete: "restrict", onUpdate: "cascade" }),
+    address: text("address").notNull(),
+    apartmentNumber: text("apartment_number"),
+    areaSqm: numeric("area_sqm", { precision: 10, scale: 2 }),
+    sourceLeadId: text("source_lead_id").references(() => leads.id, { onDelete: "restrict", onUpdate: "cascade" }),
+    sourceOrderId: text("source_order_id").references(() => orders.id, { onDelete: "restrict", onUpdate: "cascade" }),
+    projectId: text("project_id").references(() => projects.id, { onDelete: "restrict", onUpdate: "cascade" }),
+    status: text("status", { enum: ["ACTIVE", "CLOSED"] }).notNull().default("ACTIVE"),
+    currentVersionId: text("current_version_id").references(
+      (): AnyPgColumn => estimateVersions.id,
+      { onDelete: "restrict", onUpdate: "cascade" },
+    ),
+    approvedVersionId: text("approved_version_id").references(
+      (): AnyPgColumn => estimateVersions.id,
+      { onDelete: "restrict", onUpdate: "cascade" },
+    ),
+    createdByUserId: text("created_by_user_id").notNull().references(() => users.id, { onDelete: "restrict", onUpdate: "cascade" }),
+    archivedAt: integer("archived_at"),
+    ...timestamps,
+  },
+  (table) => [
+    index("idx_estimates_client").on(table.clientId),
+    index("idx_estimates_responsible").on(table.responsibleUserId),
+    index("idx_estimates_residential_complex").on(table.residentialComplexId),
+    index("idx_estimates_source_lead").on(table.sourceLeadId),
+    index("idx_estimates_source_order").on(table.sourceOrderId),
+    index("idx_estimates_project").on(table.projectId),
+    index("idx_estimates_created").on(table.createdAt),
+    check("estimates_status_check", sql`${table.status} IN ('ACTIVE','CLOSED')`),
+    check("estimates_area_check", sql`${table.areaSqm} IS NULL OR ${table.areaSqm} > 0`),
+  ],
+);
+
 export const estimateVersions = pgTable(
   "estimate_versions",
   {
     id: text("id").primaryKey(),
     projectId: text("project_id")
-      .notNull()
       .references(() => projects.id, {
         onDelete: "restrict",
         onUpdate: "cascade",
       }),
+    estimateId: text("estimate_id").references(() => estimates.id, { onDelete: "restrict", onUpdate: "cascade" }),
     version: integer("version").notNull(),
     totalKopecks: integer("total_kopecks").notNull(),
     changeReason: text("change_reason"),
+    status: text("status", { enum: ["DRAFT", "SENT", "APPROVED", "REJECTED", "SUPERSEDED"] }).notNull().default("DRAFT"),
+    estimatedMaterialsBudgetKopecks: integer("estimated_materials_budget_kopecks"),
+    plannedDuration: text("planned_duration"),
+    clientComment: text("client_comment"),
+    internalComment: text("internal_comment"),
+    sentAt: integer("sent_at"),
+    sentByUserId: text("sent_by_user_id").references(() => users.id, { onDelete: "restrict", onUpdate: "cascade" }),
+    approvedAt: integer("approved_at"),
+    approvedByUserId: text("approved_by_user_id").references(() => users.id, { onDelete: "restrict", onUpdate: "cascade" }),
+    approvalComment: text("approval_comment"),
+    rejectedAt: integer("rejected_at"),
+    rejectedByUserId: text("rejected_by_user_id").references(() => users.id, { onDelete: "restrict", onUpdate: "cascade" }),
+    rejectionReason: text("rejection_reason"),
     createdByUserId: text("created_by_user_id")
       .notNull()
       .references(() => users.id, {
@@ -1199,8 +1263,40 @@ export const estimateVersions = pgTable(
       table.version,
     ),
     index("idx_estimate_creator").on(table.createdByUserId),
+    uniqueIndex("idx_estimate_version_number").on(table.estimateId, table.version).where(sql`${table.estimateId} IS NOT NULL`),
+    index("idx_estimate_version_estimate_status").on(table.estimateId, table.status),
   ],
 );
+
+export const estimateSections = pgTable("estimate_sections", {
+  id: text("id").primaryKey(),
+  versionId: text("version_id").notNull().references(() => estimateVersions.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  name: text("name").notNull(),
+  position: integer("position").notNull(),
+  ...timestamps,
+}, (table) => [index("idx_estimate_sections_version_position").on(table.versionId, table.position)]);
+
+export const estimateItems = pgTable("estimate_items", {
+  id: text("id").primaryKey(),
+  sectionId: text("section_id").notNull().references(() => estimateSections.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  name: text("name").notNull(),
+  unit: text("unit").notNull(),
+  quantity: numeric("quantity", { precision: 14, scale: 2 }).notNull(),
+  clientPriceKopecks: integer("client_price_kopecks").notNull(),
+  internalCostKopecks: integer("internal_cost_kopecks"),
+  position: integer("position").notNull(),
+  ...timestamps,
+}, (table) => [index("idx_estimate_items_section_position").on(table.sectionId, table.position)]);
+
+export const estimateEvents = pgTable("estimate_events", {
+  id: text("id").primaryKey(),
+  estimateId: text("estimate_id").notNull().references(() => estimates.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  versionId: text("version_id").references(() => estimateVersions.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  actorUserId: text("actor_user_id").notNull().references(() => users.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  type: text("type").notNull(),
+  occurredAt: integer("occurred_at").notNull(),
+  metadataJson: jsonb("metadata_json").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+}, (table) => [index("idx_estimate_events_estimate_time").on(table.estimateId, table.occurredAt)]);
 
 export const additionalWorkVersions = pgTable(
   "additional_work_versions",

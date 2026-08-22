@@ -34,6 +34,12 @@ export const ACTION_GROUPS = [
     ["design.files.manageVersions", "Управлять версиями"], ["design.files.archive", "Архивировать файлы"],
     ["design.viewFinance", "Просматривать коммерческие финансы"], ["design.complete", "Завершать дизайн-проект"],
   ] },
+  { module: "orders", label: "Сметы и КП", actions: [
+    ["estimates.view", "Просматривать"], ["estimates.create", "Создавать"], ["estimates.edit", "Редактировать черновики"],
+    ["estimates.createVersion", "Создавать новую версию"], ["estimates.viewCost", "Просматривать себестоимость"],
+    ["estimates.viewMargin", "Просматривать маржу"], ["estimates.sendProposal", "Формировать и отмечать отправку КП"],
+    ["estimates.approve", "Отмечать согласование"], ["estimates.reject", "Отклонять"],
+  ] },
   { module: "projects", label: "Объекты", actions: [
     ["projects.view", "Просматривать"], ["projects.create", "Создавать"], ["projects.edit", "Редактировать"],
     ["projects.assignEmployees", "Назначать сотрудников"], ["projects.viewCost", "Просматривать себестоимость"], ["projects.viewMargin", "Просматривать маржу"],
@@ -72,6 +78,7 @@ export const SCOPE_DEFINITIONS = [
   { key: "clients", permission: "clients.scope", module: "clients", label: "Просмотр клиентов", ownLabel: "Только назначенные", allLabel: "Все клиенты", default: "ASSIGNED" },
   { key: "orders", permission: "orders.scope", module: "orders", label: "Просмотр заказов", ownLabel: "Только назначенные", allLabel: "Все заказы", default: "ASSIGNED" },
   { key: "design", permission: "design.scope", module: "orders", label: "Просмотр дизайн-проектов", ownLabel: "Только назначенные", allLabel: "Все дизайн-проекты", default: "ASSIGNED" },
+  { key: "estimates", permission: "estimates.scope", module: "orders", label: "Просмотр смет", ownLabel: "Только назначенные", allLabel: "Все сметы", default: "ASSIGNED" },
   { key: "projects", permission: "projects.scope", module: "projects", label: "Просмотр объектов", ownLabel: "Только назначенные", allLabel: "Все объекты", default: "ASSIGNED" },
   { key: "tasks", permission: "tasks.scope", module: "tasks", label: "Просмотр задач", ownLabel: "Только назначенные", allLabel: "Все задачи", default: "ASSIGNED" },
   { key: "cashboxes", permission: "finance.cashboxes.scope", module: "finance", label: "Просмотр касс", ownLabel: "Только своя", allLabel: "Все кассы", default: "OWN" },
@@ -135,8 +142,8 @@ export const ACCESS_PRESETS = {
   MANAGER: {
     label: "Менеджер",
     modules: ["dashboard", "crm", "clients", "orders", "projects", "tasks", "documents"],
-    actions: ["crm.view", "crm.create", "crm.edit", "crm.changeStatus", "crm.assign", "crm.close", "clients.view", "clients.create", "clients.edit", "orders.view", "orders.create", "orders.edit", "orders.complete", "orders.cancel", "orders.viewFinance", "design.view", "design.create", "design.edit", "design.assignDesigner", "design.stages.view", "design.stages.edit", "design.stages.complete", "design.files.view", "design.files.upload", "design.files.manageVersions", "design.viewFinance", "design.complete", "projects.view", "tasks.view", "tasks.create", "tasks.edit", "tasks.complete", "documents.view", "documents.upload"],
-    scopes: { crm: "ASSIGNED", clients: "ASSIGNED", orders: "ASSIGNED", design: "ASSIGNED", projects: "ASSIGNED", tasks: "ASSIGNED", documents: "ASSIGNED_PROJECTS" }, ownCashbox: false,
+    actions: ["crm.view", "crm.create", "crm.edit", "crm.changeStatus", "crm.assign", "crm.close", "clients.view", "clients.create", "clients.edit", "orders.view", "orders.create", "orders.edit", "orders.complete", "orders.cancel", "orders.viewFinance", "design.view", "design.create", "design.edit", "design.assignDesigner", "design.stages.view", "design.stages.edit", "design.stages.complete", "design.files.view", "design.files.upload", "design.files.manageVersions", "design.viewFinance", "design.complete", "estimates.view", "estimates.create", "estimates.edit", "estimates.createVersion", "estimates.sendProposal", "projects.view", "tasks.view", "tasks.create", "tasks.edit", "tasks.complete", "documents.view", "documents.upload"],
+    scopes: { crm: "ASSIGNED", clients: "ASSIGNED", orders: "ASSIGNED", design: "ASSIGNED", estimates: "ASSIGNED", projects: "ASSIGNED", tasks: "ASSIGNED", documents: "ASSIGNED_PROJECTS" }, ownCashbox: false,
   },
   CUSTOM: { label: "Настроить вручную", modules: [], actions: [], scopes: {}, ownCashbox: false },
 } as const satisfies Record<string, { label: string; modules: readonly ModuleKey[]; actions: readonly ActionPermission[]; scopes: Partial<Record<ScopeKey, ScopeValue>>; ownCashbox: boolean }>;

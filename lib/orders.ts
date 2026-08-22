@@ -74,6 +74,8 @@ type OrderRow = {
   renovation_address: string | null;
   renovation_apartment_number: string | null;
   renovation_area_sqm: string | number | null;
+  approved_estimate_version_id: string | null;
+  approved_estimate_id: string | null;
   project_id: string | null;
   paid_kopecks: number | string;
   defect_count: number | string;
@@ -119,14 +121,14 @@ function baseSelect() {
   return `SELECT o.id,o.number,o.client_id,c.name client_name,c.phone client_phone,o.type,o.title,o.amount_kopecks,o.status,o.responsible_user_id,ru.display_name responsible_name,o.scheduled_at,o.started_at,o.completed_at,o.cancelled_at,o.comment,o.internal_comment,o.created_by_user_id,o.source_lead_id,o.source_order_id,o.created_at,o.updated_at,
     i.id inspection_id,COALESCE(irc.name,i.residential_complex) residential_complex,i.residential_complex_id,i.address,i.apartment_number,i.area_sqm,i.scheduled_start_at,i.scheduled_end_at,i.inspector_user_id,iu.display_name inspector_name,i.result_comment,
     dp.id design_project_id,COALESCE(drc.name,dp.residential_complex) design_residential_complex,dp.residential_complex_id design_residential_complex_id,dp.address design_address,dp.apartment_number design_apartment_number,dp.area_sqm design_area_sqm,dp.status design_status,dp.planned_start_date design_planned_start_date,dp.planned_end_date design_planned_end_date,dp.designer_employee_id,de.full_name designer_name,
-    rd.id renovation_detail_id,COALESCE(rrc.name,rd.residential_complex) renovation_residential_complex,rd.residential_complex_id renovation_residential_complex_id,rd.address renovation_address,rd.apartment_number renovation_apartment_number,rd.area_sqm renovation_area_sqm,p.id project_id,
+    rd.id renovation_detail_id,COALESCE(rrc.name,rd.residential_complex) renovation_residential_complex,rd.residential_complex_id renovation_residential_complex_id,rd.address renovation_address,rd.apartment_number renovation_apartment_number,rd.area_sqm renovation_area_sqm,rd.approved_estimate_version_id,rev.estimate_id approved_estimate_id,p.id project_id,
     COALESCE((SELECT SUM(ft.amount_kopecks) FROM financial_transactions ft WHERE ft.order_id=o.id AND ft.type='INCOME'),0) paid_kopecks,
     COALESCE((SELECT COUNT(*) FROM inspection_defects d WHERE d.inspection_id=i.id),0) defect_count,
     COALESCE((SELECT COUNT(*) FROM attachments a WHERE a.category='INSPECTION' AND a.upload_status='LINKED' AND a.deleted_at IS NULL AND ((a.entity_type='Inspection' AND a.entity_id=i.id) OR (a.entity_type='InspectionDefect' AND a.entity_id IN (SELECT id FROM inspection_defects WHERE inspection_id=i.id)))),0) photo_count
     FROM orders o JOIN clients c ON c.id=o.client_id JOIN users ru ON ru.id=o.responsible_user_id
     LEFT JOIN inspections i ON i.order_id=o.id LEFT JOIN users iu ON iu.id=i.inspector_user_id LEFT JOIN residential_complexes irc ON irc.id=i.residential_complex_id
     LEFT JOIN design_projects dp ON dp.order_id=o.id LEFT JOIN employees de ON de.id=dp.designer_employee_id LEFT JOIN residential_complexes drc ON drc.id=dp.residential_complex_id
-    LEFT JOIN renovation_order_details rd ON rd.order_id=o.id LEFT JOIN residential_complexes rrc ON rrc.id=rd.residential_complex_id LEFT JOIN projects p ON p.order_id=o.id`;
+    LEFT JOIN renovation_order_details rd ON rd.order_id=o.id LEFT JOIN residential_complexes rrc ON rrc.id=rd.residential_complex_id LEFT JOIN estimate_versions rev ON rev.id=rd.approved_estimate_version_id LEFT JOIN projects p ON p.order_id=o.id`;
 }
 function serialize(row: OrderRow, canViewFinance = true) {
   const price = Number(row.amount_kopecks),
@@ -207,6 +209,8 @@ function serialize(row: OrderRow, canViewFinance = true) {
               ? null
               : Number(row.renovation_area_sqm),
           projectId: row.project_id,
+          approvedEstimateVersionId: row.approved_estimate_version_id,
+          approvedEstimateId: row.approved_estimate_id,
         }
       : null,
     defectCount: Number(row.defect_count),
