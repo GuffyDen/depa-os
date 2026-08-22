@@ -13,6 +13,10 @@ import {
 } from "./orders-config";
 import { first, query, transaction } from "./postgres";
 import {
+  residentialComplexRelationAudit,
+  resolveResidentialComplexReference,
+} from "./residential-complexes";
+import {
   AccessError,
   assertModuleAction,
   canViewDesignProject,
@@ -44,6 +48,7 @@ type OrderRow = {
   updated_at: number;
   inspection_id: string | null;
   residential_complex: string | null;
+  residential_complex_id: string | null;
   address: string | null;
   apartment_number: string | null;
   area_sqm: string | number | null;
@@ -54,6 +59,7 @@ type OrderRow = {
   result_comment: string | null;
   design_project_id: string | null;
   design_residential_complex: string | null;
+  design_residential_complex_id: string | null;
   design_address: string | null;
   design_apartment_number: string | null;
   design_area_sqm: string | number | null;
@@ -64,6 +70,7 @@ type OrderRow = {
   designer_name: string | null;
   renovation_detail_id: string | null;
   renovation_residential_complex: string | null;
+  renovation_residential_complex_id: string | null;
   renovation_address: string | null;
   renovation_apartment_number: string | null;
   renovation_area_sqm: string | number | null;
@@ -110,16 +117,16 @@ function paymentStatus(paid: number, price: number): PaymentStatus {
 }
 function baseSelect() {
   return `SELECT o.id,o.number,o.client_id,c.name client_name,c.phone client_phone,o.type,o.title,o.amount_kopecks,o.status,o.responsible_user_id,ru.display_name responsible_name,o.scheduled_at,o.started_at,o.completed_at,o.cancelled_at,o.comment,o.internal_comment,o.created_by_user_id,o.source_lead_id,o.source_order_id,o.created_at,o.updated_at,
-    i.id inspection_id,i.residential_complex,i.address,i.apartment_number,i.area_sqm,i.scheduled_start_at,i.scheduled_end_at,i.inspector_user_id,iu.display_name inspector_name,i.result_comment,
-    dp.id design_project_id,dp.residential_complex design_residential_complex,dp.address design_address,dp.apartment_number design_apartment_number,dp.area_sqm design_area_sqm,dp.status design_status,dp.planned_start_date design_planned_start_date,dp.planned_end_date design_planned_end_date,dp.designer_employee_id,de.full_name designer_name,
-    rd.id renovation_detail_id,rd.residential_complex renovation_residential_complex,rd.address renovation_address,rd.apartment_number renovation_apartment_number,rd.area_sqm renovation_area_sqm,p.id project_id,
+    i.id inspection_id,COALESCE(irc.name,i.residential_complex) residential_complex,i.residential_complex_id,i.address,i.apartment_number,i.area_sqm,i.scheduled_start_at,i.scheduled_end_at,i.inspector_user_id,iu.display_name inspector_name,i.result_comment,
+    dp.id design_project_id,COALESCE(drc.name,dp.residential_complex) design_residential_complex,dp.residential_complex_id design_residential_complex_id,dp.address design_address,dp.apartment_number design_apartment_number,dp.area_sqm design_area_sqm,dp.status design_status,dp.planned_start_date design_planned_start_date,dp.planned_end_date design_planned_end_date,dp.designer_employee_id,de.full_name designer_name,
+    rd.id renovation_detail_id,COALESCE(rrc.name,rd.residential_complex) renovation_residential_complex,rd.residential_complex_id renovation_residential_complex_id,rd.address renovation_address,rd.apartment_number renovation_apartment_number,rd.area_sqm renovation_area_sqm,p.id project_id,
     COALESCE((SELECT SUM(ft.amount_kopecks) FROM financial_transactions ft WHERE ft.order_id=o.id AND ft.type='INCOME'),0) paid_kopecks,
     COALESCE((SELECT COUNT(*) FROM inspection_defects d WHERE d.inspection_id=i.id),0) defect_count,
     COALESCE((SELECT COUNT(*) FROM attachments a WHERE a.category='INSPECTION' AND a.upload_status='LINKED' AND a.deleted_at IS NULL AND ((a.entity_type='Inspection' AND a.entity_id=i.id) OR (a.entity_type='InspectionDefect' AND a.entity_id IN (SELECT id FROM inspection_defects WHERE inspection_id=i.id)))),0) photo_count
     FROM orders o JOIN clients c ON c.id=o.client_id JOIN users ru ON ru.id=o.responsible_user_id
-    LEFT JOIN inspections i ON i.order_id=o.id LEFT JOIN users iu ON iu.id=i.inspector_user_id
-    LEFT JOIN design_projects dp ON dp.order_id=o.id LEFT JOIN employees de ON de.id=dp.designer_employee_id
-    LEFT JOIN renovation_order_details rd ON rd.order_id=o.id LEFT JOIN projects p ON p.order_id=o.id`;
+    LEFT JOIN inspections i ON i.order_id=o.id LEFT JOIN users iu ON iu.id=i.inspector_user_id LEFT JOIN residential_complexes irc ON irc.id=i.residential_complex_id
+    LEFT JOIN design_projects dp ON dp.order_id=o.id LEFT JOIN employees de ON de.id=dp.designer_employee_id LEFT JOIN residential_complexes drc ON drc.id=dp.residential_complex_id
+    LEFT JOIN renovation_order_details rd ON rd.order_id=o.id LEFT JOIN residential_complexes rrc ON rrc.id=rd.residential_complex_id LEFT JOIN projects p ON p.order_id=o.id`;
 }
 function serialize(row: OrderRow, canViewFinance = true) {
   const price = Number(row.amount_kopecks),
@@ -160,6 +167,7 @@ function serialize(row: OrderRow, canViewFinance = true) {
       ? {
           id: row.inspection_id,
           residentialComplex: row.residential_complex,
+          residentialComplexId: row.residential_complex_id,
           address: row.address,
           apartmentNumber: row.apartment_number,
           areaSqm: row.area_sqm == null ? null : Number(row.area_sqm),
@@ -175,6 +183,7 @@ function serialize(row: OrderRow, canViewFinance = true) {
       ? {
           id: row.design_project_id,
           residentialComplex: row.design_residential_complex,
+          residentialComplexId: row.design_residential_complex_id,
           address: row.design_address,
           apartmentNumber: row.design_apartment_number,
           areaSqm:
@@ -190,6 +199,7 @@ function serialize(row: OrderRow, canViewFinance = true) {
       ? {
           id: row.renovation_detail_id,
           residentialComplex: row.renovation_residential_complex,
+          residentialComplexId: row.renovation_residential_complex_id,
           address: row.renovation_address,
           apartmentNumber: row.renovation_apartment_number,
           areaSqm:
@@ -305,7 +315,7 @@ export async function listOrders(actor: AuthUser, requestUrl: string) {
     const term = `%${search}%`,
       digits = search.replace(/\D/g, "");
     conditions.push(
-      `(o.number ILIKE ${add(term)} OR c.name ILIKE ${add(term)} OR c.phone_normalized LIKE ${add(digits ? `%${digits}%` : "__NO_PHONE__")} OR i.address ILIKE ${add(term)} OR i.residential_complex ILIKE ${add(term)} OR i.apartment_number ILIKE ${add(term)} OR dp.address ILIKE ${add(term)} OR dp.residential_complex ILIKE ${add(term)} OR dp.apartment_number ILIKE ${add(term)} OR rd.address ILIKE ${add(term)} OR rd.residential_complex ILIKE ${add(term)} OR rd.apartment_number ILIKE ${add(term)})`,
+      `(o.number ILIKE ${add(term)} OR c.name ILIKE ${add(term)} OR c.phone_normalized LIKE ${add(digits ? `%${digits}%` : "__NO_PHONE__")} OR i.address ILIKE ${add(term)} OR COALESCE(irc.name,i.residential_complex) ILIKE ${add(term)} OR i.residential_complex ILIKE ${add(term)} OR i.apartment_number ILIKE ${add(term)} OR dp.address ILIKE ${add(term)} OR COALESCE(drc.name,dp.residential_complex) ILIKE ${add(term)} OR dp.apartment_number ILIKE ${add(term)} OR rd.address ILIKE ${add(term)} OR COALESCE(rrc.name,rd.residential_complex) ILIKE ${add(term)} OR rd.apartment_number ILIKE ${add(term)})`,
     );
   }
   if (ORDER_TYPES.some((x) => x.value === type))
@@ -343,7 +353,7 @@ export async function listOrders(actor: AuthUser, requestUrl: string) {
     );
   const where = conditions.length ? ` WHERE ${conditions.join(" AND ")}` : "",
     count = await first<{ count: number | string }>(
-      `SELECT COUNT(*) count FROM orders o JOIN clients c ON c.id=o.client_id LEFT JOIN inspections i ON i.order_id=o.id LEFT JOIN design_projects dp ON dp.order_id=o.id LEFT JOIN renovation_order_details rd ON rd.order_id=o.id${where}`,
+      `SELECT COUNT(*) count FROM orders o JOIN clients c ON c.id=o.client_id LEFT JOIN inspections i ON i.order_id=o.id LEFT JOIN residential_complexes irc ON irc.id=i.residential_complex_id LEFT JOIN design_projects dp ON dp.order_id=o.id LEFT JOIN residential_complexes drc ON drc.id=dp.residential_complex_id LEFT JOIN renovation_order_details rd ON rd.order_id=o.id LEFT JOIN residential_complexes rrc ON rrc.id=rd.residential_complex_id${where}`,
       params,
     );
   const rows = await query<OrderRow>(
@@ -584,7 +594,7 @@ async function scheduleConflict(
       ? ` AND o.id<>$${params.push(excludeOrderId)}`
       : "";
   const conflict = await first<ScheduleConflictRow>(
-    `SELECT o.id order_id,o.number,c.name client_name,i.residential_complex,i.address,i.apartment_number,i.scheduled_start_at,i.scheduled_end_at,o.responsible_user_id,c.responsible_user_id client_responsible_user_id FROM inspections i JOIN orders o ON o.id=i.order_id JOIN clients c ON c.id=o.client_id WHERE i.inspector_user_id=$1 AND i.scheduled_start_at<$2 AND i.scheduled_end_at>$3 AND o.status<>'CANCELLED'${exclude} ORDER BY i.scheduled_start_at LIMIT 1`,
+    `SELECT o.id order_id,o.number,c.name client_name,COALESCE(rc.name,i.residential_complex) residential_complex,i.address,i.apartment_number,i.scheduled_start_at,i.scheduled_end_at,o.responsible_user_id,c.responsible_user_id client_responsible_user_id FROM inspections i JOIN orders o ON o.id=i.order_id JOIN clients c ON c.id=o.client_id LEFT JOIN residential_complexes rc ON rc.id=i.residential_complex_id WHERE i.inspector_user_id=$1 AND i.scheduled_start_at<$2 AND i.scheduled_end_at>$3 AND o.status<>'CANCELLED'${exclude} ORDER BY i.scheduled_start_at LIMIT 1`,
     params,
   );
   if (!conflict) return null;
@@ -641,6 +651,9 @@ async function validateInspectionInput(actor: AuthUser, input: OrderInput) {
   if (!address) throw new OrderError("Укажите адрес.");
   if (!apartmentNumber) throw new OrderError("Укажите квартиру.");
   if (!priceKopecks) throw new OrderError("Стоимость должна быть больше нуля.");
+  const residentialComplex = await resolveResidentialComplexReference(
+    input.residentialComplexId,
+  );
   await Promise.all([
     assertClient(actor, clientId),
     assertOrderUser(responsibleUserId),
@@ -662,7 +675,9 @@ async function validateInspectionInput(actor: AuthUser, input: OrderInput) {
     apartmentNumber,
     ...schedule,
     priceKopecks,
-    residentialComplex: clean(input.residentialComplex, 240),
+    residentialComplex:
+      residentialComplex?.name ?? clean(input.residentialComplex, 240),
+    residentialComplexId: residentialComplex?.id ?? null,
     areaSqm: area(input.areaSqm),
     comment: clean(input.comment, 3000),
     internalComment: clean(input.internalComment, 3000),
@@ -692,6 +707,14 @@ export async function createOrder(actor: AuthUser, input: OrderInput) {
     sourceLeadId,
     sourceOrderId,
   );
+  const relationAudit = residentialComplexRelationAudit(
+    actor,
+    "Inspection",
+    inspectionId,
+    null,
+    data.residentialComplexId,
+    timestamp,
+  );
   await transaction([
     {
       text: `INSERT INTO orders(id,number,client_id,type,title,amount_kopecks,status,responsible_user_id,scheduled_at,comment,internal_comment,created_by_user_id,source_lead_id,source_order_id,created_at,updated_at) VALUES($1,$2,$3,'INSPECTION','Приёмка квартиры',$4,'SCHEDULED',$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
@@ -712,11 +735,12 @@ export async function createOrder(actor: AuthUser, input: OrderInput) {
       ],
     },
     {
-      text: `INSERT INTO inspections(id,order_id,residential_complex,address,apartment_number,area_sqm,scheduled_at,scheduled_start_at,scheduled_end_at,inspector_user_id,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$7,$8,$9,$10,$11)`,
+      text: `INSERT INTO inspections(id,order_id,residential_complex,residential_complex_id,address,apartment_number,area_sqm,scheduled_at,scheduled_start_at,scheduled_end_at,inspector_user_id,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$8,$9,$10,$11,$12)`,
       params: [
         inspectionId,
         orderId,
         data.residentialComplex,
+        data.residentialComplexId,
         data.address,
         data.apartmentNumber,
         data.areaSqm,
@@ -758,6 +782,7 @@ export async function createOrder(actor: AuthUser, input: OrderInput) {
         }),
       ],
     },
+    ...(relationAudit ? [relationAudit] : []),
   ]);
   return getOrder(actor, orderId);
 }
@@ -838,6 +863,14 @@ export async function updateOrder(
       input.apartmentNumber === undefined
         ? before.apartment_number
         : clean(input.apartmentNumber, 80);
+  const residentialComplexId =
+    input.residentialComplexId === undefined
+      ? before.residential_complex_id
+      : clean(input.residentialComplexId, 100);
+  const residentialComplex = await resolveResidentialComplexReference(
+    residentialComplexId,
+    { allowArchivedId: before.residential_complex_id },
+  );
   if (!address || !apartmentNumber || !inspectorUserId)
     throw new OrderError("Заполните адрес, квартиру, дату и специалиста.");
   await Promise.all([
@@ -881,6 +914,14 @@ export async function updateOrder(
       inspectorUserId,
       conflictOverridden,
     });
+  const relationAudit = residentialComplexRelationAudit(
+    actor,
+    "Inspection",
+    before.inspection_id!,
+    before.residential_complex_id,
+    residentialComplexId,
+    timestamp,
+  );
   await transaction([
     {
       text: `UPDATE orders SET amount_kopecks=$1,responsible_user_id=$2,scheduled_at=$3,comment=$4,internal_comment=$5,updated_at=$6 WHERE id=$7`,
@@ -899,11 +940,12 @@ export async function updateOrder(
       ],
     },
     {
-      text: `UPDATE inspections SET residential_complex=$1,address=$2,apartment_number=$3,area_sqm=$4,scheduled_at=$5,scheduled_start_at=$5,scheduled_end_at=$6,inspector_user_id=$7,result_comment=$8,updated_at=$9 WHERE order_id=$10`,
+      text: `UPDATE inspections SET residential_complex=$1,residential_complex_id=$2,address=$3,apartment_number=$4,area_sqm=$5,scheduled_at=$6,scheduled_start_at=$6,scheduled_end_at=$7,inspector_user_id=$8,result_comment=$9,updated_at=$10 WHERE order_id=$11`,
       params: [
-        input.residentialComplex === undefined
+        input.residentialComplexId === undefined
           ? before.residential_complex
-          : clean(input.residentialComplex, 240),
+          : residentialComplex?.name ?? null,
+        residentialComplexId,
         address,
         apartmentNumber,
         input.areaSqm === undefined
@@ -923,6 +965,7 @@ export async function updateOrder(
       text: "INSERT INTO audit_logs(id,actor_user_id,action,entity_type,entity_id,occurred_at,metadata_json) VALUES($1,$2,'ORDER_UPDATED','Order',$3,$4,$5)",
       params: [crypto.randomUUID(), actor.id, id, timestamp, metadata],
     },
+    ...(relationAudit ? [relationAudit] : []),
   ]);
   return getOrder(actor, id);
 }

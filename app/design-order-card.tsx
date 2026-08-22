@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import { ResidentialComplexFields } from "./residential-complex-selector";
 
 type Stage = {
   id: string;
@@ -47,6 +48,7 @@ type Detail = {
   };
   design: {
     id: string;
+    residentialComplexId: string | null;
     residentialComplex: string | null;
     address: string;
     apartmentNumber: string;
@@ -222,12 +224,14 @@ export function DesignOrderCard({
   onChanged,
   onPayment,
   onOpenOrder,
+  canCreateComplex,
 }: {
   orderId: string;
   onClose: () => void;
   onChanged: () => void;
   onPayment: (order: Detail["order"]) => void;
   onOpenOrder: (orderId: string) => void;
+  canCreateComplex: boolean;
 }) {
   const [detail, setDetail] = useState<Detail | null>(null);
   const [tab, setTab] = useState<
@@ -404,17 +408,7 @@ export function DesignOrderCard({
                 );
               }}
             >
-              <label>
-                <span>ЖК</span>
-                <input
-                  name="residentialComplex"
-                  defaultValue={design.residentialComplex || ""}
-                />
-              </label>
-              <label>
-                <span>Адрес</span>
-                <input name="address" defaultValue={design.address} required />
-              </label>
+              <ResidentialComplexFields initialId={design.residentialComplexId} initialName={design.residentialComplex} initialAddress={design.address} canCreate={canCreateComplex} />
               <label>
                 <span>Квартира</span>
                 <input

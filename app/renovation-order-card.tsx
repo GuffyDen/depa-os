@@ -43,6 +43,7 @@ export function RenovationOrderCard({
         body: JSON.stringify({
           orderId: order.id,
           clientId: order.clientId,
+          residentialComplexId: details.residentialComplexId,
           residentialComplex: details.residentialComplex,
           address: details.address,
           apartment: details.apartmentNumber,

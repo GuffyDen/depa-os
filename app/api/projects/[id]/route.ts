@@ -1,11 +1,13 @@
 import { getRequestUser } from "../../../../lib/auth";
 import { getProject, ProjectError, setProjectArchived, updateProject, type ProjectInput } from "../../../../lib/projects";
 import { AccessError } from "../../../../lib/permissions";
+import { ResidentialComplexError } from "../../../../lib/residential-complexes";
 
 export const dynamic = "force-dynamic";
 
 function failure(error: unknown) {
   if (error instanceof ProjectError) return Response.json({ error: error.message }, { status: error.status });
+  if (error instanceof ResidentialComplexError) return Response.json({ error: error.message, ...error.details }, { status: error.status });
   if (error instanceof AccessError) return Response.json({ error: error.message }, { status: error.status });
   console.error("Project detail API error", error);
   return Response.json({ error: "Не удалось выполнить операцию с объектом." }, { status: 500 });

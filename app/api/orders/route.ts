@@ -12,6 +12,7 @@ import {
   createRenovationOrder,
   DesignError,
 } from "../../../lib/design";
+import { ResidentialComplexError } from "../../../lib/residential-complexes";
 export const dynamic = "force-dynamic";
 function fail(error: unknown) {
   if (error instanceof OrderError)
@@ -22,6 +23,11 @@ function fail(error: unknown) {
   if (error instanceof AccessError)
     return Response.json({ error: error.message }, { status: error.status });
   if (error instanceof DesignError)
+    return Response.json(
+      { error: error.message, ...error.details },
+      { status: error.status },
+    );
+  if (error instanceof ResidentialComplexError)
     return Response.json(
       { error: error.message, ...error.details },
       { status: error.status },

@@ -9,8 +9,9 @@ import { ClientsScreen } from "./clients-ui";
 import { ProjectsScreen } from "./projects-ui";
 import { CrmScreen, type Lead } from "./crm-ui";
 import { OrdersScreen, type Order } from "./orders-ui";
+import { ResidentialComplexesScreen } from "./residential-complexes-ui";
 
-type Section = "dashboard" | "crm" | "clients" | "orders" | "objects" | "finance" | "tasks" | "team" | "contractors" | "docs";
+type Section = "dashboard" | "crm" | "clients" | "orders" | "complexes" | "objects" | "finance" | "tasks" | "team" | "contractors" | "docs";
 
 const nav: { group: string; items: { id: Section; label: string; icon: string; count?: number }[] }[] = [
   { group: "Компания", items: [
@@ -18,6 +19,7 @@ const nav: { group: string; items: { id: Section; label: string; icon: string; c
     { id: "crm", label: "CRM", icon: "↗" },
     { id: "clients", label: "Клиенты", icon: "◎" },
     { id: "orders", label: "Заказы", icon: "▤" },
+    { id: "complexes", label: "ЖК", icon: "⌂" },
   ]},
   { group: "Производство", items: [
     { id: "objects", label: "Объекты", icon: "◇" },
@@ -31,7 +33,8 @@ const nav: { group: string; items: { id: Section; label: string; icon: string; c
   ]},
 ];
 
-const moduleBySection: Record<Section, ModuleKey> = { dashboard: "dashboard", crm: "crm", clients: "clients", orders: "orders", objects: "projects", tasks: "tasks", finance: "finance", team: "team", contractors: "contractors", docs: "documents" };
+const moduleBySection: Record<Section, ModuleKey> = { dashboard: "dashboard", crm: "crm", clients: "clients", orders: "orders", complexes: "projects", objects: "projects", tasks: "tasks", finance: "finance", team: "team", contractors: "contractors", docs: "documents" };
+function canOpenSection(access: AccessProfile, section: Section) { return section === "complexes" ? Boolean(access.actions["residentialComplexes.view"]) : Boolean(access.modules[moduleBySection[section]]); }
 function Brand() {
   return <div className="brand" aria-label="ДЕПА СТРОЙ"><span>ДЕПА</span><b>СТРОЙ</b><i>OS</i></div>;
 }
@@ -41,7 +44,7 @@ function initials(name: string) {
 }
 
 function Sidebar({ section, onChange, open, onClose, user, access, onProfile, crmCount }: { section: Section; onChange: (s: Section) => void; open: boolean; onClose: () => void; user: AuthUser; access: AccessProfile; onProfile: () => void; crmCount: number }) {
-  const visibleNav = nav.map((group) => ({ ...group, items: group.items.filter((item) => access.modules[moduleBySection[item.id]]) })).filter((group) => group.items.length > 0);
+  const visibleNav = nav.map((group) => ({ ...group, items: group.items.filter((item) => item.id === "complexes" ? access.actions["residentialComplexes.view"] : access.modules[moduleBySection[item.id]]) })).filter((group) => group.items.length > 0);
   return <aside className={`sidebar ${open ? "open" : ""}`}>
     <div className="side-head"><Brand /><button className="icon-btn mobile-only" onClick={onClose} aria-label="Закрыть меню">×</button></div>
     <nav>
@@ -146,7 +149,7 @@ function EmployeeDashboard({ user, access, onSection }: { user: AuthUser; access
   </div><div className="panel employee-start"><div><span className="eyebrow">БЫСТРЫЙ ДОСТУП</span><h3>Рабочее пространство</h3><p>Прямые переходы и API также проверяют эти права.</p></div>{quickSections.map((section) => <button className={section === "finance" ? "primary" : "secondary"} key={section} onClick={() => onSection(section)}>{nav.flatMap((group) => group.items).find((item) => item.id === section)?.label}</button>)}</div></>;
 }
 
-type GenericSection = Exclude<Section, "dashboard"|"crm"|"clients"|"objects"|"finance">;
+type GenericSection = Exclude<Section, "dashboard"|"crm"|"clients"|"complexes"|"objects"|"finance">;
 const genericData: Record<GenericSection, { eyebrow: string; title: string; desc: string; columns: string[]; rows: string[][] }> = {
   orders: { eyebrow:"УСЛУГИ", title:"Заказы", desc:"Приёмка и ремонт учитываются как отдельные заказы.", columns:["Заказ","Клиент","Услуга","Стоимость","Статус"], rows:[]},
   tasks: { eyebrow:"КОНТРОЛЬ", title:"Задачи", desc:"Общие, CRM-задачи и задачи по объектам в одном месте.", columns:["Задача","Связь","Дедлайн","Ответственный","Статус"], rows:[]},
@@ -222,25 +225,27 @@ function ProfileModal({ user, onClose }: { user: AuthUser; onClose: () => void }
   </div>;
 }
 
-function SearchModal({ access, onClose, onClient, onProject, onLead, onOrder }: { access: AccessProfile; onClose: () => void; onClient: (id: string) => void; onProject: (id: string) => void; onLead:(id:string)=>void; onOrder:(id:string)=>void }) {
+function SearchModal({ access, onClose, onClient, onProject, onLead, onOrder, onComplex }: { access: AccessProfile; onClose: () => void; onClient: (id: string) => void; onProject: (id: string) => void; onLead:(id:string)=>void; onOrder:(id:string)=>void; onComplex:(id:string)=>void }) {
   const [q, setQ] = useState("");
   const [clients, setClients] = useState<{ id: string; fullName: string; phone: string }[]>([]);
   const [projects, setProjects] = useState<{ id: string; displayName: string; address: string; apartment: string; residentialComplex: string | null; clientName: string }[]>([]);
   const [leads, setLeads] = useState<Lead[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
+  const [complexes, setComplexes] = useState<{ id: string; name: string; city: string; address: string }[]>([]);
   useEffect(() => {
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
-      if (!q.trim()) { setClients([]); setProjects([]); setLeads([]); setOrders([]); return; }
+      if (!q.trim()) { setClients([]); setProjects([]); setLeads([]); setOrders([]); setComplexes([]); return; }
       const clientRequest = access.modules.clients && access.actions["clients.view"] ? fetch(`/api/clients?${new URLSearchParams({ search: q, status: "ALL", limit: "5" })}`, { cache: "no-store", signal: controller.signal }).then((response) => response.ok ? response.json() as Promise<{ items?: typeof clients }> : Promise.reject()) : Promise.resolve({ items: [] });
       const projectRequest = access.modules.projects && access.actions["projects.view"] ? fetch(`/api/projects?${new URLSearchParams({ search: q, status: "ALL", limit: "5" })}`, { cache: "no-store", signal: controller.signal }).then((response) => response.ok ? response.json() as Promise<{ items?: typeof projects }> : Promise.reject()) : Promise.resolve({ items: [] });
       const leadRequest = access.modules.crm && access.actions["crm.view"] ? fetch(`/api/crm?${new URLSearchParams({ search: q, status: "ALL", view:"list", limit: "5" })}`, { cache: "no-store", signal: controller.signal }).then((response) => response.ok ? response.json() as Promise<{ items?: typeof leads }> : Promise.reject()) : Promise.resolve({ items: [] });
       const orderRequest = access.modules.orders && access.actions["orders.view"] ? fetch(`/api/orders?${new URLSearchParams({ search: q, limit: "5" })}`, { cache: "no-store", signal: controller.signal }).then((response) => response.ok ? response.json() as Promise<{ items?: Order[] }> : Promise.reject()) : Promise.resolve({ items: [] as Order[] });
-      Promise.all([clientRequest, projectRequest,leadRequest,orderRequest]).then(([clientData, projectData,leadData,orderData]) => { setClients(clientData.items ?? []); setProjects(projectData.items ?? []);setLeads(leadData.items??[]);setOrders(orderData.items??[]); }).catch(() => undefined);
+      const complexRequest = access.actions["residentialComplexes.view"] ? fetch(`/api/residential-complexes?${new URLSearchParams({ search: q, status: "ALL", limit: "5" })}`, { cache: "no-store", signal: controller.signal }).then((response) => response.ok ? response.json() as Promise<{ items?: typeof complexes }> : Promise.reject()) : Promise.resolve({ items: [] });
+      Promise.all([clientRequest, projectRequest,leadRequest,orderRequest,complexRequest]).then(([clientData, projectData,leadData,orderData,complexData]) => { setClients(clientData.items ?? []); setProjects(projectData.items ?? []);setLeads(leadData.items??[]);setOrders(orderData.items??[]);setComplexes(complexData.items??[]); }).catch(() => undefined);
     }, 250);
     return () => { window.clearTimeout(timer); controller.abort(); };
   }, [q, access]);
-  return <div className="modal-wrap search-wrap" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className="search-modal"><div className="search-input"><span>⌕</span><input autoFocus value={q} onChange={(event) => setQ(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") onClose(); }} placeholder="Клиент, заявка, заказ, объект или адрес"/><kbd>ESC</kbd></div><div className="search-results">{access.modules.crm&&access.actions["crm.view"]?<><small>ЗАЯВКИ</small>{leads.map(lead=><button key={lead.id} onClick={()=>{onClose();onLead(lead.id)}}><i>↗</i><span><b>{lead.name}</b><small>{lead.phone} · {lead.responsibleName}</small></span><em>↗</em></button>)}</>:null}{access.modules.orders&&access.actions["orders.view"]?<><small>ЗАКАЗЫ</small>{orders.map(order=><button key={order.id} onClick={()=>{onClose();onOrder(order.id)}}><i>▤</i><span><b>{order.orderNumber}</b><small>{order.clientName} · {order.inspection?.address||order.title}</small></span><em>↗</em></button>)}</>:null}{access.modules.projects && access.actions["projects.view"] ? <><small>ОБЪЕКТЫ</small>{projects.map((project) => <button key={project.id} onClick={() => { onClose(); onProject(project.id); }}><i>◇</i><span><b>{project.displayName}</b><small>{project.clientName} · {project.address}</small></span><em>↗</em></button>)}</> : null}{access.modules.clients && access.actions["clients.view"] ? <><small>КЛИЕНТЫ</small>{clients.map((client) => <button key={client.id} onClick={() => { onClose(); onClient(client.id); }}><i>◎</i><span><b>{client.fullName}</b><small>{client.phone}</small></span><em>↗</em></button>)}</> : null}{q.trim() && !clients.length && !projects.length&&!leads.length&&!orders.length ? <div className="finance-empty">Ничего не найдено.</div> : null}</div></div></div>;
+  return <div className="modal-wrap search-wrap" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className="search-modal"><div className="search-input"><span>⌕</span><input autoFocus value={q} onChange={(event) => setQ(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") onClose(); }} placeholder="Клиент, заявка, заказ, ЖК, объект или адрес"/><kbd>ESC</kbd></div><div className="search-results">{access.actions["residentialComplexes.view"]?<><small>ЖИЛЫЕ КОМПЛЕКСЫ</small>{complexes.map(item=><button key={item.id} onClick={()=>{onClose();onComplex(item.id)}}><i>⌂</i><span><b>{item.name}</b><small>{item.city} · {item.address}</small></span><em>↗</em></button>)}</>:null}{access.modules.crm&&access.actions["crm.view"]?<><small>ЗАЯВКИ</small>{leads.map(lead=><button key={lead.id} onClick={()=>{onClose();onLead(lead.id)}}><i>↗</i><span><b>{lead.name}</b><small>{lead.phone} · {lead.responsibleName}</small></span><em>↗</em></button>)}</>:null}{access.modules.orders&&access.actions["orders.view"]?<><small>ЗАКАЗЫ</small>{orders.map(order=><button key={order.id} onClick={()=>{onClose();onOrder(order.id)}}><i>▤</i><span><b>{order.orderNumber}</b><small>{order.clientName} · {order.inspection?.address||order.title}</small></span><em>↗</em></button>)}</>:null}{access.modules.projects && access.actions["projects.view"] ? <><small>ОБЪЕКТЫ</small>{projects.map((project) => <button key={project.id} onClick={() => { onClose(); onProject(project.id); }}><i>◇</i><span><b>{project.displayName}</b><small>{project.clientName} · {project.address}</small></span><em>↗</em></button>)}</> : null}{access.modules.clients && access.actions["clients.view"] ? <><small>КЛИЕНТЫ</small>{clients.map((client) => <button key={client.id} onClick={() => { onClose(); onClient(client.id); }}><i>◎</i><span><b>{client.fullName}</b><small>{client.phone}</small></span><em>↗</em></button>)}</> : null}{q.trim() && !clients.length && !projects.length&&!leads.length&&!orders.length&&!complexes.length ? <div className="finance-empty">Ничего не найдено.</div> : null}</div></div></div>;
 }
 
 function AccessDenied({ onNavigate }: { onNavigate: () => void }) {
@@ -256,6 +261,7 @@ export function DepaOS({ currentUser, access, initialSection, accessDenied }: { 
   const [financeRevision, setFinanceRevision] = useState(0);
   const [targetClientId, setTargetClientId] = useState<string | null>(null);
   const [targetProjectId, setTargetProjectId] = useState<string | null>(null);
+  const [targetComplexId, setTargetComplexId] = useState<string | null>(null);
   const [targetLeadId,setTargetLeadId]=useState<string|null>(null);
   const [targetOrderId,setTargetOrderId]=useState<string|null>(null);
   const [targetOrderClientId,setTargetOrderClientId]=useState<string|null>(null);
@@ -265,9 +271,10 @@ export function DepaOS({ currentUser, access, initialSection, accessDenied }: { 
   const [menuOpen,setMenuOpen]=useState(false);
   const title = nav.flatMap(g=>g.items).find(i=>i.id===section)?.label || "Обзор";
   useEffect(()=>{if(!access.modules.crm||!access.actions["crm.view"])return;let active=true;fetch("/api/crm?view=list&status=ACTIVE&limit=1",{cache:"no-store"}).then(r=>r.ok?r.json():Promise.reject()).then(d=>{if(active)setCrmCount(d.total??0)}).catch(()=>undefined);return()=>{active=false};},[access,section]);
-  function select(s:Section){if (!access.modules[moduleBySection[s]]) { setDenied(true); return; } setTargetClientId(null);setTargetProjectId(null);setTargetLeadId(null);setTargetOrderId(null);setTargetOrderClientId(null);setTargetOrderSourceLeadId(null);setSection(s);setDenied(false)}
+  function select(s:Section){if (!canOpenSection(access,s)) { setDenied(true); return; } setTargetClientId(null);setTargetProjectId(null);setTargetComplexId(null);setTargetLeadId(null);setTargetOrderId(null);setTargetOrderClientId(null);setTargetOrderSourceLeadId(null);setSection(s);setDenied(false)}
   function openClient(id:string){setTargetProjectId(null);setTargetLeadId(null);setTargetOrderId(null);setTargetOrderClientId(null);setTargetClientId(id);setSection("clients");setDenied(false)}
   function openProject(id:string){setTargetClientId(null);setTargetLeadId(null);setTargetOrderId(null);setTargetOrderClientId(null);setTargetProjectId(id);setSection("objects");setDenied(false)}
+  function openComplex(id:string){setTargetClientId(null);setTargetProjectId(null);setTargetLeadId(null);setTargetOrderId(null);setTargetOrderClientId(null);setTargetComplexId(id);setSection("complexes");setDenied(false)}
   function openLead(id:string){setTargetClientId(null);setTargetProjectId(null);setTargetOrderId(null);setTargetOrderClientId(null);setTargetLeadId(id);setSection("crm");setDenied(false)}
   function openOrder(id:string){setTargetClientId(null);setTargetProjectId(null);setTargetLeadId(null);setTargetOrderClientId(null);setTargetOrderId(id);setSection("orders");setDenied(false)}
   function createOrderForClient(clientId:string){setTargetClientId(null);setTargetProjectId(null);setTargetLeadId(null);setTargetOrderId(null);setTargetOrderClientId(clientId);setTargetOrderSourceLeadId(null);setSection("orders");setDenied(false)}
@@ -275,16 +282,16 @@ export function DepaOS({ currentUser, access, initialSection, accessDenied }: { 
   function openFinance(mode: FinanceMode) { setFinanceContext(null); setFinanceMode(mode); setModal("finance"); }
   function openProjectFinance(mode: FinanceMode, project: { id: string; clientId: string }) { setFinanceContext({ projectId: project.id, clientId: project.clientId }); setFinanceMode(mode); setModal("finance"); }
   function openOrderPayment(order:Order){setFinanceContext({clientId:order.clientId,orderId:order.id,orderNumber:order.orderNumber,amount:String((order.remainingKopecks??0)/100),title:`Оплата по заказу ${order.orderNumber}`});setFinanceMode("INCOME");setModal("finance")}
-  const firstAllowed = nav.flatMap((group) => group.items).find((item) => access.modules[moduleBySection[item.id]])?.id ?? "dashboard";
+  const firstAllowed = nav.flatMap((group) => group.items).find((item) => canOpenSection(access,item.id))?.id ?? "dashboard";
   const financeAllowed = access.modules.finance && access.actions["finance.view"] && access.ownCashbox;
   const allowedFinanceModes = { EXPENSE: financeAllowed && access.actions["finance.createExpense"], INCOME: financeAllowed && access.actions["finance.createIncome"], TRANSFER: financeAllowed && access.actions["finance.createTransfer"] };
   const canAddFinance = section === "finance" && Object.values(allowedFinanceModes).some(Boolean);
   return <div className="app-shell">
     <Sidebar section={section} onChange={select} open={menuOpen} onClose={()=>setMenuOpen(false)} user={currentUser} access={access} onProfile={()=>setModal("profile")} crmCount={crmCount}/>
     {menuOpen&&<button className="scrim" onClick={()=>setMenuOpen(false)} aria-label="Закрыть меню"/>}
-    <main className="main"><Topbar title={title} onMenu={()=>setMenuOpen(true)} onAdd={canAddFinance ? ()=>setModal("picker") : undefined} onSearch={access.modules.clients || access.modules.projects || access.modules.crm || access.modules.orders ? ()=>setModal("search") : undefined}/><div className="content">
-      {denied ? <AccessDenied onNavigate={() => select(firstAllowed)} /> : section === "dashboard" ? (currentUser.role === "OWNER" ? <Dashboard onObject={()=>select("objects")} onSection={select} onLead={openLead} onOrder={openOrder} user={currentUser}/> : <EmployeeDashboard user={currentUser} access={access} onSection={select}/>) : section === "clients" ? <ClientsScreen key={targetClientId ?? "clients"} currentUser={currentUser} access={access} initialClientId={targetClientId} onClientClosed={()=>setTargetClientId(null)} onOpenProject={openProject} onOpenLead={openLead} onOpenOrder={openOrder} onCreateOrder={createOrderForClient}/> : section === "orders" ? <OrdersScreen key={`${targetOrderId??"orders"}-${targetOrderClientId??"all"}-${targetOrderSourceLeadId??"direct"}`} currentUser={currentUser} access={access} initialOrderId={targetOrderId} initialClientId={targetOrderClientId} initialSourceLeadId={targetOrderSourceLeadId} onOrderClosed={()=>setTargetOrderId(null)} onPayment={openOrderPayment} onOpenProject={openProject}/> : section === "objects" ? <ProjectsScreen key={targetProjectId ?? "projects"} currentUser={currentUser} access={access} initialProjectId={targetProjectId} onProjectClosed={()=>setTargetProjectId(null)} onClients={()=>select("clients")} onOpenClient={openClient} onFinance={openProjectFinance}/> : section === "crm" ? <CrmScreen key={targetLeadId??"crm"} currentUser={currentUser} access={access} initialLeadId={targetLeadId} onLeadClosed={()=>setTargetLeadId(null)} onOpenClient={openClient} onCreateOrder={createOrderFromLead}/> : section === "finance" ? <FinanceScreen key={financeRevision} onNew={openFinance}/> : section === "team" && currentUser.role === "OWNER" ? <TeamAccessScreen/> : currentUser.role === "EMPLOYEE" ? <ScopedModuleScreen section={section as GenericSection|"crm"}/> : <GenericScreen section={section as GenericSection} access={access}/>}{" "}
+    <main className="main"><Topbar title={title} onMenu={()=>setMenuOpen(true)} onAdd={canAddFinance ? ()=>setModal("picker") : undefined} onSearch={access.modules.clients || access.modules.projects || access.modules.crm || access.modules.orders || access.actions["residentialComplexes.view"] ? ()=>setModal("search") : undefined}/><div className="content">
+      {denied ? <AccessDenied onNavigate={() => select(firstAllowed)} /> : section === "dashboard" ? (currentUser.role === "OWNER" ? <Dashboard onObject={()=>select("objects")} onSection={select} onLead={openLead} onOrder={openOrder} user={currentUser}/> : <EmployeeDashboard user={currentUser} access={access} onSection={select}/>) : section === "clients" ? <ClientsScreen key={targetClientId ?? "clients"} currentUser={currentUser} access={access} initialClientId={targetClientId} onClientClosed={()=>setTargetClientId(null)} onOpenProject={openProject} onOpenLead={openLead} onOpenOrder={openOrder} onCreateOrder={createOrderForClient}/> : section === "orders" ? <OrdersScreen key={`${targetOrderId??"orders"}-${targetOrderClientId??"all"}-${targetOrderSourceLeadId??"direct"}`} currentUser={currentUser} access={access} initialOrderId={targetOrderId} initialClientId={targetOrderClientId} initialSourceLeadId={targetOrderSourceLeadId} onOrderClosed={()=>setTargetOrderId(null)} onPayment={openOrderPayment} onOpenProject={openProject}/> : section === "complexes" ? <ResidentialComplexesScreen key={targetComplexId ?? "complexes"} currentUser={currentUser} access={access} initialId={targetComplexId} onClosed={()=>setTargetComplexId(null)}/> : section === "objects" ? <ProjectsScreen key={targetProjectId ?? "projects"} currentUser={currentUser} access={access} initialProjectId={targetProjectId} onProjectClosed={()=>setTargetProjectId(null)} onClients={()=>select("clients")} onOpenClient={openClient} onFinance={openProjectFinance}/> : section === "crm" ? <CrmScreen key={targetLeadId??"crm"} currentUser={currentUser} access={access} initialLeadId={targetLeadId} onLeadClosed={()=>setTargetLeadId(null)} onOpenClient={openClient} onCreateOrder={createOrderFromLead}/> : section === "finance" ? <FinanceScreen key={financeRevision} onNew={openFinance}/> : section === "team" && currentUser.role === "OWNER" ? <TeamAccessScreen/> : currentUser.role === "EMPLOYEE" ? <ScopedModuleScreen section={section as GenericSection|"crm"}/> : <GenericScreen section={section as GenericSection} access={access}/>}{" "}
     </div></main>
-    {modal==="picker"&&<OperationPickerModal allowed={allowedFinanceModes} onClose={()=>setModal(null)} onSelect={openFinance}/>} {modal==="finance"&&<FinanceOperationModal key={`${financeMode}-${financeContext?.projectId ?? financeContext?.orderId ?? "global"}`} mode={financeMode} initialProjectId={financeContext?.projectId} initialClientId={financeContext?.clientId} initialOrderId={financeContext?.orderId} initialOrderNumber={financeContext?.orderNumber} initialAmount={financeContext?.amount} initialTitle={financeContext?.title} onClose={()=>{setModal(null);setFinanceContext(null)}} onSaved={()=>setFinanceRevision((value)=>value+1)}/>} {modal==="search"&&<SearchModal access={access} onClose={()=>setModal(null)} onClient={openClient} onProject={openProject} onLead={openLead} onOrder={openOrder}/>} {modal==="profile"&&<ProfileModal user={currentUser} onClose={()=>setModal(null)}/>}{" "}
+    {modal==="picker"&&<OperationPickerModal allowed={allowedFinanceModes} onClose={()=>setModal(null)} onSelect={openFinance}/>} {modal==="finance"&&<FinanceOperationModal key={`${financeMode}-${financeContext?.projectId ?? financeContext?.orderId ?? "global"}`} mode={financeMode} initialProjectId={financeContext?.projectId} initialClientId={financeContext?.clientId} initialOrderId={financeContext?.orderId} initialOrderNumber={financeContext?.orderNumber} initialAmount={financeContext?.amount} initialTitle={financeContext?.title} onClose={()=>{setModal(null);setFinanceContext(null)}} onSaved={()=>setFinanceRevision((value)=>value+1)}/>} {modal==="search"&&<SearchModal access={access} onClose={()=>setModal(null)} onClient={openClient} onProject={openProject} onLead={openLead} onOrder={openOrder} onComplex={openComplex}/>} {modal==="profile"&&<ProfileModal user={currentUser} onClose={()=>setModal(null)}/>}{" "}
   </div>;
 }

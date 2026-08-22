@@ -3,6 +3,7 @@ import { Manrope, Unbounded } from "next/font/google";
 import { headers } from "next/headers";
 import "./globals.css";
 import "./dark-theme.css";
+import "./residential-complexes.css";
 
 const manrope = Manrope({ variable: "--font-manrope", subsets: ["latin", "cyrillic"] });
 const unbounded = Unbounded({ variable: "--font-unbounded", subsets: ["latin", "cyrillic"] });

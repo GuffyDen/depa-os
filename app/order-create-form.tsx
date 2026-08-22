@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import type { AuthUser } from "../lib/auth";
 import type { AccessProfile } from "../lib/permission-definitions";
+import { ResidentialComplexFields } from "./residential-complex-selector";
 
 type User = { id: string; name: string };
 type Client = { id: string; fullName: string; phone: string };
@@ -10,6 +11,7 @@ type Designer = { id: string; name: string; userId: string | null };
 type ServiceType = "INSPECTION" | "DESIGN" | "RENOVATION";
 type SchedulePreset = { date: string; startTime: string; endTime: string };
 export type OrderPrefill = {
+  residentialComplexId?: string | null;
   residentialComplex?: string | null;
   address?: string | null;
   apartmentNumber?: string | null;
@@ -306,21 +308,15 @@ export function UniversalOrderForm({
                 </>
               )}
             </label>
-            <label>
-              <span>ЖК</span>
-              <input
-                name="residentialComplex"
-                defaultValue={prefill?.residentialComplex || ""}
-              />
-            </label>
-            <label>
-              <span>Адрес *</span>
-              <input
-                name="address"
-                defaultValue={prefill?.address || ""}
-                required
-              />
-            </label>
+            <ResidentialComplexFields
+              initialId={prefill?.residentialComplexId}
+              initialName={prefill?.residentialComplex}
+              initialAddress={prefill?.address}
+              canCreate={
+                currentUser.role === "OWNER" ||
+                Boolean(access.actions["residentialComplexes.create"])
+              }
+            />
             <label>
               <span>Квартира *</span>
               <input

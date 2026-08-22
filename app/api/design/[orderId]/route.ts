@@ -8,6 +8,7 @@ import {
   updateDesignProject,
 } from "../../../../lib/design";
 import { AccessError } from "../../../../lib/permissions";
+import { ResidentialComplexError } from "../../../../lib/residential-complexes";
 
 export const dynamic = "force-dynamic";
 
@@ -19,6 +20,11 @@ function fail(error: unknown) {
     );
   if (error instanceof AccessError)
     return Response.json({ error: error.message }, { status: error.status });
+  if (error instanceof ResidentialComplexError)
+    return Response.json(
+      { error: error.message, ...error.details },
+      { status: error.status },
+    );
   console.error("Design API error", error);
   return Response.json(
     { error: "Не удалось выполнить операцию с дизайн-проектом." },

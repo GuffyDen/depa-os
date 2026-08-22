@@ -38,6 +38,10 @@ export const ACTION_GROUPS = [
     ["projects.view", "Просматривать"], ["projects.create", "Создавать"], ["projects.edit", "Редактировать"],
     ["projects.assignEmployees", "Назначать сотрудников"], ["projects.viewCost", "Просматривать себестоимость"], ["projects.viewMargin", "Просматривать маржу"],
   ] },
+  { module: "projects", label: "Справочник ЖК", actions: [
+    ["residentialComplexes.view", "Просматривать справочник"], ["residentialComplexes.create", "Добавлять ЖК"],
+    ["residentialComplexes.edit", "Редактировать ЖК"], ["residentialComplexes.archive", "Архивировать и восстанавливать"],
+  ] },
   { module: "tasks", label: "Задачи", actions: [
     ["tasks.view", "Просматривать"], ["tasks.create", "Создавать"], ["tasks.edit", "Редактировать"],
     ["tasks.complete", "Выполнять"], ["tasks.assign", "Назначать другому сотруднику"],

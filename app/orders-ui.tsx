@@ -50,6 +50,7 @@ export type Order = {
   paymentStatus: string | null;
   inspection: {
     id: string;
+    residentialComplexId: string | null;
     residentialComplex: string | null;
     address: string;
     apartmentNumber: string;
@@ -63,6 +64,7 @@ export type Order = {
   } | null;
   design: {
     id: string;
+    residentialComplexId: string | null;
     residentialComplex: string | null;
     address: string;
     apartmentNumber: string;
@@ -75,6 +77,7 @@ export type Order = {
   } | null;
   renovation: {
     id: string;
+    residentialComplexId: string | null;
     residentialComplex: string | null;
     address: string;
     apartmentNumber: string;
@@ -672,6 +675,7 @@ function OrderCard({
     return (
       <DesignOrderCard
         orderId={id}
+        canCreateComplex={Boolean(access.actions["residentialComplexes.create"])}
         onClose={onClose}
         onChanged={onChanged}
         onOpenOrder={onOpenOrder}
@@ -1289,6 +1293,7 @@ export function OrdersScreen({
       sourceOrderId: order.id,
       sourceLeadId: null,
       prefill: {
+        residentialComplexId: location?.residentialComplexId,
         residentialComplex: location?.residentialComplex,
         address: location?.address,
         apartmentNumber: location?.apartmentNumber,
