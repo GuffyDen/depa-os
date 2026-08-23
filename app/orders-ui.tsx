@@ -1,5 +1,6 @@
 "use client";
 import { FormEvent, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import type { AuthUser } from "../lib/auth";
 import type { AccessProfile } from "../lib/permission-definitions";
 import { calendarRange, InspectionCalendar } from "./inspection-calendar";
@@ -559,7 +560,7 @@ function OrderCard({
   onCreateRelated,
   onCreateEstimate,
   onOpenEstimate,
-  onOpenProject = () => window.location.assign("/projects"),
+  onOpenProject,
 }: {
   id: string;
   users: User[];
@@ -573,6 +574,8 @@ function OrderCard({
   onOpenEstimate?: (estimateId:string) => void;
   onOpenProject?: (projectId: string) => void;
 }) {
+  const router = useRouter();
+  const openProject = onOpenProject ?? (() => router.push("/projects"));
   const [detail, setDetail] = useState<Detail | null>(null),
     [tab, setTab] = useState("overview"),
     [error, setError] = useState(""),
@@ -711,7 +714,7 @@ function OrderCard({
         canCreateProject={Boolean(access.actions["projects.create"])}
         onClose={onClose}
         onPayment={onPayment}
-        onOpenProject={onOpenProject}
+        onOpenProject={openProject}
         onChanged={onChanged}
         onOpenEstimate={onOpenEstimate}
       />
@@ -1147,7 +1150,7 @@ export function OrdersScreen({
   initialSourceLeadId = null,
   onOrderClosed,
   onPayment,
-  onOpenProject = () => window.location.assign("/projects"),
+  onOpenProject,
   initialEstimateId = null,
   initialEstimateContext = null,
   initialContractId = null,
@@ -1164,6 +1167,8 @@ export function OrdersScreen({
   initialEstimateContext?: {clientId:string;sourceLeadId?:string|null;sourceOrderId?:string|null;projectId?:string|null;responsibleUserId:string;residentialComplexId?:string|null;residentialComplex?:string|null;address?:string|null;apartmentNumber?:string|null;areaSqm?:number|null} | null;
   initialContractId?: string | null;
 }) {
+  const router = useRouter();
+  const openProject = onOpenProject ?? (() => router.push("/projects"));
   const routeContractId = initialContractId ?? (typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("contractId"));
   const [items, setItems] = useState<Order[]>([]),
     [meta, setMeta] = useState<Omit<ListData, "items"> | null>(null),
@@ -1600,7 +1605,7 @@ export function OrdersScreen({
           onChanged={() => setRevision((x) => x + 1)}
           onPayment={onPayment}
           onOpenOrder={setOpenId}
-          onOpenProject={onOpenProject}
+          onOpenProject={openProject}
           onCreateRelated={createRelated}
           onCreateEstimate={(context)=>{setOpenId(null);setEstimateContext(context);setView("estimates")}}
           onOpenEstimate={(estimateId)=>{setOpenId(null);setEstimateContext(null);setEstimateTargetId(estimateId);setView("estimates")}}

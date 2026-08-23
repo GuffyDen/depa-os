@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import type { AuthUser } from "../lib/auth";
 import type { AccessProfile, ActionPermission, ModuleKey } from "../lib/permission-definitions";
 import { FinanceOperationModal, FinanceScreen, OperationPickerModal, money, readFinance, type FinanceData, type FinanceMode } from "./finance-ui";
@@ -183,6 +184,7 @@ function ScopedModuleScreen({ section }: { section: keyof typeof scopedModulePre
 }
 
 function ProfileModal({ user, onClose }: { user: AuthUser; onClose: () => void }) {
+  const router = useRouter();
   const [mode, setMode] = useState<"profile" | "password">("profile");
   const [visible, setVisible] = useState({ current: false, next: false, confirm: false });
   const [loading, setLoading] = useState(false);
@@ -203,7 +205,7 @@ function ProfileModal({ user, onClose }: { user: AuthUser; onClose: () => void }
 
   async function signOut() {
     setLoading(true);
-    try { await fetch("/api/auth/logout", { method: "POST" }); } finally { window.location.assign("/login"); }
+    try { await fetch("/api/auth/logout", { method: "POST" }); } finally { router.push("/login"); router.refresh(); }
   }
 
   return <div className="modal-wrap profile-wrap" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
@@ -224,7 +226,9 @@ function ProfileModal({ user, onClose }: { user: AuthUser; onClose: () => void }
   </div>;
 }
 
-function SearchModal({ access, onClose, onClient, onProject, onLead, onOrder, onComplex,onEstimate,onContract=(id)=>window.location.assign(`/dashboard?section=orders&contractId=${encodeURIComponent(id)}`) }: { access: AccessProfile; onClose: () => void; onClient: (id: string) => void; onProject: (id: string) => void; onLead:(id:string)=>void; onOrder:(id:string)=>void; onComplex:(id:string)=>void;onEstimate:(id:string)=>void;onContract?:(id:string)=>void }) {
+function SearchModal({ access, onClose, onClient, onProject, onLead, onOrder, onComplex,onEstimate,onContract }: { access: AccessProfile; onClose: () => void; onClient: (id: string) => void; onProject: (id: string) => void; onLead:(id:string)=>void; onOrder:(id:string)=>void; onComplex:(id:string)=>void;onEstimate:(id:string)=>void;onContract?:(id:string)=>void }) {
+  const router = useRouter();
+  onContract ??= (id: string) => router.push(`/dashboard?section=orders&contractId=${encodeURIComponent(id)}`);
   const [q, setQ] = useState("");
   const [clients, setClients] = useState<{ id: string; fullName: string; phone: string }[]>([]);
   const [projects, setProjects] = useState<{ id: string; displayName: string; address: string; apartment: string; residentialComplex: string | null; clientName: string }[]>([]);

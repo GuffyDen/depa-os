@@ -228,7 +228,7 @@ async function createAcceptedStageObligations(stageId: string, timestamp: number
 export async function acceptStageByClient(user: ClientPortalUser, stageId: string, comment?: string) {
   const stage = await first<{ project_id: string; acceptance_status: string }>("SELECT s.project_id,s.acceptance_status FROM project_stages s JOIN projects p ON p.id=s.project_id WHERE s.id=$1 AND p.client_id=$2 AND s.status='COMPLETED'", [stageId, user.clientId]);
   if (!stage) throw new ClientPortalError("Этап недоступен.", 403);
-  if (stage.acceptance_status === "ACCEPTED") return { ok: true, idempotent: true };
+  if (stage.acceptance_status === "ACCEPTED") return { ok: true, idempotent: true, projectId: stage.project_id, clientId: user.clientId };
   if (stage.acceptance_status !== "AWAITING_ACCEPTANCE") throw new ClientPortalError("Этап ещё не передан на приёмку.", 409);
   const timestamp = now(), eventId = id(), obligations = await createAcceptedStageObligations(stageId, timestamp);
   try { await transaction([
@@ -237,7 +237,7 @@ export async function acceptStageByClient(user: ClientPortalUser, stageId: strin
     ...obligations,
     portalAudit("STAGE_ACCEPTED_BY_CLIENT", "ProjectStage", stageId, { clientId: user.clientId, portalUserId: user.id, metadata: { projectId: stage.project_id, eventId }, at: timestamp }),
   ]); } catch (error) { if ((error as { code?: string }).code === "22012") throw new ClientPortalError("Этап уже обработан другим запросом.", 409); throw error; }
-  return { ok: true };
+  return { ok: true, projectId: stage.project_id, clientId: user.clientId };
 }
 
 export async function rejectStageByClient(user: ClientPortalUser, stageId: string, comment: string) {
@@ -250,7 +250,7 @@ export async function rejectStageByClient(user: ClientPortalUser, stageId: strin
     { text: "INSERT INTO stage_acceptance_events(id,project_id,stage_id,type,client_portal_user_id,comment,created_at) VALUES($1,$2,$3,'STAGE_REJECTED_BY_CLIENT',$4,$5,$6)", params: [id(), stage.project_id, stageId, user.id, reason, timestamp] },
     portalAudit("STAGE_REJECTED_BY_CLIENT", "ProjectStage", stageId, { clientId: user.clientId, portalUserId: user.id, metadata: { projectId: stage.project_id }, at: timestamp }),
   ]); } catch (error) { if ((error as { code?: string }).code === "22012") throw new ClientPortalError("Этап уже обработан другим запросом.", 409); throw error; }
-  return { ok: true };
+  return { ok: true, projectId: stage.project_id, clientId: user.clientId };
 }
 
 async function internalStage(actor: AuthUser, stageId: string, permission: "stageAcceptance.resubmit" | "obligations.manage") {
@@ -265,14 +265,14 @@ export async function resubmitStage(actor: AuthUser, stageId: string, comment?: 
   if (stage.acceptance_status !== "REJECTED") throw new ClientPortalError("Повторно передать можно только отклонённый этап.", 409);
   const timestamp = now(), reason = clean(comment, 2000) || null;
   try { await transaction([{ text: "WITH transitioned AS (UPDATE project_stages SET acceptance_status='AWAITING_ACCEPTANCE',acceptance_comment=$1,updated_at=$2 WHERE id=$3 AND acceptance_status='REJECTED' RETURNING id) SELECT 1 / COUNT(*)::int transition_guard FROM transitioned", params: [reason, timestamp, stageId] }, { text: "INSERT INTO stage_acceptance_events(id,project_id,stage_id,type,employee_user_id,comment,created_at) VALUES($1,$2,$3,'STAGE_RESUBMITTED_FOR_ACCEPTANCE',$4,$5,$6)", params: [id(), stage.project_id, stageId, actor.id, reason, timestamp] }, employeeAudit(actor, "STAGE_RESUBMITTED_FOR_ACCEPTANCE", "ProjectStage", stageId, { projectId: stage.project_id }, timestamp)]); } catch (error) { if ((error as { code?: string }).code === "22012") throw new ClientPortalError("Этап уже изменён другим запросом.", 409); throw error; }
-  return { ok: true };
+  return { ok: true, projectId: stage.project_id, clientId: stage.client_id };
 }
 
 export async function manuallyAcceptStage(actor: AuthUser, stageId: string, comment: string) {
   const reason = clean(comment, 2000); if (!reason) throw new ClientPortalError("Укажите основание ручной приёмки.");
   const stage = await internalStage(actor, stageId, "obligations.manage"), timestamp = now(), obligations = await createAcceptedStageObligations(stageId, timestamp);
   try { await transaction([{ text: "WITH transitioned AS (UPDATE project_stages SET acceptance_status='ACCEPTED',accepted_at=$1,rejected_at=NULL,acceptance_comment=$2,updated_at=$3 WHERE id=$4 AND acceptance_status<>'ACCEPTED' RETURNING id) SELECT 1 / COUNT(*)::int transition_guard FROM transitioned", params: [timestamp, reason, timestamp, stageId] }, { text: "INSERT INTO stage_acceptance_events(id,project_id,stage_id,type,employee_user_id,comment,created_at) VALUES($1,$2,$3,'STAGE_ACCEPTED_MANUALLY_BY_DEPA',$4,$5,$6)", params: [id(), stage.project_id, stageId, actor.id, reason, timestamp] }, ...obligations, employeeAudit(actor, "STAGE_ACCEPTED_MANUALLY_BY_DEPA", "ProjectStage", stageId, { projectId: stage.project_id, reason }, timestamp)]); } catch (error) { if ((error as { code?: string }).code === "22012") throw new ClientPortalError("Этап уже принят.", 409); throw error; }
-  return { ok: true };
+  return { ok: true, projectId: stage.project_id, clientId: stage.client_id };
 }
 
 export async function saveStagePaymentTerms(actor: AuthUser, projectId: string, terms: unknown[]) {
@@ -331,7 +331,7 @@ export async function listPaymentClaims(actor: AuthUser) {
 export async function rejectPaymentClaim(actor: AuthUser, claimId: string, comment: string) {
   const reason = clean(comment, 2000); if (!reason) throw new ClientPortalError("Укажите причину отказа."); const claim = await first<{ project_id: string; client_id: string }>("SELECT project_id,client_id FROM client_payment_claims WHERE id=$1", [claimId]); if (!claim) throw new ClientPortalError("Заявление не найдено.", 404); await paymentPermission(actor, "clientPayments.reject", claim.project_id); const timestamp = now();
   const result = await query("UPDATE client_payment_claims SET status='REJECTED',rejected_at=$1,rejected_by_user_id=$2,rejection_comment=$3,updated_at=$4 WHERE id=$5 AND status='PENDING' RETURNING id", [timestamp, actor.id, reason, timestamp, claimId]); if (!result.length) throw new ClientPortalError("Заявление уже обработано.", 409);
-  await transaction([portalAudit("CLIENT_PAYMENT_CLAIM_REJECTED", "ClientPaymentClaim", claimId, { clientId: claim.client_id, employeeUserId: actor.id, metadata: { projectId: claim.project_id }, at: timestamp }), employeeAudit(actor, "CLIENT_PAYMENT_CLAIM_REJECTED", "ClientPaymentClaim", claimId, { projectId: claim.project_id }, timestamp)]); return { ok: true };
+  await transaction([portalAudit("CLIENT_PAYMENT_CLAIM_REJECTED", "ClientPaymentClaim", claimId, { clientId: claim.client_id, employeeUserId: actor.id, metadata: { projectId: claim.project_id }, at: timestamp }), employeeAudit(actor, "CLIENT_PAYMENT_CLAIM_REJECTED", "ClientPaymentClaim", claimId, { projectId: claim.project_id }, timestamp)]); return { ok: true, projectId: claim.project_id, clientId: claim.client_id };
 }
 
 export async function confirmPaymentClaim(actor: AuthUser, claimId: string, actualAmountKopecks: number, cashboxId: string, receivedAt: number, comment?: string) {
@@ -354,5 +354,5 @@ export async function confirmPaymentClaim(actor: AuthUser, claimId: string, actu
     portal_audit AS (INSERT INTO client_portal_audit_events(id,action,entity_type,entity_id,client_id,employee_user_id,metadata_json,occurred_at) SELECT $11,'CLIENT_PAYMENT_CLAIM_CONFIRMED','ClientPaymentClaim',$1,e.client_id,$5,jsonb_build_object('financialTransactionId',$2,'amountKopecks',$3),$8 FROM eligible e CROSS JOIN inserted_transaction RETURNING id)
     SELECT (SELECT COUNT(*)::int FROM inserted_transaction) transaction_count,COALESCE((SELECT SUM(amount_kopecks) FROM allocated),0) allocated_kopecks`, [claimId, transactionId, amount, received, actor.id, cashbox, clean(comment, 2000), timestamp, unappliedId, auditId, portalAuditId]);
   if (Number(result[0]?.transaction_count ?? 0) !== 1) throw new ClientPortalError("Заявление уже обработано.", 409);
-  return { ok: true, financialTransactionId: transactionId, allocatedKopecks: Number(result[0].allocated_kopecks), unappliedKopecks: amount - Number(result[0].allocated_kopecks) };
+  return { ok: true, projectId: claim.project_id, clientId: claim.client_id, financialTransactionId: transactionId, allocatedKopecks: Number(result[0].allocated_kopecks), unappliedKopecks: amount - Number(result[0].allocated_kopecks) };
 }

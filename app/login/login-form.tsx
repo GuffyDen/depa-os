@@ -1,8 +1,10 @@
 "use client";
 
 import { FormEvent, useState } from "react";
+import { useRouter } from "next/navigation";
 
 export function LoginForm() {
+  const router = useRouter();
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -16,7 +18,7 @@ export function LoginForm() {
       const response = await fetch("/api/auth/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: data.get("username"), password: data.get("password") }) });
       const result = await response.json() as { error?: string };
       if (!response.ok) { setError(result.error ?? "Не удалось войти."); setLoading(false); return; }
-      window.location.assign("/dashboard");
+      router.push("/dashboard");
     } catch {
       setError("Нет связи с системой. Проверьте подключение и повторите.");
       setLoading(false);

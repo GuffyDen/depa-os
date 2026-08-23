@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { createSqlClient } from "./sql-client.mjs";
 import { assertTestDatabaseUrl } from "./test-db-guard.mjs";
 import { ensureLegacyTestBaseline } from "./test-legacy-baseline.mjs";
+import { createRequestId, emitStructuredLog } from "../lib/structured-logger.mjs";
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) throw new Error("DATABASE_URL is not configured");
@@ -10,6 +11,9 @@ if (process.env.NODE_ENV === "test") assertTestDatabaseUrl(databaseUrl);
 
 const sql = createSqlClient(databaseUrl);
 const splitStatements = (source) => source.split("--> statement-breakpoint").map((statement) => statement.trim()).filter(Boolean);
+const requestId = createRequestId();
+const migrationStartedAt = performance.now();
+let activeMigration = null;
 
 try {
   await sql.query("CREATE TABLE IF NOT EXISTS depa_migrations (name text PRIMARY KEY, applied_at integer NOT NULL)");
@@ -25,6 +29,7 @@ try {
   } else {
     for (const [index, fileName] of migrationFiles.entries()) {
       const migrationName = migrationNames[index];
+      activeMigration = migrationName;
       const applied = await sql.query("SELECT name FROM depa_migrations WHERE name=$1 LIMIT 1", [migrationName]);
       if (applied.length > 0) continue;
       const source = await readFile(resolve(migrationDirectory, fileName), "utf8");
@@ -35,4 +40,7 @@ try {
     }
     console.log("PostgreSQL-first migrations are up to date.");
   }
+} catch (error) {
+  emitStructuredLog({ level: "ERROR", requestId, route: "scripts/migrate-postgres.mjs", action: "MIGRATION_RUNNER", method: "RUN", actorType: "SYSTEM", entityId: activeMigration, eventCode: "MIGRATION_RUNNER_FAILURE", durationMs: Math.round(performance.now() - migrationStartedAt), status: "FAILURE", errorCode: error instanceof Error ? error.name : "MIGRATION_UNKNOWN", error });
+  throw error;
 } finally { await sql.close(); }
