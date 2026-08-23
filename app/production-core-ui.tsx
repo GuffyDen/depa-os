@@ -1,6 +1,7 @@
 "use client";
 
 import { upload } from "@vercel/blob/client";
+import { StagePaymentPlanForm } from "./stage-payment-plan-form";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import type { AccessProfile } from "../lib/permission-definitions";
 
@@ -41,8 +42,6 @@ type SchedulePreview = { confirmationRequired: true; affectedCount: number; affe
 const statuses: Record<string, string> = { NOT_STARTED: "Не начата", IN_PROGRESS: "В работе", PAUSED: "Приостановлена", COMPLETED: "Завершена", CANCELLED: "Отменена" };
 const formatDate = (value: number | null) => value ? new Date(value * 1000).toLocaleDateString("ru-RU") : "—";
 const isoDate = (value: number | null) => value ? new Date(value * 1000).toISOString().slice(0, 10) : "";
-const money = (value: number) => new Intl.NumberFormat("ru-RU", { style: "currency", currency: "RUB", maximumFractionDigits: 0 }).format(value / 100);
-
 async function json<T>(response: Response) {
   const value = await response.json() as T & { error?: string };
   if (!response.ok) throw Object.assign(new Error(value.error || "Операция не выполнена."), value);
@@ -172,8 +171,6 @@ function TemplateManager({ templates, access, onChanged }: { templates: Template
   </section>;
 }
 
-function PaymentPlanPanel({projectId,stages,access,onError}:{projectId:string;stages:Stage[];access:AccessProfile;onError:(value:string)=>void}){const [busy,setBusy]=useState(false);if(!access.actions["stagePaymentTerms.view"]&&!access.actions["stagePaymentTerms.edit"])return null;async function configure(){const terms:Record<string,unknown>[]=[];for(const stage of stages){const amount=window.prompt(`Стоимость этапа «${stage.name}», ₽`,String((stage.stageCommercialAmountKopecks??0)/100));if(amount===null)return;const advance=window.prompt(`Необходимый аванс этапа «${stage.name}», ₽`,"0");if(advance===null)return;terms.push({stageId:stage.id,stageAmountKopecks:Math.round(Number(amount.replace(",","."))*100),requiredAdvanceKopecks:Math.round(Number(advance.replace(",","."))*100)})}setBusy(true);try{const response=await fetch("/api/client-portal/payment-plan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"SAVE",projectId,terms})}),result=await response.json();if(!response.ok)throw new Error(result.error);if(window.confirm(`Сумма этапов: ${money(Number(result.totalKopecks))}\nДоговор: ${money(Number(result.contractAmountKopecks))}\nРазница: ${money(Number(result.differenceKopecks))}\n\nАктивировать финансовый план?`)){const activated=await fetch("/api/client-portal/payment-plan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"ACTIVATE",projectId})}),activation=await activated.json();if(!activated.ok)throw new Error(activation.error)}}catch(reason){onError(reason instanceof Error?reason.message:"Не удалось настроить финансовый план.")}finally{setBusy(false)}}return <section className="panel stage-payment-plan"><div><span className="eyebrow">ФИНАНСОВЫЙ ПЛАН ЭТАПОВ</span><h3>Обязательства клиента</h3><p>Редактирование цифр не создаёт деньги. Обязательства появляются после активации и приёмки этапов.</p></div>{access.actions["stagePaymentTerms.edit"]?<button className="secondary" disabled={busy} onClick={()=>void configure()}>{busy?"Сохраняем…":"Настроить и активировать"}</button>:null}</section>}
-
 export function ProductionCore({ projectId, access, view }: { projectId: string; access: AccessProfile; view: "production" | "gantt" | "reports" }) {
   const [data, setData] = useState<Data | null>(null);
   const [error, setError] = useState("");
@@ -236,7 +233,7 @@ export function ProductionCore({ projectId, access, view }: { projectId: string;
     <header className="production-summary"><div><span className="eyebrow">ГОТОВНОСТЬ ОБЪЕКТА</span><b>{Math.round(data.progress.production)}%</b><Progress value={data.progress.production} /><small>Внутренний прогноз: {formatDate(data.forecast.internal)} · опубликован: {formatDate(data.forecast.published)}</small></div>
       <div className="production-actions">{access.actions["production.manageStages"] && <button onClick={() => setForm("stage")}>＋ Этап</button>}{access.actions["production.manageTasks"] && <button onClick={() => setForm("task")}>＋ Задача</button>}{access.actions["production.manageDependencies"] && data.tasks.length > 1 && <button onClick={() => setForm("dependency")}>＋ Зависимость</button>}{access.actions["production.manageDelays"] && <button onClick={() => setForm("delay")}>＋ Простой</button>}{access.actions["production.manageSchedule"] && data.forecast.internal && data.forecast.internal !== data.forecast.published && <button onClick={() => void act({ action: "PUBLISH_FORECAST" })}>Опубликовать прогноз</button>}</div>
     </header>
-    <PaymentPlanPanel projectId={projectId} stages={data.stages} access={access} onError={setError}/>
+    <StagePaymentPlanForm projectId={projectId} stages={data.stages} access={access} onError={setError}/>
     {!data.weightValidation.valid && <div className="form-error">{data.weightValidation.message} {access.actions["production.manageStages"] && <button onClick={() => void act({ action: "NORMALIZE_WEIGHTS" })}>Распределить равномерно</button>}</div>}
     {error && <div className="form-error">{error}</div>}
     <div className="production-stages">{data.stages.map(stage => <section className="panel production-stage" key={stage.id}>

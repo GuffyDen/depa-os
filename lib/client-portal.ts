@@ -192,7 +192,7 @@ export async function getClientPortalHome(user: ClientPortalUser, requestedProje
   const overall = Math.round(((matchingDesign?.progress ?? 0) * designWeight + productionProgress * productionWeight) / 100);
   const stageIds = stages.map((stage) => String(stage.id));
   const tasks = stageIds.length ? await query<Record<string, unknown>>("SELECT id,stage_id,title,status,progress_type,planned_quantity,completed_quantity,weight_within_stage FROM tasks WHERE stage_id=ANY($1) AND client_visible=1 AND archived_at IS NULL ORDER BY position", [stageIds]) : [];
-  const delays = await query("SELECT id,category,reason,client_comment,start_date,end_date,days FROM project_delays WHERE project_id=$1 AND client_visible=1 ORDER BY start_date DESC", [project.id]);
+  const delays = await query("SELECT id,category,'Срок скорректирован'::text reason,client_comment,start_date,end_date,days FROM project_delays WHERE project_id=$1 AND client_visible=1 ORDER BY start_date DESC", [project.id]);
   const reports = await query(`SELECT dr.id,dr.report_date,CASE WHEN dr.comment_client_visible=1 THEN dr.comment ELSE NULL END comment,
     COALESCE(json_agg(json_build_object('id',a.id,'filename',a.original_filename,'url','/api/client/files/'||a.id) ORDER BY a.created_at) FILTER(WHERE a.id IS NOT NULL),'[]') photos
     FROM daily_reports dr LEFT JOIN attachments a ON a.entity_type='DailyReport' AND a.entity_id=dr.id AND a.upload_status='LINKED' AND a.deleted_at IS NULL AND (a.visibility='CLIENT' OR a.client_visible=1)
@@ -231,12 +231,12 @@ export async function acceptStageByClient(user: ClientPortalUser, stageId: strin
   if (stage.acceptance_status === "ACCEPTED") return { ok: true, idempotent: true };
   if (stage.acceptance_status !== "AWAITING_ACCEPTANCE") throw new ClientPortalError("Этап ещё не передан на приёмку.", 409);
   const timestamp = now(), eventId = id(), obligations = await createAcceptedStageObligations(stageId, timestamp);
-  await transaction([
-    { text: "UPDATE project_stages SET acceptance_status='ACCEPTED',accepted_at=$1,rejected_at=NULL,acceptance_comment=$2,accepted_by_client_portal_user_id=$3,updated_at=$4 WHERE id=$5 AND acceptance_status='AWAITING_ACCEPTANCE'", params: [timestamp, clean(comment, 2000) || null, user.id, timestamp, stageId] },
+  try { await transaction([
+    { text: "WITH transitioned AS (UPDATE project_stages SET acceptance_status='ACCEPTED',accepted_at=$1,rejected_at=NULL,acceptance_comment=$2,accepted_by_client_portal_user_id=$3,updated_at=$4 WHERE id=$5 AND acceptance_status='AWAITING_ACCEPTANCE' RETURNING id) SELECT 1 / COUNT(*)::int transition_guard FROM transitioned", params: [timestamp, clean(comment, 2000) || null, user.id, timestamp, stageId] },
     { text: "INSERT INTO stage_acceptance_events(id,project_id,stage_id,type,client_portal_user_id,comment,created_at) VALUES($1,$2,$3,'STAGE_ACCEPTED_BY_CLIENT',$4,$5,$6)", params: [eventId, stage.project_id, stageId, user.id, clean(comment, 2000) || null, timestamp] },
     ...obligations,
     portalAudit("STAGE_ACCEPTED_BY_CLIENT", "ProjectStage", stageId, { clientId: user.clientId, portalUserId: user.id, metadata: { projectId: stage.project_id, eventId }, at: timestamp }),
-  ]);
+  ]); } catch (error) { if ((error as { code?: string }).code === "22012") throw new ClientPortalError("Этап уже обработан другим запросом.", 409); throw error; }
   return { ok: true };
 }
 
@@ -245,11 +245,11 @@ export async function rejectStageByClient(user: ClientPortalUser, stageId: strin
   const stage = await first<{ project_id: string }>("SELECT s.project_id FROM project_stages s JOIN projects p ON p.id=s.project_id WHERE s.id=$1 AND p.client_id=$2 AND s.acceptance_status='AWAITING_ACCEPTANCE'", [stageId, user.clientId]);
   if (!stage) throw new ClientPortalError("Этап недоступен для отклонения.", 409);
   const timestamp = now();
-  await transaction([
-    { text: "UPDATE project_stages SET acceptance_status='REJECTED',rejected_at=$1,acceptance_comment=$2,updated_at=$3 WHERE id=$4 AND acceptance_status='AWAITING_ACCEPTANCE'", params: [timestamp, reason, timestamp, stageId] },
+  try { await transaction([
+    { text: "WITH transitioned AS (UPDATE project_stages SET acceptance_status='REJECTED',rejected_at=$1,acceptance_comment=$2,updated_at=$3 WHERE id=$4 AND acceptance_status='AWAITING_ACCEPTANCE' RETURNING id) SELECT 1 / COUNT(*)::int transition_guard FROM transitioned", params: [timestamp, reason, timestamp, stageId] },
     { text: "INSERT INTO stage_acceptance_events(id,project_id,stage_id,type,client_portal_user_id,comment,created_at) VALUES($1,$2,$3,'STAGE_REJECTED_BY_CLIENT',$4,$5,$6)", params: [id(), stage.project_id, stageId, user.id, reason, timestamp] },
     portalAudit("STAGE_REJECTED_BY_CLIENT", "ProjectStage", stageId, { clientId: user.clientId, portalUserId: user.id, metadata: { projectId: stage.project_id }, at: timestamp }),
-  ]);
+  ]); } catch (error) { if ((error as { code?: string }).code === "22012") throw new ClientPortalError("Этап уже обработан другим запросом.", 409); throw error; }
   return { ok: true };
 }
 
@@ -264,14 +264,14 @@ export async function resubmitStage(actor: AuthUser, stageId: string, comment?: 
   const stage = await internalStage(actor, stageId, "stageAcceptance.resubmit");
   if (stage.acceptance_status !== "REJECTED") throw new ClientPortalError("Повторно передать можно только отклонённый этап.", 409);
   const timestamp = now(), reason = clean(comment, 2000) || null;
-  await transaction([{ text: "UPDATE project_stages SET acceptance_status='AWAITING_ACCEPTANCE',acceptance_comment=$1,updated_at=$2 WHERE id=$3", params: [reason, timestamp, stageId] }, { text: "INSERT INTO stage_acceptance_events(id,project_id,stage_id,type,employee_user_id,comment,created_at) VALUES($1,$2,$3,'STAGE_RESUBMITTED_FOR_ACCEPTANCE',$4,$5,$6)", params: [id(), stage.project_id, stageId, actor.id, reason, timestamp] }, employeeAudit(actor, "STAGE_RESUBMITTED_FOR_ACCEPTANCE", "ProjectStage", stageId, { projectId: stage.project_id }, timestamp)]);
+  try { await transaction([{ text: "WITH transitioned AS (UPDATE project_stages SET acceptance_status='AWAITING_ACCEPTANCE',acceptance_comment=$1,updated_at=$2 WHERE id=$3 AND acceptance_status='REJECTED' RETURNING id) SELECT 1 / COUNT(*)::int transition_guard FROM transitioned", params: [reason, timestamp, stageId] }, { text: "INSERT INTO stage_acceptance_events(id,project_id,stage_id,type,employee_user_id,comment,created_at) VALUES($1,$2,$3,'STAGE_RESUBMITTED_FOR_ACCEPTANCE',$4,$5,$6)", params: [id(), stage.project_id, stageId, actor.id, reason, timestamp] }, employeeAudit(actor, "STAGE_RESUBMITTED_FOR_ACCEPTANCE", "ProjectStage", stageId, { projectId: stage.project_id }, timestamp)]); } catch (error) { if ((error as { code?: string }).code === "22012") throw new ClientPortalError("Этап уже изменён другим запросом.", 409); throw error; }
   return { ok: true };
 }
 
 export async function manuallyAcceptStage(actor: AuthUser, stageId: string, comment: string) {
   const reason = clean(comment, 2000); if (!reason) throw new ClientPortalError("Укажите основание ручной приёмки.");
   const stage = await internalStage(actor, stageId, "obligations.manage"), timestamp = now(), obligations = await createAcceptedStageObligations(stageId, timestamp);
-  await transaction([{ text: "UPDATE project_stages SET acceptance_status='ACCEPTED',accepted_at=$1,rejected_at=NULL,acceptance_comment=$2,updated_at=$3 WHERE id=$4", params: [timestamp, reason, timestamp, stageId] }, { text: "INSERT INTO stage_acceptance_events(id,project_id,stage_id,type,employee_user_id,comment,created_at) VALUES($1,$2,$3,'STAGE_ACCEPTED_MANUALLY_BY_DEPA',$4,$5,$6)", params: [id(), stage.project_id, stageId, actor.id, reason, timestamp] }, ...obligations, employeeAudit(actor, "STAGE_ACCEPTED_MANUALLY_BY_DEPA", "ProjectStage", stageId, { projectId: stage.project_id, reason }, timestamp)]);
+  try { await transaction([{ text: "WITH transitioned AS (UPDATE project_stages SET acceptance_status='ACCEPTED',accepted_at=$1,rejected_at=NULL,acceptance_comment=$2,updated_at=$3 WHERE id=$4 AND acceptance_status<>'ACCEPTED' RETURNING id) SELECT 1 / COUNT(*)::int transition_guard FROM transitioned", params: [timestamp, reason, timestamp, stageId] }, { text: "INSERT INTO stage_acceptance_events(id,project_id,stage_id,type,employee_user_id,comment,created_at) VALUES($1,$2,$3,'STAGE_ACCEPTED_MANUALLY_BY_DEPA',$4,$5,$6)", params: [id(), stage.project_id, stageId, actor.id, reason, timestamp] }, ...obligations, employeeAudit(actor, "STAGE_ACCEPTED_MANUALLY_BY_DEPA", "ProjectStage", stageId, { projectId: stage.project_id, reason }, timestamp)]); } catch (error) { if ((error as { code?: string }).code === "22012") throw new ClientPortalError("Этап уже принят.", 409); throw error; }
   return { ok: true };
 }
 

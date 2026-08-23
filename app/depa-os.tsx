@@ -23,7 +23,7 @@ const nav: { group: string; items: { id: Section; label: string; icon: string; c
   ]},
   { group: "Производство", items: [
     { id: "objects", label: "Объекты", icon: "◇" },
-    { id: "tasks", label: "Задачи", icon: "✓", count: 9 },
+    { id: "tasks", label: "Задачи", icon: "✓" },
   ]},
   { group: "Учёт", items: [
     { id: "finance", label: "Финансы", icon: "₽" },
@@ -67,7 +67,6 @@ function Topbar({ title, onMenu, onAdd, onSearch }: { title: string; onMenu: () 
     <div><small>DEPA STROY · ВЛАДИВОСТОК</small><h1>{title}</h1></div>
     <div className="top-actions">
       {onSearch ? <button className="search" onClick={onSearch}><span>⌕</span><span className="search-label">Найти клиента, объект, операцию</span><kbd>⌘ K</kbd></button> : null}
-      <button className="round" aria-label="Уведомления">●<i>3</i></button>
       {onAdd ? <button className="primary" onClick={onAdd}>＋ <span>Добавить</span></button> : null}
     </div>
   </header>;
@@ -77,7 +76,7 @@ function Metric({ label, value, detail, tone }: { label: string; value: string; 
   return <div className="metric"><div className="metric-top"><span>{label}</span><i className={tone || ""}>↗</i></div><strong>{value}</strong><small>{detail}</small></div>;
 }
 
-function Dashboard({ onObject, onSection, onLead, onOrder, user }: { onObject: () => void; onSection: (s: Section) => void; onLead: (id:string) => void; onOrder: (id:string) => void; user: AuthUser }) {
+function Dashboard({ onObject, onSection, onLead, onOrder, user }: { onObject: (id: string) => void; onSection: (s: Section) => void; onLead: (id:string) => void; onOrder: (id:string) => void; user: AuthUser }) {
   const [finance, setFinance] = useState<FinanceData | null>(null);
   const [projectSummary, setProjectSummary] = useState<{ total: number; items: { id: string; displayName: string; clientName: string; status: string; responsibleName: string; plannedEndDate: number | null }[] }>({ total: 0, items: [] });
   const [crmSummary, setCrmSummary] = useState<{ stageCounts: Record<string,number>; attention: Lead[] }>({ stageCounts: {}, attention: [] });
@@ -90,9 +89,9 @@ function Dashboard({ onObject, onSection, onLead, onOrder, user }: { onObject: (
     <section className="welcome"><div><span className="eyebrow">РАБОЧИЙ КОНТУР</span><h2>{user.name.split(" ")[0]}, текущая ситуация</h2><p>Только реальные данные доступных модулей.</p></div><div className="weather"><span>Владивосток</span><b>DEPA</b><small>production</small></div></section>
     <section className="metrics-grid">
       <Metric label="ОБЪЕКТЫ В РАБОТЕ" value={String(projectSummary.total)} detail="Реальные объекты в рабочем контуре" />
-      <Metric label="ОБОРОТ · АВГУСТ" value="2,84 млн ₽" detail="+18% к июлю" />
+      <Metric label="ПОСТУПЛЕНИЯ · СЕГОДНЯ" value={finance ? money(finance.summary.todayIncomeKopecks) : "—"} detail="По подтверждённым финансовым операциям" />
       <Metric label="ДЕНЬГИ В КАССАХ" value={finance ? money(finance.physicalTotalKopecks) : "—"} detail={`${finance?.cashboxes.filter((box) => box.status === "ACTIVE").length ?? 0} активных касс · физический остаток, не прибыль`} />
-      <Metric label="ПРОГНОЗ ПРИБЫЛИ" value="684 000 ₽" detail="Маржинальность 22,4%" tone="orange" />
+      <Metric label="УПРАВЛЕНЧЕСКАЯ ПРИБЫЛЬ" value={finance?.depaProfitKopecks != null ? money(finance.depaProfitKopecks) : "—"} detail={finance?.capabilities.viewProfit ? "Расчёт по текущему финансовому реестру" : "Нет права на просмотр"} tone="orange" />
     </section>
     <div className="dashboard-grid">
       <section className="panel attention-panel">
@@ -111,7 +110,7 @@ function Dashboard({ onObject, onSection, onLead, onOrder, user }: { onObject: (
     <section className="panel objects-panel">
       <div className="panel-head"><div><span className="eyebrow">ПРОИЗВОДСТВО</span><h3>Активные объекты</h3></div><button className="link" onClick={() => onSection("objects")}>Все объекты →</button></div>
       <div className="object-list">
-        {projectSummary.items.map((project) => <button className="object-row" key={project.id} onClick={onObject}>
+        {projectSummary.items.map((project) => <button className="object-row" key={project.id} onClick={() => { window.history.pushState(null, "", `/dashboard?section=objects&projectId=${encodeURIComponent(project.id)}`); onObject(project.id); }}>
           <div className="project-mark">{project.displayName.slice(0,2).toLocaleUpperCase("ru-RU")}</div>
           <div className="object-title"><strong>{project.displayName}</strong><span>{project.clientName}</span></div>
           <div className="stage"><span>{project.status === "ACTIVE" ? "В работе" : "Подготовка"}</span></div>
@@ -225,7 +224,7 @@ function ProfileModal({ user, onClose }: { user: AuthUser; onClose: () => void }
   </div>;
 }
 
-function SearchModal({ access, onClose, onClient, onProject, onLead, onOrder, onComplex,onEstimate,onContract=()=>undefined }: { access: AccessProfile; onClose: () => void; onClient: (id: string) => void; onProject: (id: string) => void; onLead:(id:string)=>void; onOrder:(id:string)=>void; onComplex:(id:string)=>void;onEstimate:(id:string)=>void;onContract?:(id:string)=>void }) {
+function SearchModal({ access, onClose, onClient, onProject, onLead, onOrder, onComplex,onEstimate,onContract=(id)=>window.location.assign(`/dashboard?section=orders&contractId=${encodeURIComponent(id)}`) }: { access: AccessProfile; onClose: () => void; onClient: (id: string) => void; onProject: (id: string) => void; onLead:(id:string)=>void; onOrder:(id:string)=>void; onComplex:(id:string)=>void;onEstimate:(id:string)=>void;onContract?:(id:string)=>void }) {
   const [q, setQ] = useState("");
   const [clients, setClients] = useState<{ id: string; fullName: string; phone: string }[]>([]);
   const [projects, setProjects] = useState<{ id: string; displayName: string; address: string; apartment: string; residentialComplex: string | null; clientName: string }[]>([]);
@@ -271,21 +270,19 @@ export function DepaOS({ currentUser, access, initialSection, accessDenied }: { 
   const [targetOrderClientId,setTargetOrderClientId]=useState<string|null>(null);
   const [targetOrderSourceLeadId,setTargetOrderSourceLeadId]=useState<string|null>(null);
   const [targetEstimateId,setTargetEstimateId]=useState<string|null>(null);
-  const [targetContractId,setTargetContractId]=useState<string|null>(null);
   const [estimateCreateContext,setEstimateCreateContext]=useState<{clientId:string;sourceLeadId?:string|null;sourceOrderId?:string|null;projectId?:string|null;responsibleUserId:string;residentialComplexId?:string|null;residentialComplex?:string|null;address?:string|null;apartmentNumber?:string|null;areaSqm?:number|null}|null>(null);
   const [crmCount,setCrmCount]=useState(0);
   const [financeContext, setFinanceContext] = useState<{ projectId?: string; clientId: string; orderId?: string; orderNumber?: string; amount?: string; title?: string } | null>(null);
   const [menuOpen,setMenuOpen]=useState(false);
   const title = nav.flatMap(g=>g.items).find(i=>i.id===section)?.label || "Обзор";
   useEffect(()=>{if(!access.modules.crm||!access.actions["crm.view"])return;let active=true;fetch("/api/crm?view=list&status=ACTIVE&limit=1",{cache:"no-store"}).then(r=>r.ok?r.json():Promise.reject()).then(d=>{if(active)setCrmCount(d.total??0)}).catch(()=>undefined);return()=>{active=false};},[access,section]);
-  function select(s:Section){if (!canOpenSection(access,s)) { setDenied(true); return; } setTargetClientId(null);setTargetProjectId(null);setTargetComplexId(null);setTargetLeadId(null);setTargetOrderId(null);setTargetOrderClientId(null);setTargetOrderSourceLeadId(null);setTargetEstimateId(null);setTargetContractId(null);setEstimateCreateContext(null);setSection(s);setDenied(false)}
+  function select(s:Section){if (!canOpenSection(access,s)) { setDenied(true); return; } setTargetClientId(null);setTargetProjectId(null);setTargetComplexId(null);setTargetLeadId(null);setTargetOrderId(null);setTargetOrderClientId(null);setTargetOrderSourceLeadId(null);setTargetEstimateId(null);setEstimateCreateContext(null);setSection(s);setDenied(false)}
   function openClient(id:string){setTargetProjectId(null);setTargetLeadId(null);setTargetOrderId(null);setTargetOrderClientId(null);setTargetClientId(id);setSection("clients");setDenied(false)}
   function openProject(id:string){setTargetClientId(null);setTargetLeadId(null);setTargetOrderId(null);setTargetOrderClientId(null);setTargetProjectId(id);setSection("objects");setDenied(false)}
   function openComplex(id:string){setTargetClientId(null);setTargetProjectId(null);setTargetLeadId(null);setTargetOrderId(null);setTargetOrderClientId(null);setTargetComplexId(id);setSection("complexes");setDenied(false)}
   function openLead(id:string){setTargetClientId(null);setTargetProjectId(null);setTargetOrderId(null);setTargetOrderClientId(null);setTargetLeadId(id);setSection("crm");setDenied(false)}
   function openOrder(id:string){setTargetClientId(null);setTargetProjectId(null);setTargetLeadId(null);setTargetOrderClientId(null);setTargetOrderId(id);setSection("orders");setDenied(false)}
   function openEstimate(id:string){setTargetClientId(null);setTargetProjectId(null);setTargetLeadId(null);setTargetOrderId(null);setTargetOrderClientId(null);setTargetEstimateId(id);setEstimateCreateContext(null);setSection("orders");setDenied(false)}
-  function openContract(id:string){setTargetClientId(null);setTargetProjectId(null);setTargetLeadId(null);setTargetOrderId(null);setTargetOrderClientId(null);setTargetEstimateId(null);setTargetContractId(id);setEstimateCreateContext(null);setSection("orders");setDenied(false)}
   function createEstimate(context:{clientId:string;sourceLeadId?:string|null;sourceOrderId?:string|null;projectId?:string|null;responsibleUserId:string;residentialComplexId?:string|null;residentialComplex?:string|null;address?:string|null;apartmentNumber?:string|null;areaSqm?:number|null}){setTargetClientId(null);setTargetProjectId(null);setTargetLeadId(null);setTargetOrderId(null);setTargetOrderClientId(null);setTargetEstimateId(null);setEstimateCreateContext(context);setSection("orders");setDenied(false)}
   function createOrderForClient(clientId:string){setTargetClientId(null);setTargetProjectId(null);setTargetLeadId(null);setTargetOrderId(null);setTargetOrderClientId(clientId);setTargetOrderSourceLeadId(null);setSection("orders");setDenied(false)}
   function createOrderFromLead(clientId:string,leadId:string){createOrderForClient(clientId);setTargetOrderSourceLeadId(leadId)}
@@ -296,7 +293,6 @@ export function DepaOS({ currentUser, access, initialSection, accessDenied }: { 
   const financeAllowed = access.modules.finance && access.actions["finance.view"] && access.ownCashbox;
   const allowedFinanceModes = { EXPENSE: financeAllowed && access.actions["finance.createExpense"], INCOME: financeAllowed && access.actions["finance.createIncome"], TRANSFER: financeAllowed && access.actions["finance.createTransfer"] };
   const canAddFinance = section === "finance" && Object.values(allowedFinanceModes).some(Boolean);
-  void targetContractId; void openContract;
   return <div className="app-shell">
     <Sidebar section={section} onChange={select} open={menuOpen} onClose={()=>setMenuOpen(false)} user={currentUser} access={access} onProfile={()=>setModal("profile")} crmCount={crmCount}/>
     {menuOpen&&<button className="scrim" onClick={()=>setMenuOpen(false)} aria-label="Закрыть меню"/>}

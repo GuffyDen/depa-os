@@ -1,39 +1,38 @@
 import { readdir, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { neon } from "@neondatabase/serverless";
+import { createSqlClient } from "./sql-client.mjs";
+import { assertTestDatabaseUrl } from "./test-db-guard.mjs";
+import { ensureLegacyTestBaseline } from "./test-legacy-baseline.mjs";
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) throw new Error("DATABASE_URL is not configured");
+if (process.env.NODE_ENV === "test") assertTestDatabaseUrl(databaseUrl);
 
-const sql = neon(databaseUrl);
-const legacyMigrations = [
-  "drizzle/0000_clumsy_skrulls.sql",
-  "drizzle/0001_lucky_dracula.sql",
-  "drizzle/0002_personal_cashboxes.sql",
-  "drizzle/0003_remove_finance_reference_mocks.sql",
-];
+const sql = createSqlClient(databaseUrl);
+const splitStatements = (source) => source.split("--> statement-breakpoint").map((statement) => statement.trim()).filter(Boolean);
 
-await sql`CREATE TABLE IF NOT EXISTS depa_migrations (name text PRIMARY KEY, applied_at integer NOT NULL)`;
-const legacyRows = await sql`SELECT name FROM depa_migrations WHERE name = ANY(${legacyMigrations})`;
-const appliedLegacy = new Set(legacyRows.map((row) => row.name));
-const missingLegacy = legacyMigrations.filter((name) => !appliedLegacy.has(name));
-if (missingLegacy.length > 0) {
-  throw new Error(`PostgreSQL baseline 0000-0003 is missing: ${missingLegacy.join(", ")}. This migrator never converts or reapplies legacy SQLite SQL.`);
-}
+try {
+  await sql.query("CREATE TABLE IF NOT EXISTS depa_migrations (name text PRIMARY KEY, applied_at integer NOT NULL)");
+  await ensureLegacyTestBaseline(sql);
 
-const migrationDirectory = resolve("drizzle/postgres");
-const migrationFiles = (await readdir(migrationDirectory)).filter((name) => /^\d{4}_.+\.sql$/.test(name)).sort();
-for (const fileName of migrationFiles) {
-  const migrationName = `drizzle/postgres/${fileName}`;
-  const applied = await sql`SELECT name FROM depa_migrations WHERE name=${migrationName} LIMIT 1`;
-  if (applied.length > 0) continue;
-  const source = await readFile(resolve(migrationDirectory, fileName), "utf8");
-  const statements = source.split("--> statement-breakpoint").map((statement) => statement.trim()).filter(Boolean);
-  await sql.transaction((tx) => [
-    ...statements.map((statement) => tx.query(statement)),
-    tx`INSERT INTO depa_migrations (name,applied_at) VALUES (${migrationName},${Math.floor(Date.now() / 1000)})`,
-  ]);
-  console.log(`Applied ${migrationName}`);
-}
-
-console.log("PostgreSQL-first migrations are up to date.");
+  const migrationDirectory = resolve("drizzle/postgres");
+  const migrationFiles = (await readdir(migrationDirectory)).filter((name) => /^\d{4}_.+\.sql$/.test(name)).sort();
+  const migrationNames = migrationFiles.map((fileName) => `drizzle/postgres/${fileName}`);
+  if (process.argv.includes("--status")) {
+    const appliedRows = await sql.query("SELECT name FROM depa_migrations WHERE name=ANY($1)", [migrationNames]);
+    const appliedNames = new Set(appliedRows.map((row) => row.name));
+    console.log(JSON.stringify({ applied: migrationNames.filter((name) => appliedNames.has(name)), pending: migrationNames.filter((name) => !appliedNames.has(name)) }, null, 2));
+  } else {
+    for (const [index, fileName] of migrationFiles.entries()) {
+      const migrationName = migrationNames[index];
+      const applied = await sql.query("SELECT name FROM depa_migrations WHERE name=$1 LIMIT 1", [migrationName]);
+      if (applied.length > 0) continue;
+      const source = await readFile(resolve(migrationDirectory, fileName), "utf8");
+      const statements = splitStatements(source).map((text) => ({ text }));
+      statements.push({ text: "INSERT INTO depa_migrations(name,applied_at) VALUES($1,$2)", params: [migrationName, Math.floor(Date.now() / 1000)] });
+      await sql.transaction(statements);
+      console.log(`Applied ${migrationName}`);
+    }
+    console.log("PostgreSQL-first migrations are up to date.");
+  }
+} finally { await sql.close(); }

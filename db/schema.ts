@@ -743,29 +743,68 @@ export const leads = pgTable(
   "leads",
   {
     id: text("id").primaryKey(),
-    clientId: text("client_id")
-      .notNull()
+    linkedClientId: text("linked_client_id")
       .references(() => clients.id, {
         onDelete: "restrict",
         onUpdate: "cascade",
       }),
-    source: text("source").notNull(),
+    source: text("source", { enum: ["WEBSITE", "FARPOST", "AVITO", "REFERRAL", "OTHER"] }).notNull(),
     ownerEmployeeId: text("owner_employee_id").references(() => employees.id, {
       onDelete: "restrict",
       onUpdate: "cascade",
     }),
-    status: text("status").notNull(),
-    notes: text("notes"),
-    nextAction: text("next_action"),
-    nextContactAt: integer("next_contact_at"),
+    stage: text("stage", { enum: ["NEW", "CONTACTED", "INSPECTION", "CALCULATION", "PROPOSAL", "CONTRACT", "WON", "LOST"] }).notNull().default("NEW"),
+    comment: text("comment"),
+    nextActionType: text("next_action_type"),
+    nextActionAt: integer("next_action_at"),
+    name: text("name").notNull(),
+    phone: text("phone").notNull(),
+    normalizedPhone: text("normalized_phone").notNull(),
+    secondaryPhone: text("secondary_phone"),
+    email: text("email"),
+    preferredContact: text("preferred_contact"),
+    responsibleUserId: text("responsible_user_id").notNull().references(() => users.id, { onDelete: "restrict", onUpdate: "cascade" }),
+    nextActionComment: text("next_action_comment"),
+    lostReason: text("lost_reason"),
+    lostComment: text("lost_comment"),
+    createdByUserId: text("created_by_user_id").notNull().references(() => users.id, { onDelete: "restrict", onUpdate: "cascade" }),
+    closedAt: integer("closed_at"),
     ...timestamps,
   },
   (table) => [
     index("idx_leads_status_next_contact").on(
-      table.status,
-      table.nextContactAt,
+      table.stage,
+      table.nextActionAt,
     ),
-    index("idx_leads_client").on(table.clientId),
+    index("idx_leads_normalized_phone").on(table.normalizedPhone),
+    index("idx_leads_stage_created").on(table.stage, table.createdAt.desc()),
+    index("idx_leads_responsible_created").on(table.responsibleUserId, table.createdAt.desc()),
+    index("idx_leads_linked_client").on(table.linkedClientId),
+    index("idx_leads_source_created").on(table.source, table.createdAt.desc()),
+    index("idx_leads_next_action").on(table.nextActionAt).where(sql`${table.nextActionAt} IS NOT NULL`),
+    check("leads_source_check", sql`${table.source} IN ('WEBSITE','FARPOST','AVITO','REFERRAL','OTHER')`),
+    check("leads_stage_check", sql`${table.stage} IN ('NEW','CONTACTED','INSPECTION','CALCULATION','PROPOSAL','CONTRACT','WON','LOST')`),
+  ],
+);
+
+export const leadActivities = pgTable(
+  "lead_activities",
+  {
+    id: text("id").primaryKey(),
+    leadId: text("lead_id").notNull().references(() => leads.id, { onDelete: "restrict", onUpdate: "cascade" }),
+    type: text("type").notNull(),
+    status: text("status", { enum: ["SCHEDULED", "COMPLETED", "CANCELLED"] }).notNull().default("SCHEDULED"),
+    scheduledAt: integer("scheduled_at"),
+    completedAt: integer("completed_at"),
+    comment: text("comment"),
+    createdByUserId: text("created_by_user_id").notNull().references(() => users.id, { onDelete: "restrict", onUpdate: "cascade" }),
+    completedByUserId: text("completed_by_user_id").references(() => users.id, { onDelete: "restrict", onUpdate: "cascade" }),
+    ...timestamps,
+  },
+  (table) => [
+    index("idx_lead_activities_lead_created").on(table.leadId, table.createdAt.desc()),
+    index("idx_lead_activities_scheduled_status").on(table.scheduledAt, table.status),
+    check("lead_activities_status_check", sql`${table.status} IN ('SCHEDULED','COMPLETED','CANCELLED')`),
   ],
 );
 
@@ -778,7 +817,7 @@ export const cashboxes = pgTable(
       onUpdate: "cascade",
     }),
     name: text("name").notNull(),
-    type: text("type").notNull().default("PERSONAL"),
+    type: text("type").notNull(),
     ownerEmployeeId: text("owner_employee_id").references(() => employees.id, {
       onDelete: "restrict",
       onUpdate: "cascade",
@@ -1071,7 +1110,7 @@ export const productionPlans = pgTable("production_plans", {
   status: text("status").notNull().default("ACTIVE"), sourceTemplateId: text("source_template_id"), sourceTemplateVersion: integer("source_template_version"),
   designWeight: numeric("design_weight", { precision: 5, scale: 2 }).notNull().default("0"), productionWeight: numeric("production_weight", { precision: 5, scale: 2 }).notNull().default("100"),
   createdByUserId: text("created_by_user_id").notNull().references(() => users.id, { onDelete: "restrict", onUpdate: "cascade" }), ...timestamps,
-}, table => [uniqueIndex("production_plans_project_unique").on(table.projectId), index("idx_production_plans_project").on(table.projectId)]);
+}, table => [unique("production_plans_project_id_key").on(table.projectId), index("idx_production_plans_project").on(table.projectId)]);
 
 export const projectStages = pgTable(
   "project_stages",

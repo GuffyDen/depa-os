@@ -483,6 +483,12 @@ export async function createFinanceOperation(actor: AuthUser, input: CreateFinan
   const balanceBefore = number(sourceCashbox.balance_kopecks);
   const sourceDelta = type === "EXPENSE" || type === "TRANSFER" ? -amountKopecks : amountKopecks;
   const statements: { text: string; params: unknown[] }[] = [];
+  const lockedCashboxIds = [sourceCashbox.id, ...(destinationCashbox ? [destinationCashbox.id] : [])].sort();
+  statements.push({ text: "WITH locked AS (SELECT id FROM cashboxes WHERE id=ANY($1::text[]) AND status='ACTIVE' ORDER BY id FOR UPDATE) SELECT 1 / CASE WHEN COUNT(*)=$2 THEN 1 ELSE 0 END cashbox_guard FROM locked", params: [lockedCashboxIds, lockedCashboxIds.length] });
+  if (type === "REFUND" && originalTransactionId) statements.push(
+    { text: "SELECT pg_advisory_xact_lock(hashtext($1))", params: [`refund:${originalTransactionId}`] },
+    { text: "WITH original AS (SELECT amount_kopecks FROM financial_transactions WHERE id=$1 AND type='EXPENSE') SELECT 1 / CASE WHEN COUNT(*)=1 AND COALESCE(MAX(amount_kopecks),0)-COALESCE((SELECT SUM(amount_kopecks) FROM financial_transactions WHERE type='REFUND' AND original_transaction_id=$1),0)>=$2 THEN 1 ELSE 0 END refund_guard FROM original", params: [originalTransactionId, amountKopecks] },
+  );
   if (attachmentId) statements.push(
     { text: "SELECT pg_advisory_xact_lock(hashtext($1))", params: [attachmentId] },
     { text: "SELECT 1 / COUNT(*)::int FROM attachments WHERE id=$1 AND uploaded_by_user_id=$2 AND upload_status='UPLOADED' AND transaction_id IS NULL AND deleted_at IS NULL", params: [attachmentId, actor.id] },
@@ -506,7 +512,11 @@ export async function createFinanceOperation(actor: AuthUser, input: CreateFinan
     { text: "INSERT INTO audit_logs (id,actor_user_id,action,entity_type,entity_id,occurred_at,metadata_json) VALUES ($1,$2,'ATTACHMENT_LINKED','Attachment',$3,$4,$5)", params: [crypto.randomUUID(), actor.id, attachmentId, timestamp, JSON.stringify({ transactionId: id, projectId, allocationProjectIds: allocations.map((item) => item.projectId) })] },
   );
   statements.push({ text: "INSERT INTO audit_logs (id, actor_user_id, action, entity_type, entity_id, occurred_at, metadata_json) VALUES ($1,$2,$3,'FinancialTransaction',$4,$5,$6)", params: [crypto.randomUUID(), actor.id, type === "TRANSFER" ? "TRANSFER_CREATED" : "FINANCIAL_TRANSACTION_CREATED", id, timestamp, JSON.stringify({ type, amountKopecks, cashboxId: sourceCashbox.id, destinationCashboxId: destinationCashbox?.id ?? null, projectId, orderId, allocations })] });
-  await transaction(statements);
+  try { await transaction(statements); }
+  catch (error) {
+    if ((error as { code?: string }).code === "22012") throw new FinanceError("Состояние кассы или возврата изменилось. Обновите данные и повторите операцию.", 409);
+    throw error;
+  }
 
   const preview = destinationCashbox ? transferPreview(balanceBefore, number(destinationCashbox.balance_kopecks), amountKopecks) : null;
   return { id, balanceBeforeKopecks: balanceBefore, balanceAfterKopecks: balanceBefore + sourceDelta, destinationBalanceAfterKopecks: preview?.toAfterKopecks ?? null, warning: preview?.warning ?? (balanceBefore + sourceDelta < 0 ? `После операции баланс ${sourceCashbox.name} отрицательный.` : null) };

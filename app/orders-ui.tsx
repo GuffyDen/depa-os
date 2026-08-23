@@ -1164,6 +1164,7 @@ export function OrdersScreen({
   initialEstimateContext?: {clientId:string;sourceLeadId?:string|null;sourceOrderId?:string|null;projectId?:string|null;responsibleUserId:string;residentialComplexId?:string|null;residentialComplex?:string|null;address?:string|null;apartmentNumber?:string|null;areaSqm?:number|null} | null;
   initialContractId?: string | null;
 }) {
+  const routeContractId = initialContractId ?? (typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("contractId"));
   const [items, setItems] = useState<Order[]>([]),
     [meta, setMeta] = useState<Omit<ListData, "items"> | null>(null),
     [search, setSearch] = useState(""),
@@ -1193,9 +1194,10 @@ export function OrdersScreen({
     }),
     [openId, setOpenId] = useState<string | null>(initialOrderId),
     [revision, setRevision] = useState(0),
-    [view, setView] = useState<"list" | "calendar" | "estimates" | "contracts">(initialContractId ? "contracts" : initialEstimateId || initialEstimateContext ? "estimates" : "list"),
+    [view, setView] = useState<"list" | "calendar" | "estimates" | "contracts">(routeContractId ? "contracts" : initialEstimateId || initialEstimateContext ? "estimates" : "list"),
     [estimateContext,setEstimateContext]=useState(initialEstimateContext),
     [estimateTargetId,setEstimateTargetId]=useState(initialEstimateId),
+    [contractTargetId]=useState(routeContractId),
     [calendarLevel, setCalendarLevel] = useState<"month" | "day">("month"),
     [selectedDate, setSelectedDate] = useState(todayKey()),
     [selectedInspector, setSelectedInspector] = useState("ALL"),
@@ -1558,7 +1560,7 @@ export function OrdersScreen({
         />
       </div>
       <div hidden={view !== "estimates"}>{view === "estimates" ? <EstimatesWorkspace currentUser={currentUser} access={access} initialEstimateId={estimateTargetId} createContext={estimateContext} onEstimateClosed={()=>{setEstimateContext(null);setEstimateTargetId(null)}} onOpenOrder={(id)=>{setOpenId(id);setView("list")}} /> : null}</div>
-      <div hidden={view !== "contracts"}>{view === "contracts" ? <ContractsWorkspace access={access} initialContractId={initialContractId} /> : null}</div>
+      <div hidden={view !== "contracts"}>{view === "contracts" ? <ContractsWorkspace access={access} initialContractId={contractTargetId} /> : null}</div>
       {form && meta ? (
         <UniversalOrderForm
           currentUser={currentUser}
