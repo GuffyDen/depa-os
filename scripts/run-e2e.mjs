@@ -22,7 +22,7 @@ try {
   run("node", ["scripts/test-db.mjs", "reset"]);
   run("node", ["scripts/migrate-postgres.mjs"]);
   const pool = new pg.Pool({ connectionString: databaseUrl });
-  const tables = ["leads", "clients", "residential_complexes", "orders", "inspections", "design_projects", "estimates", "contracts", "projects", "financial_transactions", "attachments", "audit_logs"];
+  const tables = ["leads", "clients", "residential_complexes", "orders", "inspections", "design_projects", "estimates", "contracts", "projects", "financial_transactions", "attachments", "audit_logs", "apartment_passports", "apartment_passport_versions", "apartment_passport_version_attachments"];
   const rows = await pool.query(`SELECT ${tables.map((table) => `(SELECT COUNT(*) FROM ${table})::int AS ${table}`).join(",")}`);
   await pool.end();
   const leftovers = Object.entries(rows.rows[0]).filter(([, count]) => count !== 0);

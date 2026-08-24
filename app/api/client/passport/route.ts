@@ -1,0 +1,3 @@
+import { ApartmentPassportError, getClientApartmentPassport } from "@/lib/apartment-passports";
+import { getClientPortalUser } from "@/lib/client-portal";
+export async function GET(request:Request){const user=await getClientPortalUser(request);if(!user)return Response.json({error:"Требуется авторизация клиента."},{status:401});const url=new URL(request.url),projectId=url.searchParams.get("projectId")??"",versionId=url.searchParams.get("versionId");try{return Response.json(await getClientApartmentPassport(user,projectId,versionId),{headers:{"Cache-Control":"private, no-store"}})}catch(error){return Response.json({error:error instanceof Error?error.message:"Паспорт недоступен.",available:false},{status:error instanceof ApartmentPassportError?error.status:500})}}

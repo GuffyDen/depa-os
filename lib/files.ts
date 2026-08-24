@@ -348,6 +348,8 @@ export async function deleteUnlinkedAttachment(actor: AuthUser, attachmentId: st
   if (actor.role !== "OWNER") throw new FileError("Удалять файлы может только Owner.", 403);
   const row = await first<AttachmentRow>("SELECT * FROM attachments WHERE id=$1 LIMIT 1", [attachmentId]);
   if (!row) throw new FileError("Файл не найден.", 404);
+  const publishedReference = await first<{ id: string }>("SELECT id FROM apartment_passport_version_attachments WHERE attachment_id=$1 LIMIT 1", [attachmentId]);
+  if (publishedReference) throw new FileError("Файл входит в опубликованную версию паспорта квартиры и должен храниться неизменно.", 409);
   if (row.transaction_id || row.upload_status === "LINKED") throw new FileError("Файл связанной финансовой операции нельзя удалить.", 409);
   await cleanupUnlinkedAttachment(actor, attachmentId, "OWNER_DELETE");
 }
