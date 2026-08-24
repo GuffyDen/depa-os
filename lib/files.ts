@@ -3,14 +3,14 @@ import type { AuthUser } from "./auth";
 import { first, query, transaction } from "./postgres";
 import { AccessError, assertModuleAction, canViewCashbox, canViewContract, canViewDesignProject, canViewProject, getAccessProfile } from "./permissions";
 
-export const FILE_CATEGORIES = ["RECEIPT", "PROJECT_PHOTO", "DAILY_REPORT", "HIDDEN_WORK", "ADDITIONAL_WORK", "CONTRACT", "ACT", "ESTIMATE", "INSPECTION", "WARRANTY", "MEASUREMENT_PLAN", "LAYOUT", "CONCEPT", "VISUALIZATION", "WORKING_DRAWINGS", "SPECIFICATION", "FINAL_ALBUM", "CONTRACT_DOCX", "CONTRACT_PDF", "SIGNED_CONTRACT", "CONTRACT_OTHER", "OTHER"] as const;
+export const FILE_CATEGORIES = ["RECEIPT", "PROJECT_PHOTO", "DAILY_REPORT", "HIDDEN_WORK", "ADDITIONAL_WORK", "CONTRACT", "ACT", "ESTIMATE", "INSPECTION", "WARRANTY", "MEASUREMENT_PLAN", "LAYOUT", "CONCEPT", "VISUALIZATION", "WORKING_DRAWINGS", "SPECIFICATION", "FINAL_ALBUM", "CONTRACT_DOCX", "CONTRACT_PDF", "SIGNED_CONTRACT", "CONTRACT_OTHER", "HANDOVER_PHOTO", "HANDOVER_DEFECT", "HANDOVER_DEFECT_RESOLUTION", "HANDOVER_DOCUMENT", "OTHER"] as const;
 export type FileCategory = (typeof FILE_CATEGORIES)[number];
 export type FileVisibility = "INTERNAL" | "PROJECT" | "CLIENT";
 
-const PHOTO_CATEGORIES = new Set<FileCategory>(["PROJECT_PHOTO", "DAILY_REPORT", "HIDDEN_WORK", "INSPECTION", "WARRANTY"]);
+const PHOTO_CATEGORIES = new Set<FileCategory>(["PROJECT_PHOTO", "DAILY_REPORT", "HIDDEN_WORK", "INSPECTION", "WARRANTY", "HANDOVER_PHOTO", "HANDOVER_DEFECT", "HANDOVER_DEFECT_RESOLUTION"]);
 const DESIGN_DOCUMENT_CATEGORIES = new Set<FileCategory>(["MEASUREMENT_PLAN", "LAYOUT", "CONCEPT", "VISUALIZATION", "WORKING_DRAWINGS", "SPECIFICATION", "FINAL_ALBUM"]);
 const CONTRACT_CATEGORIES = new Set<FileCategory>(["CONTRACT_DOCX", "CONTRACT_PDF", "SIGNED_CONTRACT", "CONTRACT_OTHER"]);
-const DOCUMENT_CATEGORIES = new Set<FileCategory>(["ADDITIONAL_WORK", "CONTRACT", "ACT", "ESTIMATE", ...DESIGN_DOCUMENT_CATEGORIES, ...CONTRACT_CATEGORIES, "OTHER"]);
+const DOCUMENT_CATEGORIES = new Set<FileCategory>(["ADDITIONAL_WORK", "CONTRACT", "ACT", "ESTIMATE", "HANDOVER_DOCUMENT", ...DESIGN_DOCUMENT_CATEGORIES, ...CONTRACT_CATEGORIES, "OTHER"]);
 const IMAGE_MIME_TYPES = ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"];
 const RECEIPT_MIME_TYPES = [...IMAGE_MIME_TYPES, "application/pdf"];
 const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
@@ -36,6 +36,9 @@ export type UploadClientPayload = {
   projectId?: string | null;
   contractVersionId?: string | null;
   additionalWorkVersionId?: string | null;
+  handoverId?: string | null;
+  handoverRoundId?: string | null;
+  handoverDefectId?: string | null;
 };
 
 type AttachmentRow = {
@@ -121,6 +124,9 @@ function parsePayload(payload: string | null): UploadClientPayload {
     projectId: cleanText(value.projectId, 120) || null,
     contractVersionId: cleanText(value.contractVersionId, 120) || null,
     additionalWorkVersionId: cleanText(value.additionalWorkVersionId, 120) || null,
+    handoverId: cleanText(value.handoverId, 120) || null,
+    handoverRoundId: cleanText(value.handoverRoundId, 120) || null,
+    handoverDefectId: cleanText(value.handoverDefectId, 120) || null,
   };
 }
 
@@ -185,6 +191,7 @@ async function assertAdditionalWorkFileAccess(actor: AuthUser, versionId: string
 
 export async function prepareAttachmentUpload(actor: AuthUser, pathname: string, clientPayload: string | null) {
   const payload = parsePayload(clientPayload);
+  const isHandoverFile = payload.category.startsWith("HANDOVER_");
   const isDesignFile = DESIGN_DOCUMENT_CATEGORIES.has(payload.category) || ["DesignProject", "DesignStage"].includes(payload.entityType);
   const isContractFile = CONTRACT_CATEGORIES.has(payload.category) || payload.entityType === "ContractVersion";
   try {
@@ -192,6 +199,7 @@ export async function prepareAttachmentUpload(actor: AuthUser, pathname: string,
     else if (payload.category === "DAILY_REPORT") await assertModuleAction(actor, "projects", "dailyReports.uploadPhotos");
     else if (payload.category === "HIDDEN_WORK") await assertModuleAction(actor, "projects", "hiddenWorks.upload");
     else if (payload.category === "ADDITIONAL_WORK") await assertModuleAction(actor, "projects", "additionalWorks.uploadFiles");
+    else if (isHandoverFile) await assertModuleAction(actor, "projects", "handover.uploadFiles");
     else if (isContractFile) await assertModuleAction(actor, "orders", payload.category === "CONTRACT_DOCX" || payload.category === "CONTRACT_PDF" ? "contracts.generateDocuments" : "contracts.uploadSigned");
     else if (isDesignFile) await assertModuleAction(actor, "orders", "design.files.upload");
     else await assertModuleAction(actor, "documents", "documents.upload");
@@ -205,6 +213,12 @@ export async function prepareAttachmentUpload(actor: AuthUser, pathname: string,
   if (isDesignFile) await assertDesignFileAccess(actor, payload.entityType, payload.entityId);
   if (isContractFile) await assertContractFileAccess(actor, payload.contractVersionId);
   if (payload.category === "ADDITIONAL_WORK") await assertAdditionalWorkFileAccess(actor, payload.additionalWorkVersionId, payload.projectId);
+  if (isHandoverFile) {
+    if (!payload.projectId || !payload.handoverId) throw new FileError("Некорректная связь файла финальной сдачи.");
+    const handover = await first<{ project_id: string }>("SELECT project_id FROM project_handovers WHERE id=$1", [payload.handoverId]);
+    if (!handover || handover.project_id !== payload.projectId || !(await canViewProject(actor, payload.projectId))) throw new FileError("Финальная сдача недоступна.", 403);
+    if (payload.handoverDefectId && !(await first("SELECT id FROM project_handover_defects WHERE id=$1 AND handover_id=$2", [payload.handoverDefectId, payload.handoverId]))) throw new FileError("Замечание не относится к сдаче.");
+  }
   const expectedPath = attachmentPath(payload.attachmentId, payload.category, payload.mimeType);
   if (pathname !== expectedPath) throw new FileError("Путь загрузки файла отклонён.");
   const timestamp = nowSeconds();
@@ -212,9 +226,9 @@ export async function prepareAttachmentUpload(actor: AuthUser, pathname: string,
   if (existing && (existing.uploaded_by_user_id !== actor.id || existing.upload_status !== "PENDING")) throw new FileError("Эта загрузка уже использована.", 409);
   if (!existing) {
     await query(`INSERT INTO attachments
-      (id,transaction_id,project_id,contract_version_id,additional_work_version_id,storage_provider,storage_key,blob_url,original_filename,mime_type,size_bytes,checksum_sha256,uploaded_by_user_id,entity_type,entity_id,category,visibility,upload_status,metadata_json,created_at,updated_at)
-      VALUES ($1,NULL,$2,$3,$4,'VERCEL_BLOB',$5,NULL,$6,$7,0,$8,$9,$10,$11,$12,$13,'PENDING',$14::jsonb,$15,$16)`,
-    [payload.attachmentId, payload.projectId ?? null, payload.contractVersionId ?? null, payload.additionalWorkVersionId ?? null, expectedPath, payload.originalFilename, payload.mimeType, payload.checksumSha256, actor.id, payload.entityType, payload.entityId ?? null, payload.category, payload.visibility ?? "INTERNAL", JSON.stringify({ declaredSizeBytes: payload.sizeBytes, photoLongEdgeTargetPx: PHOTO_CATEGORIES.has(payload.category) ? PHOTO_LONG_EDGE_PX : null }), timestamp, timestamp]);
+      (id,transaction_id,project_id,contract_version_id,additional_work_version_id,handover_id,handover_round_id,handover_defect_id,storage_provider,storage_key,blob_url,original_filename,mime_type,size_bytes,checksum_sha256,uploaded_by_user_id,entity_type,entity_id,category,visibility,upload_status,metadata_json,created_at,updated_at)
+      VALUES ($1,NULL,$2,$3,$4,$5,$6,$7,'VERCEL_BLOB',$8,NULL,$9,$10,0,$11,$12,$13,$14,$15,$16,'PENDING',$17::jsonb,$18,$18)`,
+    [payload.attachmentId, payload.projectId ?? null, payload.contractVersionId ?? null, payload.additionalWorkVersionId ?? null, payload.handoverId ?? null, payload.handoverRoundId ?? null, payload.handoverDefectId ?? null, expectedPath, payload.originalFilename, payload.mimeType, payload.checksumSha256, actor.id, payload.entityType, payload.entityId ?? null, payload.category, payload.visibility ?? "INTERNAL", JSON.stringify({ declaredSizeBytes: payload.sizeBytes, photoLongEdgeTargetPx: PHOTO_CATEGORIES.has(payload.category) ? PHOTO_LONG_EDGE_PX : null }), timestamp]);
   }
   return {
     allowedContentTypes: allowedMimeTypes(payload.category),

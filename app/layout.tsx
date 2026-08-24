@@ -5,6 +5,8 @@ import "./globals.css";
 import "./dark-theme.css";
 import "./residential-complexes.css";
 import "./additional-works.css";
+import "./handover.css";
+import "./handover-management.css";
 
 const manrope = Manrope({ variable: "--font-manrope", subsets: ["latin", "cyrillic"] });
 const unbounded = Unbounded({ variable: "--font-unbounded", subsets: ["latin", "cyrillic"] });

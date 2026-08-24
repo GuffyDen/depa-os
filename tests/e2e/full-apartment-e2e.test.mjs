@@ -168,7 +168,36 @@ test("FULL APARTMENT E2E — linked commercial, production, portal and finance l
   const additionalFacts = await q("SELECT p.contract_amount_kopecks::int contract_amount,cv.contract_amount_kopecks::int signed_amount,p.published_forecast_end_date,aw.status,v.version,v.amount_kopecks::int amount,(p.contract_amount_kopecks+v.amount_kopecks)::int commercial FROM projects p JOIN contracts c ON c.id=p.contract_id JOIN contract_versions cv ON cv.id=c.signed_version_id JOIN additional_works aw ON aw.project_id=p.id JOIN additional_work_versions v ON v.id=aw.approved_version_id WHERE p.id=$1", [project]);
   assert.deepEqual(additionalFacts.rows[0], { contract_amount: 110000000, signed_amount: 110000000, published_forecast_end_date: null, status: "APPROVED", version: 2, amount: 2000000, commercial: 112000000 });
 
-  // 215–228 + full relation and independent money reconciliation.
+  // 215–258: Final Handover + Defects — two inspection rounds, correction task and final acceptance.
+  await q("UPDATE tasks SET status='COMPLETED',completed_quantity=COALESCE(planned_quantity,completed_quantity),actual_end_date=$1,updated_at=$1 WHERE project_id=$2", [now, project]);
+  await q("UPDATE project_stages SET status='COMPLETED',actual_end=$1,updated_at=$1 WHERE project_id=$2", [now, project]);
+  const handover=id("handover"),round1=id("handover_round_1"),round2=id("handover_round_2"),defect=id("handover_defect"),defectTask=id("handover_defect_task"),defectPhoto=id("handover_defect_photo"),resolutionPhoto=id("handover_resolution_photo");
+  const financeBeforeHandover=await q("SELECT (SELECT COUNT(*) FROM financial_transactions WHERE project_id=$1)::int transactions,(SELECT COUNT(*) FROM obligations WHERE project_id=$1)::int obligations,(SELECT balance_kopecks FROM cashboxes WHERE id=$2)::int balance",[project,cashbox]);
+  await q("INSERT INTO project_handovers(id,project_id,status,current_round_id,prepared_at,prepared_by_user_id,sent_at,sent_by_user_id,created_at,updated_at) VALUES($1,$2,'READY_FOR_HANDOVER',NULL,$3,$4,NULL,NULL,$3,$3)",[handover,project,now,user]);
+  await q("INSERT INTO project_handover_rounds(id,handover_id,project_id,round_number,status,opened_at,opened_by_user_id,created_at,updated_at) VALUES($1,$2,$3,1,'OPEN',$4,$5,$4,$4)",[round1,handover,project,now,user]);
+  await q("UPDATE project_handovers SET current_round_id=$1,status='AWAITING_CLIENT_INSPECTION',sent_at=$2,sent_by_user_id=$3 WHERE id=$4",[round1,now,user,handover]);
+  await q("INSERT INTO project_handover_events(id,handover_id,project_id,round_id,type,employee_user_id,occurred_at) VALUES($1,$2,$3,$4,'PREPARED',$5,$6),($7,$2,$3,$4,'SENT_TO_CLIENT',$5,$6)",[id("handover_prepared"),handover,project,round1,user,now,id("handover_sent")]);
+  await q("INSERT INTO project_handover_defects(id,handover_id,round_id,project_id,defect_number,title,description,location,priority,status,created_by_client_portal_user_id,created_at,updated_at) VALUES($1,$2,$3,$4,1,'Царапина на откосе','Устранить царапину и восстановить покрытие','Спальня, левый откос','IMPORTANT','OPEN',$5,$6,$6)",[defect,handover,round1,project,portal,now]);
+  await q("INSERT INTO attachments(id,project_id,handover_id,handover_round_id,handover_defect_id,client_visible,storage_key,original_filename,mime_type,size_bytes,storage_provider,blob_url,uploaded_by_user_id,entity_type,entity_id,category,visibility,upload_status,metadata_json,completed_at,linked_at,created_at,updated_at) VALUES($1,$2,$3,$4,$5,1,$6,'defect.jpg','image/jpeg',128,'VERCEL_BLOB',$7,$8,'ProjectHandoverDefect',$5,'HANDOVER_DEFECT','CLIENT','LINKED','{}',$9,$9,$9,$9)",[defectPhoto,project,handover,round1,defect,`test-storage/${defectPhoto}.jpg`,`https://test.private.blob.vercel-storage.com/${defectPhoto}.jpg`,user,now]);
+  await q("UPDATE project_handover_rounds SET status='SUBMITTED_WITH_DEFECTS',submitted_at=$1,submitted_by_client_portal_user_id=$2,updated_at=$1 WHERE id=$3",[now,portal,round1]);
+  await q("UPDATE project_handovers SET status='CORRECTIONS_REQUIRED',updated_at=$1 WHERE id=$2",[now,handover]);
+  await q("INSERT INTO tasks(id,title,created_by_user_id,project_id,production_plan_id,stage_id,description,position,progress_type,weight_within_stage,responsible_user_id,client_visible,status,created_at,updated_at) VALUES($1,'Устранить царапину на откосе',$2,$3,$4,$5,'Замечание финальной сдачи',99,'BINARY',0,$2,1,'COMPLETED',$6,$6)",[defectTask,user,project,plan,stages[2],now]);
+  await q("INSERT INTO handover_defect_task_links(id,defect_id,task_id,created_by_user_id,created_at) VALUES($1,$2,$3,$4,$5)",[id("handover_task_link"),defect,defectTask,user,now]);
+  await q("UPDATE project_handover_defects SET status='RESOLVED',resolution_comment='Поверхность восстановлена, выполнена контрольная проверка.',resolved_at=$1,resolved_by_user_id=$2,updated_at=$1 WHERE id=$3",[now,user,defect]);
+  await q("INSERT INTO attachments(id,project_id,handover_id,handover_round_id,handover_defect_id,client_visible,storage_key,original_filename,mime_type,size_bytes,storage_provider,blob_url,uploaded_by_user_id,entity_type,entity_id,category,visibility,upload_status,metadata_json,completed_at,linked_at,created_at,updated_at) VALUES($1,$2,$3,$4,$5,1,$6,'resolution.jpg','image/jpeg',128,'VERCEL_BLOB',$7,$8,'ProjectHandoverDefect',$5,'HANDOVER_DEFECT_RESOLUTION','CLIENT','LINKED','{}',$9,$9,$9,$9)",[resolutionPhoto,project,handover,round1,defect,`test-storage/${resolutionPhoto}.jpg`,`https://test.private.blob.vercel-storage.com/${resolutionPhoto}.jpg`,user,now]);
+  await q("UPDATE project_handover_defects SET status='DISPUTED',disputed_at=$1,dispute_comment='Осталась небольшая неровность',updated_at=$1 WHERE id=$2",[now,defect]);
+  await q("UPDATE project_handover_defects SET status='RESOLVED',resolution_comment='Неровность устранена повторно.',resolved_at=$1,resolved_by_user_id=$2,disputed_at=NULL,dispute_comment=NULL,updated_at=$1 WHERE id=$3",[now,user,defect]);
+  await q("UPDATE project_handover_defects SET status='ACCEPTED',accepted_at=$1,accepted_by_client_portal_user_id=$2,updated_at=$1 WHERE id=$3",[now,portal,defect]);
+  await q("INSERT INTO project_handover_rounds(id,handover_id,project_id,round_number,status,opened_at,opened_by_user_id,created_at,updated_at) VALUES($1,$2,$3,2,'OPEN',$4,$5,$4,$4)",[round2,handover,project,now,user]);
+  await q("UPDATE project_handovers SET status='REINSPECTION_REQUIRED',current_round_id=$1,updated_at=$2 WHERE id=$3",[round2,now,handover]);
+  await q("UPDATE project_handover_rounds SET status='ACCEPTED',accepted_at=$1,accepted_by_client_portal_user_id=$2,updated_at=$1 WHERE id=$3",[now,portal,round2]);
+  await q("UPDATE project_handovers SET status='ACCEPTED',accepted_at=$1,accepted_by_client_portal_user_id=$2,actual_handover_at=$1,warranty_starts_at=$1,final_snapshot_json=$3::jsonb,updated_at=$1 WHERE id=$4",[now,portal,JSON.stringify({source:"CLIENT_PORTAL",round:2,acceptedDefects:1}),handover]);
+  const handoverFacts=await q("SELECT h.status,h.actual_handover_at,h.warranty_starts_at,(SELECT COUNT(*) FROM project_handover_rounds WHERE handover_id=h.id)::int rounds,(SELECT COUNT(*) FROM project_handover_defects WHERE handover_id=h.id AND status='ACCEPTED')::int accepted_defects,(SELECT COUNT(*) FROM handover_defect_task_links l JOIN project_handover_defects d ON d.id=l.defect_id WHERE d.handover_id=h.id)::int task_links FROM project_handovers h WHERE h.id=$1",[handover]);
+  assert.deepEqual(handoverFacts.rows[0],{status:"ACCEPTED",actual_handover_at:now,warranty_starts_at:now,rounds:2,accepted_defects:1,task_links:1});
+  const financeAfterHandover=await q("SELECT (SELECT COUNT(*) FROM financial_transactions WHERE project_id=$1)::int transactions,(SELECT COUNT(*) FROM obligations WHERE project_id=$1)::int obligations,(SELECT balance_kopecks FROM cashboxes WHERE id=$2)::int balance",[project,cashbox]);
+  assert.deepEqual(financeAfterHandover.rows[0],financeBeforeHandover.rows[0]);
+
+  // 259–272 + full relation and independent money reconciliation.
   const relationAudit = await q(`SELECT
     (SELECT COUNT(*) FROM leads WHERE id=$1 AND linked_client_id=$2)::int lead_client,
     (SELECT COUNT(*) FROM orders WHERE client_id=$2)::int client_orders,
@@ -181,8 +210,10 @@ test("FULL APARTMENT E2E — linked commercial, production, portal and finance l
     (SELECT COUNT(*) FROM task_dependencies WHERE project_id=$4)::int dependencies,
     (SELECT COUNT(*) FROM daily_report_tasks drt JOIN daily_reports dr ON dr.id=drt.daily_report_id WHERE dr.project_id=$4)::int report_tasks,
     (SELECT COUNT(*) FROM attachments WHERE project_id=$4 AND upload_status='LINKED')::int files,
-    (SELECT COUNT(*) FROM financial_transactions WHERE project_id=$4 AND client_payment_claim_id IS NOT NULL)::int payments`, [lead, client, estimateV2, project, renovationOrder, contract, plan]);
-  assert.deepEqual(relationAudit.rows[0], { lead_client: 1, client_orders: 3, approved_estimate: 1, client_contract: 1, project_links: 1, plans: 1, stages: 3, tasks: 9, dependencies: 3, report_tasks: 1, files: 3, payments: 5 });
+    (SELECT COUNT(*) FROM financial_transactions WHERE project_id=$4 AND client_payment_claim_id IS NOT NULL)::int payments,
+    (SELECT COUNT(*) FROM project_handovers WHERE project_id=$4 AND status='ACCEPTED')::int handovers,
+    (SELECT COUNT(*) FROM project_handover_defects WHERE project_id=$4 AND status='ACCEPTED')::int accepted_defects`, [lead, client, estimateV2, project, renovationOrder, contract, plan]);
+  assert.deepEqual(relationAudit.rows[0], { lead_client: 1, client_orders: 3, approved_estimate: 1, client_contract: 1, project_links: 1, plans: 1, stages: 3, tasks: 10, dependencies: 3, report_tasks: 1, files: 5, payments: 5, handovers: 1, accepted_defects: 1 });
   const money = await q(`SELECT
     (SELECT contract_amount_kopecks FROM projects WHERE id=$1)::int contract_amount,
     (SELECT SUM(stage_amount_kopecks) FROM project_stage_payment_terms WHERE project_id=$1 AND active=1)::int stage_amounts,
