@@ -8,6 +8,7 @@ import "./additional-works.css";
 import "./handover.css";
 import "./handover-management.css";
 import "./apartment-passport.css";
+import "./filter-controls.css";
 
 const manrope = Manrope({ variable: "--font-manrope", subsets: ["latin", "cyrillic"] });
 const unbounded = Unbounded({ variable: "--font-unbounded", subsets: ["latin", "cyrillic"] });

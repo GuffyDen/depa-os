@@ -1,0 +1,417 @@
+/* Shared filter/control contract. Module CSS owns column intent; this file owns alignment. */
+:root {
+  --control-height: 44px;
+  --control-radius: 4px;
+  --control-padding-x: 12px;
+  --control-font-size: 11px;
+  --filter-gap: 10px;
+  --filter-padding: 14px;
+  --filter-label-height: 12px;
+  --label-gap: 6px;
+}
+
+:is(
+  .crm-filters,
+  .client-filters,
+  .order-filters,
+  .project-filters,
+  .rc-filters,
+  .estimate-filters,
+  .contract-filters,
+  .cashbox-history-filters,
+  .finance-filter-bar
+) {
+  align-items: end;
+  gap: var(--filter-gap);
+  padding: var(--filter-padding);
+  overflow: visible;
+}
+
+:is(
+  .crm-filters,
+  .client-filters,
+  .order-filters,
+  .project-filters,
+  .rc-filters,
+  .estimate-filters,
+  .contract-filters,
+  .cashbox-history-filters
+) > label {
+  display: grid;
+  grid-template-rows: var(--filter-label-height) var(--control-height);
+  gap: var(--label-gap);
+  min-width: 0;
+  align-self: end;
+}
+
+:is(
+  .crm-filters,
+  .client-filters,
+  .order-filters,
+  .project-filters,
+  .rc-filters,
+  .estimate-filters,
+  .contract-filters,
+  .cashbox-history-filters,
+  .calendar-toolbar,
+  .handover-filter
+) label > span,
+.handover-filter > span {
+  display: flex;
+  align-items: flex-end;
+  min-width: 0;
+  height: var(--filter-label-height);
+  color: var(--text-secondary);
+  font-size: 8px;
+  font-weight: 600;
+  line-height: var(--filter-label-height);
+  letter-spacing: .7px;
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+:is(
+  .crm-filters,
+  .client-filters,
+  .order-filters,
+  .project-filters,
+  .rc-filters,
+  .estimate-filters,
+  .contract-filters,
+  .cashbox-history-filters,
+  .finance-filter-bar,
+  .calendar-toolbar,
+  .handover-filter
+) :is(input:not([type="checkbox"]):not([type="radio"]), select),
+:is(.crm-filters, .client-filters, .order-filters, .project-filters) > button {
+  width: 100%;
+  min-width: 0;
+  height: var(--control-height);
+  min-height: var(--control-height);
+  border: 1px solid var(--border);
+  border-radius: var(--control-radius);
+  background: var(--surface-2);
+  color: var(--text-primary);
+  padding: 0 var(--control-padding-x);
+  font-size: var(--control-font-size);
+  line-height: 1.2;
+  outline: none;
+  text-overflow: ellipsis;
+  transition: border-color 160ms ease, background-color 160ms ease, box-shadow 160ms ease;
+}
+
+:is(
+  .crm-filters,
+  .client-filters,
+  .order-filters,
+  .project-filters,
+  .rc-filters,
+  .estimate-filters,
+  .contract-filters,
+  .cashbox-history-filters,
+  .finance-filter-bar,
+  .calendar-toolbar,
+  .handover-filter
+) :is(input:not([type="checkbox"]):not([type="radio"]), select):hover:not(:disabled) {
+  border-color: var(--text-muted);
+}
+
+:is(
+  .crm-filters,
+  .client-filters,
+  .order-filters,
+  .project-filters,
+  .rc-filters,
+  .estimate-filters,
+  .contract-filters,
+  .cashbox-history-filters,
+  .finance-filter-bar,
+  .calendar-toolbar,
+  .handover-filter
+) :is(input:not([type="checkbox"]):not([type="radio"]), select):focus-visible {
+  border-color: var(--orange);
+  box-shadow: var(--focus-ring);
+}
+
+:is(
+  .crm-filters,
+  .client-filters,
+  .order-filters,
+  .project-filters,
+  .rc-filters,
+  .estimate-filters,
+  .contract-filters,
+  .cashbox-history-filters,
+  .finance-filter-bar,
+  .calendar-toolbar,
+  .handover-filter
+) :is(input, select):disabled {
+  cursor: not-allowed;
+  opacity: .52;
+}
+
+:is(
+  .crm-filters,
+  .client-filters,
+  .order-filters,
+  .project-filters,
+  .rc-filters,
+  .estimate-filters,
+  .contract-filters,
+  .cashbox-history-filters,
+  .finance-filter-bar,
+  .calendar-toolbar,
+  .handover-filter
+) input::placeholder {
+  color: var(--text-muted);
+  opacity: 1;
+}
+
+:is(
+  .crm-search,
+  .client-search,
+  .order-search,
+  .project-search,
+  .rc-search
+) {
+  position: relative;
+}
+
+:is(
+  .crm-filters .crm-search,
+  .client-filters .client-search,
+  .order-filters .order-search,
+  .project-filters .project-search,
+  .rc-filters .rc-search,
+  .estimate-filters .order-search,
+  .contract-filters .order-search
+)::before {
+  content: "Поиск";
+  grid-row: 1;
+  height: var(--filter-label-height);
+  color: var(--text-secondary);
+  font-size: 8px;
+  font-weight: 600;
+  line-height: var(--filter-label-height);
+  letter-spacing: .7px;
+  text-transform: uppercase;
+}
+
+:is(
+  .crm-filters .crm-search,
+  .client-filters .client-search,
+  .order-filters .order-search,
+  .project-filters .project-search,
+  .rc-filters .rc-search,
+  .estimate-filters .order-search,
+  .contract-filters .order-search
+) > span {
+  position: absolute;
+  z-index: 1;
+  left: 12px;
+  bottom: 0;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: var(--control-height);
+  font-size: 15px;
+  line-height: 1;
+  pointer-events: none;
+}
+
+:is(
+  .crm-filters .crm-search,
+  .client-filters .client-search,
+  .order-filters .order-search,
+  .project-filters .project-search,
+  .rc-filters .rc-search,
+  .estimate-filters .order-search,
+  .contract-filters .order-search
+) > input {
+  grid-row: 2;
+  padding-left: 38px;
+}
+
+.finance-filter-bar {
+  grid-template-columns: minmax(230px, 2fr) repeat(4, minmax(125px, 1fr));
+}
+
+.finance-filter-bar > :first-child {
+  grid-column: auto;
+}
+
+.cashbox-filter-reset,
+.calendar-toolbar button,
+.calendar-level-switch,
+.screen-intro .primary,
+.screen-intro .secondary,
+.screen-intro .segmented {
+  min-height: var(--control-height);
+}
+
+.cashbox-filter-reset {
+  height: var(--control-height);
+  align-self: end;
+}
+
+.calendar-toolbar {
+  align-items: end;
+  gap: var(--filter-gap);
+  padding: var(--filter-padding);
+}
+
+.calendar-toolbar label {
+  display: grid;
+  grid-template-rows: var(--filter-label-height) var(--control-height);
+  gap: var(--label-gap);
+  min-width: 0;
+}
+
+.calendar-level-switch {
+  height: var(--control-height);
+  padding: 3px;
+  border-radius: var(--control-radius);
+}
+
+.calendar-level-switch button {
+  height: 100%;
+  min-height: 0;
+}
+
+.calendar-navigation button {
+  height: var(--control-height);
+  min-height: var(--control-height);
+}
+
+.screen-intro .segmented {
+  display: flex;
+  align-items: stretch;
+}
+
+.screen-intro .segmented button {
+  min-height: calc(var(--control-height) - 6px);
+}
+
+.handover-filter {
+  display: grid;
+  grid-template-columns: minmax(150px, 240px);
+  align-items: end;
+  gap: var(--label-gap);
+}
+
+@media (max-width: 1100px) {
+  :is(.crm-filters, .order-filters) {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  :is(.crm-filters .crm-search, .order-filters .order-search) {
+    grid-column: 1 / -1;
+  }
+
+  .finance-filter-bar {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .finance-filter-bar > :first-child {
+    grid-column: span 2;
+  }
+}
+
+@media (max-width: 900px) {
+  :is(
+    .client-filters,
+    .project-filters,
+    .rc-filters,
+    .estimate-filters,
+    .contract-filters,
+    .cashbox-history-filters,
+    .finance-filter-bar
+  ) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  :is(
+    .client-filters .client-search,
+    .project-filters .project-search,
+    .rc-filters .rc-search,
+    .estimate-filters .order-search,
+    .contract-filters .order-search,
+    .finance-filter-bar > :first-child
+  ) {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 620px) {
+  :root {
+    --filter-padding: 12px;
+  }
+
+  :is(
+    .crm-filters,
+    .client-filters,
+    .order-filters,
+    .project-filters,
+    .rc-filters,
+    .estimate-filters,
+    .contract-filters,
+    .cashbox-history-filters,
+    .finance-filter-bar
+  ) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  :is(
+    .crm-filters .crm-search,
+    .client-filters .client-search,
+    .order-filters .order-search,
+    .project-filters .project-search,
+    .rc-filters .rc-search,
+    .estimate-filters .order-search,
+    .contract-filters .order-search,
+    .finance-filter-bar > :first-child
+  ) {
+    grid-column: auto;
+  }
+
+  :is(
+    .crm-filters,
+    .client-filters,
+    .order-filters,
+    .project-filters,
+    .rc-filters,
+    .estimate-filters,
+    .contract-filters,
+    .cashbox-history-filters,
+    .finance-filter-bar,
+    .calendar-toolbar,
+    .handover-filter
+  ) :is(input:not([type="checkbox"]):not([type="radio"]), select, button) {
+    font-size: 16px;
+  }
+
+  .cashbox-filter-reset,
+  .handover-filter {
+    width: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :is(
+    .crm-filters,
+    .client-filters,
+    .order-filters,
+    .project-filters,
+    .rc-filters,
+    .estimate-filters,
+    .contract-filters,
+    .cashbox-history-filters,
+    .finance-filter-bar,
+    .calendar-toolbar,
+    .handover-filter
+  ) :is(input, select, button) {
+    transition: none;
+  }
+}
