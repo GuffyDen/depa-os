@@ -123,7 +123,52 @@ test("FULL APARTMENT E2E — linked commercial, production, portal and finance l
   await q("INSERT INTO client_portal_audit_events(id,action,entity_type,entity_id,client_id,client_portal_user_id,metadata_json,occurred_at) VALUES($1,'FULL_APARTMENT_E2E','Project',$2,$3,$4,'{}',$5)", [id("portal_audit"), project, client, portal, now]);
   await q("INSERT INTO audit_logs(id,actor_user_id,action,entity_type,entity_id,occurred_at,metadata_json) VALUES($1,$2,'FULL_APARTMENT_E2E','Project',$3,$4,'{}')", [id("audit"), user, project, now]);
 
-  // 177–186 + full relation and independent money reconciliation.
+  // 177–214: Additional Works v1 — reject v1, approve v2, production, payment and schedule.
+  const additionalWork = id("additional_work"), additionalV1 = id("additional_v1"), additionalV2 = id("additional_v2"), additionalTask = id("additional_task"), additionalObligation = id("additional_obligation"), additionalClaim = id("additional_claim"), additionalTx = id("additional_tx"), additionalFile = id("additional_file");
+  await q("INSERT INTO additional_works(id,project_id,client_id,order_id,contract_id,stage_id,number,title,status,responsible_user_id,current_version_id,created_by_user_id,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,'ДР-E2E-001','Дополнительная шумоизоляция','DRAFT',$7,NULL,$7,$8,$8)", [additionalWork, project, client, renovationOrder, contract, stages[1], user, now]);
+  await q("INSERT INTO additional_work_versions(id,additional_work_id,project_id,version,title,amount_kopecks,schedule_delta_days,status,reason,client_description,internal_comment,schedule_impact_type,task_creation_mode,created_by_user_id,created_at,updated_at) VALUES($1,$2,$3,1,'Дополнительная шумоизоляция',1500000,2,'DRAFT','CLIENT_REQUEST','Первый вариант шумоизоляции','Внутренний v1','ADD_DAYS','AFTER_APPROVAL',$4,$5,$5)", [additionalV1, additionalWork, project, user, now]);
+  await q("INSERT INTO additional_work_items(id,additional_work_version_id,position,name,quantity,unit,client_unit_price_kopecks,client_total_kopecks,internal_unit_cost_kopecks,created_at,updated_at) VALUES($1,$2,0,'Шумоизоляция',10,'м²',150000,1500000,90000,$3,$3)", [id("additional_item_v1"), additionalV1, now]);
+  await q("UPDATE additional_works SET current_version_id=$1,status='AWAITING_CLIENT_APPROVAL' WHERE id=$2", [additionalV1, additionalWork]);
+  await q("UPDATE additional_work_versions SET status='SENT',sent_at=$1,sent_by_user_id=$2 WHERE id=$3", [now, user, additionalV1]);
+  await q("UPDATE additional_work_versions SET status='REJECTED',rejected_at=$1,client_decision_comment='Нужен другой материал' WHERE id=$2", [now, additionalV1]);
+  await q("UPDATE additional_works SET status='REJECTED' WHERE id=$1", [additionalWork]);
+  await q("INSERT INTO additional_work_versions(id,additional_work_id,project_id,version,title,amount_kopecks,schedule_delta_days,status,reason,client_description,internal_comment,schedule_impact_type,task_creation_mode,payment_due_date,created_by_user_id,created_at,updated_at) VALUES($1,$2,$3,2,'Дополнительная шумоизоляция',2000000,3,'DRAFT','CLIENT_REQUEST','Шумоизоляция согласованным материалом','Внутренний v2','ADD_DAYS','AFTER_APPROVAL',$5,$4,$5,$5)", [additionalV2, additionalWork, project, user, now]);
+  await q("INSERT INTO additional_work_items(id,additional_work_version_id,position,name,quantity,unit,client_unit_price_kopecks,client_total_kopecks,internal_unit_cost_kopecks,created_at,updated_at) VALUES($1,$2,0,'Шумоизоляция Premium',10,'м²',200000,2000000,120000,$3,$3)", [id("additional_item_v2"), additionalV2, now]);
+  await q("INSERT INTO additional_work_proposed_tasks(id,additional_work_version_id,stage_id,position,title,progress_type,quantity,unit,typical_duration_days,client_visible,created_at,updated_at) VALUES($1,$2,$3,0,'Монтаж дополнительной шумоизоляции','QUANTITY',10,'м²',3,1,$4,$4)", [id("additional_proposed_task"), additionalV2, stages[1], now]);
+  await q("UPDATE additional_works SET current_version_id=$1,status='AWAITING_CLIENT_APPROVAL' WHERE id=$2", [additionalV2, additionalWork]);
+  await q("UPDATE additional_work_versions SET status='SENT',sent_at=$1,sent_by_user_id=$2 WHERE id=$3", [now, user, additionalV2]);
+  await q("UPDATE additional_work_versions SET status='APPROVED',approved_at=$1,approved_by_client_portal_user_id=$2 WHERE id=$3", [now, portal, additionalV2]);
+  await q("UPDATE additional_works SET status='APPROVED',approved_version_id=$1,approved_by_client_portal_user_id=$2 WHERE id=$3", [additionalV2, portal, additionalWork]);
+  await q("INSERT INTO tasks(id,title,project_id,client_id,status,created_by_user_id,production_plan_id,stage_id,position,progress_type,unit,planned_quantity,completed_quantity,weight_within_stage,planned_start_date,planned_end_date,planned_duration_days,responsible_user_id,client_visible,additional_work_id,additional_work_version_id,created_at,updated_at) VALUES($1,'Монтаж дополнительной шумоизоляции',$2,$3,'NOT_STARTED',$4,$5,$6,20,'QUANTITY','м²',10,0,0,$7,$8,3,$4,1,$9,$10,$11,$11)", [additionalTask, project, client, user, plan, stages[1], now + 5 * day, now + 8 * day, additionalWork, additionalV2, now]);
+  await q("INSERT INTO additional_work_task_links(id,additional_work_id,additional_work_version_id,proposed_task_id,task_id,created_at) VALUES($1,$2,$3,$4,$5,$6)", [id("additional_task_link"), additionalWork, additionalV2, id("additional_proposed_task"), additionalTask, now]);
+  await q("INSERT INTO obligations(id,direction,counterparty_type,counterparty_id,project_id,amount_kopecks,paid_kopecks,status,obligation_type,payment_plan_version,source_key,currency,additional_work_id,additional_work_version_id,created_at,updated_at) VALUES($1,'RECEIVABLE','CLIENT',$2,$3,2000000,2000000,'PAID','ADDITIONAL_WORK',1,$4,'RUB',$5,$6,$7,$7)", [additionalObligation, client, project, `additional_work:${additionalWork}:version:${additionalV2}`, additionalWork, additionalV2, now]);
+  await q("INSERT INTO client_payment_claims(id,client_id,project_id,portal_user_id,claimed_amount_kopecks,confirmed_amount_kopecks,payment_method,status,claimed_at,received_at,confirmed_at,confirmed_by_user_id,created_at,updated_at) VALUES($1,$2,$3,$4,2000000,2000000,'BANK_TRANSFER','CONFIRMED',$5,$5,$5,$6,$5,$5)", [additionalClaim, client, project, portal, now, user]);
+  await q("INSERT INTO financial_transactions(id,amount_kopecks,transaction_date,type,author_user_id,cashbox_id,client_id,project_id,category,source,purpose,title,show_to_client,created_at,updated_at,client_payment_claim_id) VALUES($1,2000000,$2,'INCOME',$3,$4,$5,$6,'CLIENT_PAYMENT','Client Portal','ADDITIONAL_WORKS','Оплата допработы E2E',1,$2,$2,$7)", [additionalTx, now, user, cashbox, client, project, additionalClaim]);
+  await q("INSERT INTO obligation_payment_allocations(id,obligation_id,financial_transaction_id,amount_kopecks,created_at,created_by_user_id) VALUES($1,$2,$3,2000000,$4,$5)", [id("additional_allocation"), additionalObligation, additionalTx, now, user]);
+  await q("UPDATE cashboxes SET balance_kopecks=balance_kopecks+2000000 WHERE id=$1", [cashbox]);
+  await q("INSERT INTO attachments(id,project_id,additional_work_version_id,storage_key,original_filename,mime_type,size_bytes,storage_provider,blob_url,uploaded_by_user_id,entity_type,entity_id,category,visibility,upload_status,metadata_json,completed_at,linked_at,created_at,updated_at) VALUES($1,$2,$3,$4,'additional.pdf','application/pdf',128,'VERCEL_BLOB',$5,$6,'AdditionalWorkVersion',$3,'ADDITIONAL_WORK','CLIENT','LINKED','{}',$7,$7,$7,$7)", [additionalFile, project, additionalV2, `test-storage/${additionalFile}.pdf`, `https://test.private.blob.vercel-storage.com/${additionalFile}.pdf`, user, now]);
+  const progress = await q(`WITH stage_progress AS (SELECT s.id,s.weight_within_project,COALESCE(SUM(t.weight_within_stage*CASE WHEN t.progress_type='BINARY' THEN CASE WHEN t.status='COMPLETED' THEN 100 ELSE 0 END ELSE 100*COALESCE(t.completed_quantity,0)/NULLIF(t.planned_quantity,0) END)/NULLIF(SUM(t.weight_within_stage),0),0) progress FROM project_stages s LEFT JOIN tasks t ON t.stage_id=s.id AND t.status<>'CANCELLED' WHERE s.production_plan_id=$1 GROUP BY s.id)
+    SELECT ROUND((SELECT progress FROM stage_progress WHERE id=$2))::int stage_progress,ROUND(SUM(progress*weight_within_project)/SUM(weight_within_project))::int project_progress,ROUND(SUM(progress*weight_within_project)/SUM(weight_within_project))::int client_overall FROM stage_progress`, [plan, stages[1]]);
+  assert.deepEqual(progress.rows[0], { stage_progress: 26, project_progress: 49, client_overall: 49 });
+  const duplicateFacts = await q("SELECT (SELECT COUNT(*) FROM obligations WHERE source_key=$1)::int obligations,(SELECT COUNT(*) FROM additional_work_task_links WHERE proposed_task_id=$2)::int task_links", [`additional_work:${additionalWork}:version:${additionalV2}`, id("additional_proposed_task")]);
+  assert.deepEqual(duplicateFacts.rows[0], { obligations: 1, task_links: 1 });
+  const otherClient = id("other_client");
+  await q("INSERT INTO clients(id,name,phone,phone_normalized,source,status,responsible_user_id,created_at,updated_at) VALUES($1,'Другой клиент E2E','+79990000999','79990000999','OTHER','ACTIVE',$2,$3,$3)", [otherClient, user, now]);
+  const crossClient = await q("SELECT COUNT(*)::int count FROM additional_works WHERE id=$1 AND client_id=$2", [additionalWork, otherClient]);
+  assert.equal(crossClient.rows[0].count, 0);
+  const beforeSchedule = await q("SELECT planned_start_date FROM tasks WHERE id=$1", [id("task_paint")]);
+  const applied = await q("UPDATE additional_work_versions SET schedule_applied_at=$1,schedule_applied_by_user_id=$2 WHERE id=$3 AND schedule_applied_at IS NULL RETURNING id", [now, user, additionalV2]);
+  assert.equal(applied.rowCount, 1);
+  await q("UPDATE tasks SET planned_start_date=planned_start_date+$1,planned_end_date=planned_end_date+$1 WHERE project_id=$2 AND additional_work_version_id IS DISTINCT FROM $3", [3 * day, project, additionalV2]);
+  await q("UPDATE projects SET internal_forecast_end_date=$1 WHERE id=$2", [now + 13 * day, project]);
+  const duplicateScheduleApply = await q("UPDATE additional_work_versions SET schedule_applied_at=$1 WHERE id=$2 AND schedule_applied_at IS NULL RETURNING id", [now + 1, additionalV2]);
+  assert.equal(duplicateScheduleApply.rowCount, 0);
+  const afterSchedule = await q("SELECT planned_start_date FROM tasks WHERE id=$1", [id("task_paint")]);
+  assert.equal(Number(afterSchedule.rows[0].planned_start_date), Number(beforeSchedule.rows[0].planned_start_date) + 3 * day);
+  const additionalFacts = await q("SELECT p.contract_amount_kopecks::int contract_amount,cv.contract_amount_kopecks::int signed_amount,p.published_forecast_end_date,aw.status,v.version,v.amount_kopecks::int amount,(p.contract_amount_kopecks+v.amount_kopecks)::int commercial FROM projects p JOIN contracts c ON c.id=p.contract_id JOIN contract_versions cv ON cv.id=c.signed_version_id JOIN additional_works aw ON aw.project_id=p.id JOIN additional_work_versions v ON v.id=aw.approved_version_id WHERE p.id=$1", [project]);
+  assert.deepEqual(additionalFacts.rows[0], { contract_amount: 110000000, signed_amount: 110000000, published_forecast_end_date: null, status: "APPROVED", version: 2, amount: 2000000, commercial: 112000000 });
+
+  // 215–228 + full relation and independent money reconciliation.
   const relationAudit = await q(`SELECT
     (SELECT COUNT(*) FROM leads WHERE id=$1 AND linked_client_id=$2)::int lead_client,
     (SELECT COUNT(*) FROM orders WHERE client_id=$2)::int client_orders,
@@ -137,7 +182,7 @@ test("FULL APARTMENT E2E — linked commercial, production, portal and finance l
     (SELECT COUNT(*) FROM daily_report_tasks drt JOIN daily_reports dr ON dr.id=drt.daily_report_id WHERE dr.project_id=$4)::int report_tasks,
     (SELECT COUNT(*) FROM attachments WHERE project_id=$4 AND upload_status='LINKED')::int files,
     (SELECT COUNT(*) FROM financial_transactions WHERE project_id=$4 AND client_payment_claim_id IS NOT NULL)::int payments`, [lead, client, estimateV2, project, renovationOrder, contract, plan]);
-  assert.deepEqual(relationAudit.rows[0], { lead_client: 1, client_orders: 3, approved_estimate: 1, client_contract: 1, project_links: 1, plans: 1, stages: 3, tasks: 8, dependencies: 3, report_tasks: 1, files: 2, payments: 4 });
+  assert.deepEqual(relationAudit.rows[0], { lead_client: 1, client_orders: 3, approved_estimate: 1, client_contract: 1, project_links: 1, plans: 1, stages: 3, tasks: 9, dependencies: 3, report_tasks: 1, files: 3, payments: 5 });
   const money = await q(`SELECT
     (SELECT contract_amount_kopecks FROM projects WHERE id=$1)::int contract_amount,
     (SELECT SUM(stage_amount_kopecks) FROM project_stage_payment_terms WHERE project_id=$1 AND active=1)::int stage_amounts,
@@ -146,7 +191,7 @@ test("FULL APARTMENT E2E — linked commercial, production, portal and finance l
     (SELECT SUM(amount_kopecks) FROM financial_transactions WHERE project_id=$1 AND type='INCOME')::int confirmed,
     (SELECT balance_kopecks FROM cashboxes WHERE id=$2)::int cashbox_balance,
     (SELECT SUM(remaining_kopecks) FROM client_unapplied_funds WHERE project_id=$1)::int unapplied`, [project, cashbox]);
-  assert.deepEqual(money.rows[0], { contract_amount: 110000000, stage_amounts: 110000000, obligations: 82000000, allocated: 78000000, confirmed: 79000000, cashbox_balance: 79000000, unapplied: 1000000 });
+  assert.deepEqual(money.rows[0], { contract_amount: 110000000, stage_amounts: 110000000, obligations: 84000000, allocated: 80000000, confirmed: 81000000, cashbox_balance: 81000000, unapplied: 1000000 });
   assert.equal(money.rows[0].confirmed, money.rows[0].allocated + money.rows[0].unapplied);
   const portalPrivacy = await q("SELECT COUNT(*)::int count FROM project_delays WHERE project_id=$1 AND client_visible=1 AND client_comment IS NOT NULL AND internal_comment IS NULL", [project]);
   assert.equal(portalPrivacy.rows[0].count, 1);

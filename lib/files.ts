@@ -3,14 +3,14 @@ import type { AuthUser } from "./auth";
 import { first, query, transaction } from "./postgres";
 import { AccessError, assertModuleAction, canViewCashbox, canViewContract, canViewDesignProject, canViewProject, getAccessProfile } from "./permissions";
 
-export const FILE_CATEGORIES = ["RECEIPT", "PROJECT_PHOTO", "DAILY_REPORT", "HIDDEN_WORK", "CONTRACT", "ACT", "ESTIMATE", "INSPECTION", "WARRANTY", "MEASUREMENT_PLAN", "LAYOUT", "CONCEPT", "VISUALIZATION", "WORKING_DRAWINGS", "SPECIFICATION", "FINAL_ALBUM", "CONTRACT_DOCX", "CONTRACT_PDF", "SIGNED_CONTRACT", "CONTRACT_OTHER", "OTHER"] as const;
+export const FILE_CATEGORIES = ["RECEIPT", "PROJECT_PHOTO", "DAILY_REPORT", "HIDDEN_WORK", "ADDITIONAL_WORK", "CONTRACT", "ACT", "ESTIMATE", "INSPECTION", "WARRANTY", "MEASUREMENT_PLAN", "LAYOUT", "CONCEPT", "VISUALIZATION", "WORKING_DRAWINGS", "SPECIFICATION", "FINAL_ALBUM", "CONTRACT_DOCX", "CONTRACT_PDF", "SIGNED_CONTRACT", "CONTRACT_OTHER", "OTHER"] as const;
 export type FileCategory = (typeof FILE_CATEGORIES)[number];
 export type FileVisibility = "INTERNAL" | "PROJECT" | "CLIENT";
 
 const PHOTO_CATEGORIES = new Set<FileCategory>(["PROJECT_PHOTO", "DAILY_REPORT", "HIDDEN_WORK", "INSPECTION", "WARRANTY"]);
 const DESIGN_DOCUMENT_CATEGORIES = new Set<FileCategory>(["MEASUREMENT_PLAN", "LAYOUT", "CONCEPT", "VISUALIZATION", "WORKING_DRAWINGS", "SPECIFICATION", "FINAL_ALBUM"]);
 const CONTRACT_CATEGORIES = new Set<FileCategory>(["CONTRACT_DOCX", "CONTRACT_PDF", "SIGNED_CONTRACT", "CONTRACT_OTHER"]);
-const DOCUMENT_CATEGORIES = new Set<FileCategory>(["CONTRACT", "ACT", "ESTIMATE", ...DESIGN_DOCUMENT_CATEGORIES, ...CONTRACT_CATEGORIES, "OTHER"]);
+const DOCUMENT_CATEGORIES = new Set<FileCategory>(["ADDITIONAL_WORK", "CONTRACT", "ACT", "ESTIMATE", ...DESIGN_DOCUMENT_CATEGORIES, ...CONTRACT_CATEGORIES, "OTHER"]);
 const IMAGE_MIME_TYPES = ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"];
 const RECEIPT_MIME_TYPES = [...IMAGE_MIME_TYPES, "application/pdf"];
 const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
@@ -35,6 +35,7 @@ export type UploadClientPayload = {
   entityId?: string | null;
   projectId?: string | null;
   contractVersionId?: string | null;
+  additionalWorkVersionId?: string | null;
 };
 
 type AttachmentRow = {
@@ -43,6 +44,7 @@ type AttachmentRow = {
   project_id: string | null;
   design_project_id: string | null;
   contract_version_id: string | null;
+  additional_work_version_id: string | null;
   client_payment_claim_id: string | null;
   storage_key: string;
   blob_url: string | null;
@@ -118,6 +120,7 @@ function parsePayload(payload: string | null): UploadClientPayload {
     entityId: cleanText(value.entityId, 120) || null,
     projectId: cleanText(value.projectId, 120) || null,
     contractVersionId: cleanText(value.contractVersionId, 120) || null,
+    additionalWorkVersionId: cleanText(value.additionalWorkVersionId, 120) || null,
   };
 }
 
@@ -172,6 +175,14 @@ async function assertContractFileAccess(actor: AuthUser, contractVersionId: stri
   if (!row || !(await canViewContract(actor, row.contract_id))) throw new FileError("Нет доступа к файлам этого договора.", 403);
 }
 
+async function assertAdditionalWorkFileAccess(actor: AuthUser, versionId: string | null | undefined, projectId: string | null | undefined, action: "additionalWorks.uploadFiles" | "additionalWorks.view" = "additionalWorks.uploadFiles") {
+  if (!versionId || !projectId) throw new FileError("Некорректная связь файла дополнительной работы.");
+  try { await assertModuleAction(actor, "projects", action); }
+  catch (error) { if (error instanceof AccessError) throw new FileError("Нет права загружать файлы дополнительной работы.", 403); throw error; }
+  const row = await first<{ project_id: string }>("SELECT project_id FROM additional_work_versions WHERE id=$1", [versionId]);
+  if (!row || row.project_id !== projectId || !(await canViewProject(actor, projectId))) throw new FileError("Версия дополнительной работы недоступна.", 403);
+}
+
 export async function prepareAttachmentUpload(actor: AuthUser, pathname: string, clientPayload: string | null) {
   const payload = parsePayload(clientPayload);
   const isDesignFile = DESIGN_DOCUMENT_CATEGORIES.has(payload.category) || ["DesignProject", "DesignStage"].includes(payload.entityType);
@@ -180,6 +191,7 @@ export async function prepareAttachmentUpload(actor: AuthUser, pathname: string,
     if (payload.category === "RECEIPT") await assertModuleAction(actor, "finance", "finance.createExpense");
     else if (payload.category === "DAILY_REPORT") await assertModuleAction(actor, "projects", "dailyReports.uploadPhotos");
     else if (payload.category === "HIDDEN_WORK") await assertModuleAction(actor, "projects", "hiddenWorks.upload");
+    else if (payload.category === "ADDITIONAL_WORK") await assertModuleAction(actor, "projects", "additionalWorks.uploadFiles");
     else if (isContractFile) await assertModuleAction(actor, "orders", payload.category === "CONTRACT_DOCX" || payload.category === "CONTRACT_PDF" ? "contracts.generateDocuments" : "contracts.uploadSigned");
     else if (isDesignFile) await assertModuleAction(actor, "orders", "design.files.upload");
     else await assertModuleAction(actor, "documents", "documents.upload");
@@ -192,6 +204,7 @@ export async function prepareAttachmentUpload(actor: AuthUser, pathname: string,
   if (payload.category === "INSPECTION") await assertInspectionFileAccess(actor, payload.entityType, payload.entityId);
   if (isDesignFile) await assertDesignFileAccess(actor, payload.entityType, payload.entityId);
   if (isContractFile) await assertContractFileAccess(actor, payload.contractVersionId);
+  if (payload.category === "ADDITIONAL_WORK") await assertAdditionalWorkFileAccess(actor, payload.additionalWorkVersionId, payload.projectId);
   const expectedPath = attachmentPath(payload.attachmentId, payload.category, payload.mimeType);
   if (pathname !== expectedPath) throw new FileError("Путь загрузки файла отклонён.");
   const timestamp = nowSeconds();
@@ -199,9 +212,9 @@ export async function prepareAttachmentUpload(actor: AuthUser, pathname: string,
   if (existing && (existing.uploaded_by_user_id !== actor.id || existing.upload_status !== "PENDING")) throw new FileError("Эта загрузка уже использована.", 409);
   if (!existing) {
     await query(`INSERT INTO attachments
-      (id,transaction_id,project_id,contract_version_id,storage_provider,storage_key,blob_url,original_filename,mime_type,size_bytes,checksum_sha256,uploaded_by_user_id,entity_type,entity_id,category,visibility,upload_status,metadata_json,created_at,updated_at)
-      VALUES ($1,NULL,$2,$3,'VERCEL_BLOB',$4,NULL,$5,$6,0,$7,$8,$9,$10,$11,$12,'PENDING',$13::jsonb,$14,$15)`,
-    [payload.attachmentId, payload.projectId ?? null, payload.contractVersionId ?? null, expectedPath, payload.originalFilename, payload.mimeType, payload.checksumSha256, actor.id, payload.entityType, payload.entityId ?? null, payload.category, payload.visibility ?? "INTERNAL", JSON.stringify({ declaredSizeBytes: payload.sizeBytes, photoLongEdgeTargetPx: PHOTO_CATEGORIES.has(payload.category) ? PHOTO_LONG_EDGE_PX : null }), timestamp, timestamp]);
+      (id,transaction_id,project_id,contract_version_id,additional_work_version_id,storage_provider,storage_key,blob_url,original_filename,mime_type,size_bytes,checksum_sha256,uploaded_by_user_id,entity_type,entity_id,category,visibility,upload_status,metadata_json,created_at,updated_at)
+      VALUES ($1,NULL,$2,$3,$4,'VERCEL_BLOB',$5,NULL,$6,$7,0,$8,$9,$10,$11,$12,$13,'PENDING',$14::jsonb,$15,$16)`,
+    [payload.attachmentId, payload.projectId ?? null, payload.contractVersionId ?? null, payload.additionalWorkVersionId ?? null, expectedPath, payload.originalFilename, payload.mimeType, payload.checksumSha256, actor.id, payload.entityType, payload.entityId ?? null, payload.category, payload.visibility ?? "INTERNAL", JSON.stringify({ declaredSizeBytes: payload.sizeBytes, photoLongEdgeTargetPx: PHOTO_CATEGORIES.has(payload.category) ? PHOTO_LONG_EDGE_PX : null }), timestamp, timestamp]);
   }
   return {
     allowedContentTypes: allowedMimeTypes(payload.category),
@@ -232,7 +245,7 @@ async function finalizeAttachmentMetadata(attachmentId: string, userId: string, 
   if (!allowedMimeTypes(row.category).includes(mimeType) || sizeBytes <= 0 || sizeBytes > fileLimitBytes(row.category)) throw new FileError("Загруженный файл не прошёл проверку типа или размера.");
   const timestamp = nowSeconds();
   await query(`WITH updated AS (
-      UPDATE attachments SET blob_url=$1,mime_type=$2,size_bytes=$3,upload_status='UPLOADED',completed_at=$4,updated_at=$5
+      UPDATE attachments SET blob_url=$1,mime_type=$2,size_bytes=$3,upload_status=CASE WHEN category='ADDITIONAL_WORK' THEN 'LINKED' ELSE 'UPLOADED' END,completed_at=$4,linked_at=CASE WHEN category='ADDITIONAL_WORK' THEN $4 ELSE linked_at END,updated_at=$5
       WHERE id=$6 AND uploaded_by_user_id=$7 AND upload_status='PENDING' RETURNING id
     ) INSERT INTO audit_logs (id,actor_user_id,action,entity_type,entity_id,occurred_at,metadata_json)
       SELECT $8,$7,'FILE_UPLOADED','Attachment',id,$4,$9 FROM updated`,
@@ -281,6 +294,10 @@ export async function getAuthorizedAttachment(actor: AuthUser, attachmentId: str
       } else if (row.category === "INSPECTION") {
         await assertModuleAction(actor, "orders", "orders.view");
         await assertInspectionFileAccess(actor, row.entity_type, row.entity_id);
+      } else if (row.category === "ADDITIONAL_WORK") {
+        await assertModuleAction(actor, "projects", "additionalWorks.view");
+        if (!row.additional_work_version_id) throw new FileError("Файл не связан с версией дополнительной работы.", 403);
+        await assertAdditionalWorkFileAccess(actor, row.additional_work_version_id, row.project_id, "additionalWorks.view");
       } else if (row.category === "DAILY_REPORT" || row.category === "HIDDEN_WORK") {
         await assertModuleAction(actor, "projects", "production.view");
         await assertProductionFileProjectAccess(actor, row.project_id);

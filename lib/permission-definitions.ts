@@ -73,6 +73,14 @@ export const ACTION_GROUPS = [
     ["stagePaymentTerms.view", "Просматривать финансовый план этапов"], ["stagePaymentTerms.edit", "Редактировать финансовый план этапов"],
     ["obligations.view", "Просматривать обязательства"], ["obligations.manage", "Управлять обязательствами"],
   ] },
+  { module: "projects", label: "Дополнительные работы", actions: [
+    ["additionalWorks.view", "Просматривать"], ["additionalWorks.create", "Создавать"],
+    ["additionalWorks.editDraft", "Редактировать черновики"], ["additionalWorks.createVersion", "Создавать новые версии"],
+    ["additionalWorks.send", "Передавать клиенту"], ["additionalWorks.withdraw", "Отзывать предложения"],
+    ["additionalWorks.manualApprove", "Фиксировать согласование вручную"], ["additionalWorks.manageProductionLinks", "Управлять производственными задачами"],
+    ["additionalWorks.applyScheduleImpact", "Применять влияние на график"], ["additionalWorks.viewCost", "Просматривать себестоимость"],
+    ["additionalWorks.viewMargin", "Просматривать маржу"], ["additionalWorks.uploadFiles", "Загружать файлы"],
+  ] },
   { module: "tasks", label: "Задачи", actions: [
     ["tasks.view", "Просматривать"], ["tasks.create", "Создавать"], ["tasks.edit", "Редактировать"],
     ["tasks.complete", "Выполнять"], ["tasks.assign", "Назначать другому сотруднику"],
@@ -110,6 +118,7 @@ export const SCOPE_DEFINITIONS = [
   { key: "contracts", permission: "contracts.scope", module: "orders", label: "Просмотр договоров", ownLabel: "Только назначенные", allLabel: "Все договоры", default: "ASSIGNED" },
   { key: "projects", permission: "projects.scope", module: "projects", label: "Просмотр объектов", ownLabel: "Только назначенные", allLabel: "Все объекты", default: "ASSIGNED" },
   { key: "production", permission: "production.scope", module: "projects", label: "Производство", ownLabel: "Назначенные объекты", allLabel: "Все объекты", default: "ASSIGNED" },
+  { key: "additionalWorks", permission: "additionalWorks.scope", module: "projects", label: "Дополнительные работы", ownLabel: "Назначенные объекты", allLabel: "Все объекты", default: "ASSIGNED" },
   { key: "tasks", permission: "tasks.scope", module: "tasks", label: "Просмотр задач", ownLabel: "Только назначенные", allLabel: "Все задачи", default: "ASSIGNED" },
   { key: "cashboxes", permission: "finance.cashboxes.scope", module: "finance", label: "Просмотр касс", ownLabel: "Только своя", allLabel: "Все кассы", default: "OWN" },
   { key: "documents", permission: "documents.scope", module: "documents", label: "Просмотр документов", ownLabel: "Назначенные объекты", allLabel: "Все документы", default: "ASSIGNED_PROJECTS" },
@@ -154,8 +163,8 @@ export const ACCESS_PRESETS = {
   FOREMAN: {
     label: "Бригадир",
     modules: ["dashboard", "projects", "tasks", "finance", "documents"],
-    actions: ["projects.view", "projects.edit", "production.view", "production.updateProgress", "production.viewGantt", "dailyReports.view", "dailyReports.create", "dailyReports.edit", "dailyReports.uploadPhotos", "dailyReports.manageWorkers", "hiddenWorks.upload", "tasks.view", "tasks.create", "tasks.edit", "tasks.complete", "finance.view", "finance.createExpense", "finance.createTransfer", "documents.view", "documents.upload"],
-    scopes: { projects: "ASSIGNED", production: "ASSIGNED", tasks: "ASSIGNED", cashboxes: "OWN", documents: "ASSIGNED_PROJECTS" }, ownCashbox: true,
+    actions: ["projects.view", "projects.edit", "production.view", "production.updateProgress", "production.viewGantt", "dailyReports.view", "dailyReports.create", "dailyReports.edit", "dailyReports.uploadPhotos", "dailyReports.manageWorkers", "hiddenWorks.upload", "additionalWorks.view", "additionalWorks.manageProductionLinks", "additionalWorks.applyScheduleImpact", "additionalWorks.uploadFiles", "tasks.view", "tasks.create", "tasks.edit", "tasks.complete", "finance.view", "finance.createExpense", "finance.createTransfer", "documents.view", "documents.upload"],
+    scopes: { projects: "ASSIGNED", production: "ASSIGNED", additionalWorks: "ASSIGNED", tasks: "ASSIGNED", cashboxes: "OWN", documents: "ASSIGNED_PROJECTS" }, ownCashbox: true,
   },
   SUPPLIER: {
     label: "Снабженец",
@@ -166,14 +175,14 @@ export const ACCESS_PRESETS = {
   ACCOUNTANT: {
     label: "Бухгалтер",
     modules: ["dashboard", "clients", "orders", "projects", "tasks", "finance", "team", "contractors", "documents"],
-    actions: ["clients.view", "clients.edit", "orders.view", "orders.edit", "orders.viewFinance", "design.view", "design.viewFinance", "design.stages.view", "design.files.view", "contracts.view", "contracts.viewCompanyDetails", "companySettings.view", "projects.view", "stageAcceptance.view", "stagePaymentTerms.view", "obligations.view", "tasks.view", "finance.view", "finance.editTransaction", "finance.viewClientFunds", "finance.viewProfit", "finance.viewAdministrativeExpenses", "clientPayments.view", "clientPayments.confirm", "clientPayments.reject", "clientPayments.viewProof", "team.view", "contractors.view", "documents.view", "documents.upload", "documents.edit"],
-    scopes: { clients: "ALL", orders: "ALL", design: "ALL", contracts: "ALL", projects: "ALL", production: "ALL", tasks: "ALL", cashboxes: "ALL", documents: "ALL" }, ownCashbox: false,
+    actions: ["clients.view", "clients.edit", "orders.view", "orders.edit", "orders.viewFinance", "design.view", "design.viewFinance", "design.stages.view", "design.files.view", "contracts.view", "contracts.viewCompanyDetails", "companySettings.view", "projects.view", "additionalWorks.view", "stageAcceptance.view", "stagePaymentTerms.view", "obligations.view", "tasks.view", "finance.view", "finance.editTransaction", "finance.viewClientFunds", "finance.viewProfit", "finance.viewAdministrativeExpenses", "clientPayments.view", "clientPayments.confirm", "clientPayments.reject", "clientPayments.viewProof", "team.view", "contractors.view", "documents.view", "documents.upload", "documents.edit"],
+    scopes: { clients: "ALL", orders: "ALL", design: "ALL", contracts: "ALL", projects: "ALL", production: "ALL", additionalWorks: "ALL", tasks: "ALL", cashboxes: "ALL", documents: "ALL" }, ownCashbox: false,
   },
   MANAGER: {
     label: "Менеджер",
     modules: ["dashboard", "crm", "clients", "orders", "projects", "tasks", "documents"],
-    actions: ["crm.view", "crm.create", "crm.edit", "crm.changeStatus", "crm.assign", "crm.close", "clients.view", "clients.create", "clients.edit", "orders.view", "orders.create", "orders.edit", "orders.complete", "orders.cancel", "orders.viewFinance", "design.view", "design.create", "design.edit", "design.assignDesigner", "design.stages.view", "design.stages.edit", "design.stages.complete", "design.files.view", "design.files.upload", "design.files.manageVersions", "design.viewFinance", "design.complete", "estimates.view", "estimates.create", "estimates.edit", "estimates.createVersion", "estimates.sendProposal", "contracts.view", "contracts.create", "contracts.edit", "contracts.createVersion", "contracts.markSent", "contracts.markSigned", "contracts.uploadSigned", "contracts.viewCompanyDetails", "companySettings.view", "projects.view", "tasks.view", "tasks.create", "tasks.edit", "tasks.complete", "documents.view", "documents.upload"],
-    scopes: { crm: "ASSIGNED", clients: "ASSIGNED", orders: "ASSIGNED", design: "ASSIGNED", estimates: "ASSIGNED", contracts: "ASSIGNED", projects: "ASSIGNED", production: "ASSIGNED", tasks: "ASSIGNED", documents: "ASSIGNED_PROJECTS" }, ownCashbox: false,
+    actions: ["crm.view", "crm.create", "crm.edit", "crm.changeStatus", "crm.assign", "crm.close", "clients.view", "clients.create", "clients.edit", "orders.view", "orders.create", "orders.edit", "orders.complete", "orders.cancel", "orders.viewFinance", "design.view", "design.create", "design.edit", "design.assignDesigner", "design.stages.view", "design.stages.edit", "design.stages.complete", "design.files.view", "design.files.upload", "design.files.manageVersions", "design.viewFinance", "design.complete", "estimates.view", "estimates.create", "estimates.edit", "estimates.createVersion", "estimates.sendProposal", "contracts.view", "contracts.create", "contracts.edit", "contracts.createVersion", "contracts.markSent", "contracts.markSigned", "contracts.uploadSigned", "contracts.viewCompanyDetails", "companySettings.view", "projects.view", "additionalWorks.view", "additionalWorks.create", "additionalWorks.editDraft", "additionalWorks.createVersion", "additionalWorks.send", "additionalWorks.withdraw", "additionalWorks.uploadFiles", "tasks.view", "tasks.create", "tasks.edit", "tasks.complete", "documents.view", "documents.upload"],
+    scopes: { crm: "ASSIGNED", clients: "ASSIGNED", orders: "ASSIGNED", design: "ASSIGNED", estimates: "ASSIGNED", contracts: "ASSIGNED", projects: "ASSIGNED", production: "ASSIGNED", additionalWorks: "ASSIGNED", tasks: "ASSIGNED", documents: "ASSIGNED_PROJECTS" }, ownCashbox: false,
   },
   CUSTOM: { label: "Настроить вручную", modules: [], actions: [], scopes: {}, ownCashbox: false },
 } as const satisfies Record<string, { label: string; modules: readonly ModuleKey[]; actions: readonly ActionPermission[]; scopes: Partial<Record<ScopeKey, ScopeValue>>; ownCashbox: boolean }>;

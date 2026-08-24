@@ -999,6 +999,10 @@ export const attachments = pgTable(
       (): AnyPgColumn => contractVersions.id,
       { onDelete: "restrict", onUpdate: "cascade" },
     ),
+    additionalWorkVersionId: text("additional_work_version_id").references(
+      (): AnyPgColumn => additionalWorkVersions.id,
+      { onDelete: "restrict", onUpdate: "cascade" },
+    ),
     photoRequirementId: text("photo_requirement_id"),
     clientPaymentClaimId: text("client_payment_claim_id").references(
       (): AnyPgColumn => clientPaymentClaims.id,
@@ -1060,6 +1064,7 @@ export const attachments = pgTable(
       table.createdAt,
     ),
     index("idx_attachments_payment_claim").on(table.clientPaymentClaimId),
+    index("idx_attachments_additional_work_version").on(table.additionalWorkVersionId, table.createdAt),
     uniqueIndex("idx_attachments_design_version_unique")
       .on(
         table.designProjectId,
@@ -1086,7 +1091,7 @@ export const attachments = pgTable(
     ),
     check(
       "attachments_category_check",
-      sql`${table.category} IN ('RECEIPT','PROJECT_PHOTO','DAILY_REPORT','HIDDEN_WORK','CONTRACT','ACT','ESTIMATE','INSPECTION','WARRANTY','MEASUREMENT_PLAN','LAYOUT','CONCEPT','VISUALIZATION','WORKING_DRAWINGS','SPECIFICATION','FINAL_ALBUM','CONTRACT_DOCX','CONTRACT_PDF','SIGNED_CONTRACT','CONTRACT_OTHER','OTHER')`,
+      sql`${table.category} IN ('RECEIPT','PROJECT_PHOTO','DAILY_REPORT','HIDDEN_WORK','CONTRACT','ACT','ESTIMATE','INSPECTION','WARRANTY','MEASUREMENT_PLAN','LAYOUT','CONCEPT','VISUALIZATION','WORKING_DRAWINGS','SPECIFICATION','FINAL_ALBUM','CONTRACT_DOCX','CONTRACT_PDF','SIGNED_CONTRACT','CONTRACT_OTHER','ADDITIONAL_WORK','OTHER')`,
     ),
     check(
       "attachments_visibility_check",
@@ -1202,6 +1207,8 @@ export const tasks = pgTable(
     plannedQuantity: numeric("planned_quantity", { precision: 14, scale: 2 }), completedQuantity: numeric("completed_quantity", { precision: 14, scale: 2 }),
     weightWithinStage: numeric("weight_within_stage", { precision: 5, scale: 2 }), plannedStartDate: integer("planned_start_date"), plannedEndDate: integer("planned_end_date"), actualStartDate: integer("actual_start_date"), actualEndDate: integer("actual_end_date"),
     responsibleUserId: text("responsible_user_id").references(() => users.id, { onDelete: "restrict", onUpdate: "cascade" }), plannedDurationDays: integer("planned_duration_days"), clientVisible: integer("client_visible").notNull().default(1), archivedAt: integer("archived_at"),
+    additionalWorkId: text("additional_work_id").references((): AnyPgColumn => additionalWorks.id, { onDelete: "restrict", onUpdate: "cascade" }),
+    additionalWorkVersionId: text("additional_work_version_id").references((): AnyPgColumn => additionalWorkVersions.id, { onDelete: "restrict", onUpdate: "cascade" }),
     clientId: text("client_id").references(() => clients.id, {
       onDelete: "restrict",
       onUpdate: "cascade",
@@ -1226,6 +1233,7 @@ export const tasks = pgTable(
     index("idx_tasks_lead").on(table.leadId),
     index("idx_tasks_creator").on(table.createdByUserId),
     index("idx_tasks_due_date").on(table.deadline),
+    index("idx_tasks_additional_work").on(table.additionalWorkId, table.additionalWorkVersionId),
   ],
 );
 
@@ -1451,6 +1459,28 @@ export const contractEvents = pgTable("contract_events", {
   type: text("type").notNull(), occurredAt: integer("occurred_at").notNull(), metadataJson: jsonb("metadata_json").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
 }, (table) => [index("idx_contract_events_contract_time").on(table.contractId, table.occurredAt)]);
 
+export const additionalWorks = pgTable("additional_works", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull().references(() => projects.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  clientId: text("client_id").notNull().references(() => clients.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  orderId: text("order_id").references(() => orders.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  contractId: text("contract_id").references(() => contracts.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  stageId: text("stage_id").references(() => projectStages.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  number: text("number").notNull(), title: text("title").notNull(), status: text("status").notNull().default("DRAFT"),
+  responsibleUserId: text("responsible_user_id").notNull().references(() => users.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  currentVersionId: text("current_version_id").references((): AnyPgColumn => additionalWorkVersions.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  approvedVersionId: text("approved_version_id").references((): AnyPgColumn => additionalWorkVersions.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  createdByUserId: text("created_by_user_id").notNull().references(() => users.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  approvedByClientPortalUserId: text("approved_by_client_portal_user_id").references((): AnyPgColumn => clientPortalUsers.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  cancelledAt: integer("cancelled_at"), cancellationReason: text("cancellation_reason"), ...timestamps,
+}, table => [
+  unique("additional_works_number_unique").on(table.number),
+  index("idx_additional_works_project_created").on(table.projectId, table.createdAt),
+  index("idx_additional_works_client_status").on(table.clientId, table.status),
+  index("idx_additional_works_responsible_status").on(table.responsibleUserId, table.status),
+  check("additional_works_status_check", sql`${table.status} IN ('DRAFT','READY','SENT','AWAITING_CLIENT_APPROVAL','APPROVED','REJECTED','CANCELLED','SUPERSEDED')`),
+]);
+
 export const additionalWorkVersions = pgTable(
   "additional_work_versions",
   {
@@ -1476,6 +1506,13 @@ export const additionalWorkVersions = pgTable(
       onUpdate: "cascade",
     }),
     approvedAt: integer("approved_at"),
+    reason: text("reason").notNull().default("OTHER"), clientDescription: text("client_description").notNull().default(""), internalComment: text("internal_comment"),
+    scheduleImpactType: text("schedule_impact_type").notNull().default("NO_IMPACT"), sentAt: integer("sent_at"),
+    sentByUserId: text("sent_by_user_id").references(() => users.id, { onDelete: "restrict", onUpdate: "cascade" }), rejectedAt: integer("rejected_at"),
+    clientDecisionComment: text("client_decision_comment"), approvedByClientPortalUserId: text("approved_by_client_portal_user_id").references((): AnyPgColumn => clientPortalUsers.id, { onDelete: "restrict", onUpdate: "cascade" }),
+    manualApprovalReason: text("manual_approval_reason"), taskCreationMode: text("task_creation_mode").notNull().default("NONE"), paymentDueDate: integer("payment_due_date"),
+    scheduleAppliedAt: integer("schedule_applied_at"), scheduleAppliedByUserId: text("schedule_applied_by_user_id").references(() => users.id, { onDelete: "restrict", onUpdate: "cascade" }),
+    createdByUserId: text("created_by_user_id").notNull().references(() => users.id, { onDelete: "restrict", onUpdate: "cascade" }),
     ...timestamps,
   },
   (table) => [
@@ -1486,8 +1523,34 @@ export const additionalWorkVersions = pgTable(
     index("idx_additional_work_project").on(table.projectId),
     index("idx_additional_work_client_approver").on(table.approvedByClientId),
     index("idx_additional_work_user_approver").on(table.approvedByUserId),
+    index("idx_additional_work_versions_container_status").on(table.additionalWorkId, table.status, table.version),
   ],
 );
+
+export const additionalWorkItems = pgTable("additional_work_items", {
+  id: text("id").primaryKey(), additionalWorkVersionId: text("additional_work_version_id").notNull().references(() => additionalWorkVersions.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  position: integer("position").notNull(), name: text("name").notNull(), description: text("description"), quantity: numeric("quantity", { precision: 14, scale: 3 }).notNull(), unit: text("unit").notNull(),
+  clientUnitPriceKopecks: integer("client_unit_price_kopecks").notNull(), clientTotalKopecks: integer("client_total_kopecks").notNull(), internalUnitCostKopecks: integer("internal_unit_cost_kopecks"), ...timestamps,
+}, table => [unique("additional_work_items_position_unique").on(table.additionalWorkVersionId, table.position), index("idx_additional_work_items_version").on(table.additionalWorkVersionId, table.position)]);
+
+export const additionalWorkEvents = pgTable("additional_work_events", {
+  id: text("id").primaryKey(), additionalWorkId: text("additional_work_id").notNull().references(() => additionalWorks.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  additionalWorkVersionId: text("additional_work_version_id").references(() => additionalWorkVersions.id, { onDelete: "restrict", onUpdate: "cascade" }), type: text("type").notNull(),
+  employeeUserId: text("employee_user_id").references(() => users.id, { onDelete: "restrict", onUpdate: "cascade" }), clientPortalUserId: text("client_portal_user_id").references((): AnyPgColumn => clientPortalUsers.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  comment: text("comment"), metadataJson: jsonb("metadata_json").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`), occurredAt: integer("occurred_at").notNull(),
+}, table => [index("idx_additional_work_events_work_time").on(table.additionalWorkId, table.occurredAt)]);
+
+export const additionalWorkProposedTasks = pgTable("additional_work_proposed_tasks", {
+  id: text("id").primaryKey(), additionalWorkVersionId: text("additional_work_version_id").notNull().references(() => additionalWorkVersions.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  stageId: text("stage_id").references(() => projectStages.id, { onDelete: "restrict", onUpdate: "cascade" }), position: integer("position").notNull(), title: text("title").notNull(), description: text("description"),
+  progressType: text("progress_type").notNull().default("BINARY"), quantity: numeric("quantity", { precision: 14, scale: 3 }), unit: text("unit"), typicalDurationDays: integer("typical_duration_days"), clientVisible: integer("client_visible").notNull().default(1), ...timestamps,
+}, table => [unique("additional_work_proposed_tasks_position_unique").on(table.additionalWorkVersionId, table.position), index("idx_additional_work_proposed_tasks_version").on(table.additionalWorkVersionId, table.position)]);
+
+export const additionalWorkTaskLinks = pgTable("additional_work_task_links", {
+  id: text("id").primaryKey(), additionalWorkId: text("additional_work_id").notNull().references(() => additionalWorks.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  additionalWorkVersionId: text("additional_work_version_id").notNull().references(() => additionalWorkVersions.id, { onDelete: "restrict", onUpdate: "cascade" }), proposedTaskId: text("proposed_task_id").notNull().references(() => additionalWorkProposedTasks.id, { onDelete: "restrict", onUpdate: "cascade" }),
+  taskId: text("task_id").notNull().references(() => tasks.id, { onDelete: "restrict", onUpdate: "cascade" }), createdAt: integer("created_at").notNull(),
+}, table => [unique("additional_work_task_links_proposed_unique").on(table.proposedTaskId), unique("additional_work_task_links_task_unique").on(table.taskId), index("idx_additional_work_task_links_version").on(table.additionalWorkVersionId)]);
 
 export const dailyReports = pgTable(
   "daily_reports",
@@ -1597,6 +1660,8 @@ export const obligations = pgTable(
     sourceKey: text("source_key"),
     currency: text("currency").notNull().default("RUB"),
     cancelledAt: integer("cancelled_at"),
+    additionalWorkId: text("additional_work_id").references(() => additionalWorks.id, { onDelete: "restrict", onUpdate: "cascade" }),
+    additionalWorkVersionId: text("additional_work_version_id").references(() => additionalWorkVersions.id, { onDelete: "restrict", onUpdate: "cascade" }),
     ...timestamps,
   },
   (table) => [
@@ -1607,6 +1672,7 @@ export const obligations = pgTable(
     ),
     index("idx_obligations_project").on(table.projectId),
     index("idx_obligations_stage").on(table.stageId),
+    index("idx_obligations_additional_work").on(table.additionalWorkId, table.additionalWorkVersionId),
     uniqueIndex("obligations_source_key_unique").on(table.sourceKey).where(sql`${table.sourceKey} IS NOT NULL`),
   ],
 );
