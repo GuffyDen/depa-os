@@ -5,7 +5,7 @@ import { first, query, transaction } from "./postgres";
 import { AccessError, assertModuleAction, getAccessProfile } from "./permissions";
 import {
   residentialComplexRelationAudit,
-  resolveResidentialComplexReference,
+  resolveResidentialComplexLocation,
 } from "./residential-complexes";
 
 export class ProjectError extends Error {
@@ -15,13 +15,13 @@ export class ProjectError extends Error {
 
 export type ProjectInput = {
   orderId?: unknown;
-  clientId?: unknown; residentialComplex?: unknown; residentialComplexId?: unknown; address?: unknown; apartment?: unknown; areaSqm?: unknown; displayName?: unknown;
+  clientId?: unknown; residentialComplex?: unknown; residentialComplexId?: unknown; residentialComplexAddressId?: unknown; address?: unknown; apartment?: unknown; areaSqm?: unknown; displayName?: unknown;
   responsibleUserId?: unknown; foremanEmployeeId?: unknown; status?: unknown; startDate?: unknown; plannedEndDate?: unknown;
   forecastEndDate?: unknown; actualEndDate?: unknown; contractWorksAmount?: unknown; estimatedMaterialsBudget?: unknown; comment?: unknown;
 };
 
 type ProjectRow = {
-  id: string; order_id: string | null; order_number: string | null; order_type: string | null; client_id: string; client_name: string; client_phone: string; name: string; residential_complex: string | null; residential_complex_id: string | null;
+  id: string; order_id: string | null; order_number: string | null; order_type: string | null; client_id: string; client_name: string; client_phone: string; name: string; residential_complex: string | null; residential_complex_id: string | null; residential_complex_address_id: string | null;
   address: string; apartment: string; area_sqm: string | number | null; responsible_user_id: string; responsible_name: string;
   foreman_employee_id: string | null; foreman_name: string | null; status: ProjectStatus; start_date: number | null; planned_end_date: number | null;
   forecast_end_date: number | null; actual_end_date: number | null; contract_amount_kopecks: number | string;
@@ -29,6 +29,15 @@ type ProjectRow = {
   approved_estimate_version_id: string | null;
   contract_id: string | null; contract_number: string | null; contract_status: string | null;
   created_at: number; updated_at: number;
+};
+
+type ProjectSourceRow = {
+  client_id: string; type: string; project_id: string | null;
+  residential_complex_id: string | null; residential_complex_address_id: string | null;
+  residential_complex: string | null; address: string | null; apartment: string | null;
+  area_sqm: string | number | null; approved_estimate_version_id: string | null;
+  estimate_total_kopecks: string | number | null; estimate_materials_kopecks: string | number | null;
+  contract_id: string | null; contract_status: string | null;
 };
 
 function clean(value: unknown, max: number) {
@@ -57,18 +66,18 @@ function validate(
   input: ProjectInput,
   actor: AuthUser,
   previous?: ProjectRow,
-  residentialComplex?: { id: string; name: string } | null,
+  location?: { residentialComplex: { id: string; name: string } | null; address: { id: string } | null; addressText: string } | null,
 ) {
   const clientId = clean(input.clientId, 100) ?? previous?.client_id ?? null;
   const residentialComplexId =
     input.residentialComplexId === undefined
       ? previous?.residential_complex_id ?? null
       : clean(input.residentialComplexId, 100);
-  const residentialComplexName = residentialComplex?.name ??
+  const residentialComplexName = location?.residentialComplex?.name ??
     (input.residentialComplexId === undefined
       ? clean(input.residentialComplex, 180) ?? previous?.residential_complex ?? null
       : null);
-  const address = input.address === undefined ? previous?.address ?? null : clean(input.address, 300);
+  const address = location?.addressText ?? (input.address === undefined ? previous?.address ?? null : clean(input.address, 300));
   const apartment = input.apartment === undefined ? previous?.apartment ?? null : clean(input.apartment, 40);
   const responsibleUserId = clean(input.responsibleUserId, 100) ?? previous?.responsible_user_id ?? actor.id;
   const status = (clean(input.status, 30) ?? previous?.status ?? "PLANNING") as ProjectStatus;
@@ -83,7 +92,7 @@ function validate(
   const forecastEndDate = input.forecastEndDate === undefined ? previous?.forecast_end_date ?? plannedEndDate : dateSeconds(input.forecastEndDate) ?? plannedEndDate;
   const displayName = input.displayName === undefined ? previous?.name ?? buildProjectName(residentialComplexName, address, apartment) : clean(input.displayName, 240) ?? buildProjectName(residentialComplexName, address, apartment);
   return {
-    clientId, residentialComplex: residentialComplexName, residentialComplexId, address, apartment, areaSqm, displayName, responsibleUserId,
+    clientId, residentialComplex: residentialComplexName, residentialComplexId, residentialComplexAddressId: location?.address?.id ?? null, address, apartment, areaSqm, displayName, responsibleUserId,
     foremanEmployeeId: input.foremanEmployeeId === undefined ? previous?.foreman_employee_id ?? null : clean(input.foremanEmployeeId, 100), status,
     startDate: input.startDate === undefined ? previous?.start_date ?? null : dateSeconds(input.startDate), plannedEndDate, forecastEndDate,
     actualEndDate: input.actualEndDate === undefined ? previous?.actual_end_date ?? null : dateSeconds(input.actualEndDate),
@@ -94,7 +103,7 @@ function validate(
 }
 
 function baseSelect() {
-  return `SELECT p.id,p.order_id,o.number order_number,o.type order_type,p.client_id,c.name AS client_name,c.phone AS client_phone,p.name,COALESCE(rc.name,p.residential_complex) residential_complex,p.residential_complex_id,p.address,p.apartment,p.area_sqm,
+  return `SELECT p.id,p.order_id,o.number order_number,o.type order_type,p.client_id,c.name AS client_name,c.phone AS client_phone,p.name,COALESCE(rc.name,p.residential_complex) residential_complex,p.residential_complex_id,p.residential_complex_address_id,p.address,p.apartment,p.area_sqm,
     p.responsible_user_id,ru.display_name AS responsible_name,p.foreman_employee_id,fe.full_name AS foreman_name,p.status,p.start_date,
     p.planned_end_date,p.forecast_end_date,p.actual_end_date,p.contract_amount_kopecks,p.estimated_materials_budget_kopecks,p.approved_estimate_version_id,p.contract_id,ct.contract_number,ct.status contract_status,p.comment,
     p.created_by_user_id,p.archived_at,p.created_at,p.updated_at
@@ -104,7 +113,7 @@ function baseSelect() {
 function serialize(row: ProjectRow, canViewFinancialPlan = true) {
   return {
     id: row.id, orderId: row.order_id, orderNumber: row.order_number, orderType: row.order_type, clientId: row.client_id, clientName: row.client_name, clientPhone: row.client_phone, displayName: row.name,
-    residentialComplex: row.residential_complex, residentialComplexId: row.residential_complex_id, address: row.address, apartment: row.apartment,
+    residentialComplex: row.residential_complex, residentialComplexId: row.residential_complex_id, residentialComplexAddressId: row.residential_complex_address_id, address: row.address, apartment: row.apartment,
     areaSqm: row.area_sqm == null ? null : Number(row.area_sqm), responsibleUserId: row.responsible_user_id,
     responsibleName: row.responsible_name, foremanEmployeeId: row.foreman_employee_id, foremanName: row.foreman_name,
     status: row.status, startDate: row.start_date, plannedEndDate: row.planned_end_date, forecastEndDate: row.forecast_end_date,
@@ -265,9 +274,9 @@ export async function getProject(actor: AuthUser, projectId: string) {
 export async function createProject(actor: AuthUser, input: ProjectInput) {
   await assertModuleAction(actor, "projects", "projects.create");
   const orderId = clean(input.orderId, 100);
-  let source: { client_id: string; type: string; project_id: string | null; residential_complex_id: string | null; residential_complex: string | null; address: string | null; apartment: string | null; area_sqm: string | number | null; approved_estimate_version_id: string | null; estimate_total_kopecks: string | number | null; estimate_materials_kopecks: string | number | null; contract_id:string|null; contract_status:string|null } | null = null;
+  let source: ProjectSourceRow | null = null;
   if (orderId) {
-    source = await first<{ client_id: string; type: string; project_id: string | null; residential_complex_id: string | null; residential_complex: string | null; address: string | null; apartment: string | null; area_sqm: string | number | null; approved_estimate_version_id: string | null; estimate_total_kopecks: string | number | null; estimate_materials_kopecks: string | number | null; contract_id:string|null; contract_status:string|null }>(`SELECT o.client_id,o.type,p.id project_id,rod.residential_complex_id,COALESCE(rc.name,rod.residential_complex) residential_complex,rod.address,rod.apartment_number apartment,rod.area_sqm,
+    source = await first<ProjectSourceRow>(`SELECT o.client_id,o.type,p.id project_id,rod.residential_complex_id,rod.residential_complex_address_id,COALESCE(rc.name,rod.residential_complex) residential_complex,rod.address,rod.apartment_number apartment,rod.area_sqm,
       rod.approved_estimate_version_id,ev.total_kopecks estimate_total_kopecks,ev.estimated_materials_budget_kopecks estimate_materials_kopecks,ct.id contract_id,ct.status contract_status
       FROM orders o LEFT JOIN projects p ON p.order_id=o.id LEFT JOIN renovation_order_details rod ON rod.order_id=o.id LEFT JOIN residential_complexes rc ON rc.id=rod.residential_complex_id LEFT JOIN estimate_versions ev ON ev.id=rod.approved_estimate_version_id LEFT JOIN contracts ct ON ct.order_id=o.id WHERE o.id=$1 LIMIT 1`, [orderId]);
     const order = source;
@@ -278,6 +287,7 @@ export async function createProject(actor: AuthUser, input: ProjectInput) {
     ...input,
     clientId: input.clientId ?? source?.client_id,
     residentialComplexId: input.residentialComplexId ?? source?.residential_complex_id,
+    residentialComplexAddressId: input.residentialComplexAddressId ?? source?.residential_complex_address_id,
     residentialComplex: input.residentialComplex ?? source?.residential_complex,
     address: input.address ?? source?.address,
     apartment: input.apartment ?? source?.apartment,
@@ -285,8 +295,8 @@ export async function createProject(actor: AuthUser, input: ProjectInput) {
     contractWorksAmount: source?.estimate_total_kopecks == null ? input.contractWorksAmount : Number(source.estimate_total_kopecks) / 100,
     estimatedMaterialsBudget: source?.estimate_materials_kopecks == null ? input.estimatedMaterialsBudget : Number(source.estimate_materials_kopecks) / 100,
   };
-  const residentialComplex = await resolveResidentialComplexReference(effectiveInput.residentialComplexId);
-  const data = validate(effectiveInput, actor, undefined, residentialComplex);
+  const location = await resolveResidentialComplexLocation(effectiveInput.residentialComplexId, effectiveInput.residentialComplexAddressId, effectiveInput.address);
+  const data = validate(effectiveInput, actor, undefined, location);
   await assertAssignmentChange(actor, data.responsibleUserId, data.foremanEmployeeId);
   if (!source?.approved_estimate_version_id) await assertFinancialPlanChange(actor, data.contractWorksAmountKopecks, data.estimatedMaterialsBudgetKopecks);
   const responsible = await assertRelations(data.clientId, data.responsibleUserId, data.foremanEmployeeId);
@@ -295,8 +305,8 @@ export async function createProject(actor: AuthUser, input: ProjectInput) {
   const timestamp = Math.floor(Date.now() / 1000);
   const relationAudit = residentialComplexRelationAudit(actor, "Project", id, null, data.residentialComplexId, timestamp);
   await transaction([
-    { text: `INSERT INTO projects (id,order_id,client_id,name,residential_complex,residential_complex_id,address,apartment,area_sqm,responsible_user_id,manager_employee_id,foreman_employee_id,status,start_date,planned_end_date,forecast_end_date,actual_end_date,contract_amount_kopecks,estimated_materials_budget_kopecks,approved_estimate_version_id,contract_id,comment,created_by_user_id,created_at,updated_at)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)`, params: [id, orderId, data.clientId, data.displayName, data.residentialComplex, data.residentialComplexId, data.address, data.apartment, data.areaSqm, data.responsibleUserId, responsible.employee_id, data.foremanEmployeeId, data.status, data.startDate, data.plannedEndDate, data.forecastEndDate, data.actualEndDate, data.contractWorksAmountKopecks, data.estimatedMaterialsBudgetKopecks, source?.approved_estimate_version_id ?? null, source?.contract_id??null, data.comment, actor.id, timestamp, timestamp] },
+    { text: `INSERT INTO projects (id,order_id,client_id,name,residential_complex,residential_complex_id,residential_complex_address_id,address,apartment,area_sqm,responsible_user_id,manager_employee_id,foreman_employee_id,status,start_date,planned_end_date,forecast_end_date,actual_end_date,contract_amount_kopecks,estimated_materials_budget_kopecks,approved_estimate_version_id,contract_id,comment,created_by_user_id,created_at,updated_at)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)`, params: [id, orderId, data.clientId, data.displayName, data.residentialComplex, data.residentialComplexId, data.residentialComplexAddressId, data.address, data.apartment, data.areaSqm, data.responsibleUserId, responsible.employee_id, data.foremanEmployeeId, data.status, data.startDate, data.plannedEndDate, data.forecastEndDate, data.actualEndDate, data.contractWorksAmountKopecks, data.estimatedMaterialsBudgetKopecks, source?.approved_estimate_version_id ?? null, source?.contract_id??null, data.comment, actor.id, timestamp, timestamp] },
     ...(source?.approved_estimate_version_id ? [{ text: "UPDATE estimates SET project_id=$1,updated_at=$2 WHERE approved_version_id=$3", params: [id, timestamp, source.approved_estimate_version_id] }] : []),
     ...(source?.contract_id ? [{text:"UPDATE contracts SET project_id=$1,updated_at=$2 WHERE id=$3",params:[id,timestamp,source.contract_id]}] : []),
     { text: "INSERT INTO audit_logs (id,actor_user_id,action,entity_type,entity_id,occurred_at,metadata_json) VALUES ($1,$2,'PROJECT_CREATED','Project',$3,$4,$5)", params: [crypto.randomUUID(), actor.id, id, timestamp, JSON.stringify({ orderId, clientId: data.clientId, responsibleUserId: data.responsibleUserId, status: data.status })] },
@@ -310,8 +320,9 @@ export async function updateProject(actor: AuthUser, projectId: string, input: P
   await assertModuleAction(actor, "projects", "projects.edit");
   const before = await visibleRow(actor, projectId);
   const selectedId = input.residentialComplexId === undefined ? before.residential_complex_id : input.residentialComplexId;
-  const residentialComplex = await resolveResidentialComplexReference(selectedId, { allowArchivedId: before.residential_complex_id });
-  const data = validate(input, actor, before, residentialComplex);
+  const selectedAddressId = input.residentialComplexAddressId === undefined ? before.residential_complex_address_id : input.residentialComplexAddressId;
+  const location = await resolveResidentialComplexLocation(selectedId, selectedAddressId, input.address === undefined ? before.address : input.address, { allowArchivedId: before.residential_complex_id });
+  const data = validate(input, actor, before, location);
   await assertAssignmentChange(actor, data.responsibleUserId, data.foremanEmployeeId, before);
   await assertFinancialPlanChange(actor, data.contractWorksAmountKopecks, data.estimatedMaterialsBudgetKopecks, before);
   const responsible = await assertRelations(data.clientId, data.responsibleUserId, data.foremanEmployeeId);
@@ -319,7 +330,7 @@ export async function updateProject(actor: AuthUser, projectId: string, input: P
   const changedFields = [["clientId",before.client_id,data.clientId],["displayName",before.name,data.displayName],["residentialComplex",before.residential_complex,data.residentialComplex],["residentialComplexId",before.residential_complex_id,data.residentialComplexId],["address",before.address,data.address],["apartment",before.apartment,data.apartment],["areaSqm",before.area_sqm==null?null:Number(before.area_sqm),data.areaSqm],["responsibleUserId",before.responsible_user_id,data.responsibleUserId],["foremanEmployeeId",before.foreman_employee_id,data.foremanEmployeeId],["status",before.status,data.status],["startDate",before.start_date,data.startDate],["plannedEndDate",before.planned_end_date,data.plannedEndDate],["forecastEndDate",before.forecast_end_date,data.forecastEndDate],["actualEndDate",before.actual_end_date,data.actualEndDate],["contractWorksAmount",Number(before.contract_amount_kopecks),data.contractWorksAmountKopecks],["estimatedMaterialsBudget",Number(before.estimated_materials_budget_kopecks),data.estimatedMaterialsBudgetKopecks],["comment",before.comment,data.comment]].filter(([,oldValue,newValue])=>oldValue!==newValue).map(([field])=>field);
   if (!changedFields.length) return getProject(actor, projectId);
   const statements = [
-    { text: `UPDATE projects SET client_id=$1,name=$2,residential_complex=$3,residential_complex_id=$4,address=$5,apartment=$6,area_sqm=$7,responsible_user_id=$8,manager_employee_id=$9,foreman_employee_id=$10,status=$11,start_date=$12,planned_end_date=$13,forecast_end_date=$14,actual_end_date=$15,contract_amount_kopecks=$16,estimated_materials_budget_kopecks=$17,comment=$18,updated_at=$19 WHERE id=$20`, params: [data.clientId,data.displayName,data.residentialComplex,data.residentialComplexId,data.address,data.apartment,data.areaSqm,data.responsibleUserId,responsible.employee_id,data.foremanEmployeeId,data.status,data.startDate,data.plannedEndDate,data.forecastEndDate,data.actualEndDate,data.contractWorksAmountKopecks,data.estimatedMaterialsBudgetKopecks,data.comment,timestamp,projectId] },
+    { text: `UPDATE projects SET client_id=$1,name=$2,residential_complex=$3,residential_complex_id=$4,residential_complex_address_id=$5,address=$6,apartment=$7,area_sqm=$8,responsible_user_id=$9,manager_employee_id=$10,foreman_employee_id=$11,status=$12,start_date=$13,planned_end_date=$14,forecast_end_date=$15,actual_end_date=$16,contract_amount_kopecks=$17,estimated_materials_budget_kopecks=$18,comment=$19,updated_at=$20 WHERE id=$21`, params: [data.clientId,data.displayName,data.residentialComplex,data.residentialComplexId,data.residentialComplexAddressId,data.address,data.apartment,data.areaSqm,data.responsibleUserId,responsible.employee_id,data.foremanEmployeeId,data.status,data.startDate,data.plannedEndDate,data.forecastEndDate,data.actualEndDate,data.contractWorksAmountKopecks,data.estimatedMaterialsBudgetKopecks,data.comment,timestamp,projectId] },
     { text: "INSERT INTO audit_logs (id,actor_user_id,action,entity_type,entity_id,occurred_at,metadata_json) VALUES ($1,$2,'PROJECT_UPDATED','Project',$3,$4,$5)", params: [crypto.randomUUID(),actor.id,projectId,timestamp,JSON.stringify({changedFields})] },
   ];
   const relationAudit = residentialComplexRelationAudit(actor, "Project", projectId, before.residential_complex_id, data.residentialComplexId, timestamp);

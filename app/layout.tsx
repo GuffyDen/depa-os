@@ -4,6 +4,7 @@ import { headers } from "next/headers";
 import "./globals.css";
 import "./dark-theme.css";
 import "./residential-complexes.css";
+import "./residential-complex-addresses.css";
 import "./additional-works.css";
 import "./handover.css";
 import "./handover-management.css";

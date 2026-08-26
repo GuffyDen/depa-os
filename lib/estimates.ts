@@ -1,7 +1,7 @@
 import type { AuthUser } from "./auth";
 import { first, query, transaction } from "./postgres";
 import { AccessError, assertModuleAction, getAccessProfile } from "./permissions";
-import { resolveResidentialComplexReference } from "./residential-complexes";
+import { resolveResidentialComplexLocation } from "./residential-complexes";
 
 export type EstimateInput = Record<string, unknown>;
 export type EstimateVersionStatus = "DRAFT" | "SENT" | "APPROVED" | "REJECTED" | "SUPERSEDED";
@@ -12,7 +12,7 @@ export class EstimateError extends Error {
 
 type EstimateRow = {
   id: string; client_id: string; client_name: string; client_phone: string; responsible_user_id: string; responsible_name: string;
-  residential_complex_id: string | null; residential_complex: string | null; address: string; apartment_number: string | null;
+  residential_complex_id: string | null; residential_complex_address_id: string | null; residential_complex: string | null; address: string; apartment_number: string | null;
   area_sqm: string | number | null; source_lead_id: string | null; source_order_id: string | null; project_id: string | null;
   status: "ACTIVE" | "CLOSED"; current_version_id: string; approved_version_id: string | null; created_by_user_id: string;
   archived_at: number | null; created_at: number; updated_at: number; current_version: number; current_status: EstimateVersionStatus;
@@ -68,7 +68,7 @@ function event(actorId: string, estimateId: string, versionId: string | null, ty
 
 function baseSelect() {
   return `SELECT e.id,e.client_id,c.name client_name,c.phone client_phone,e.responsible_user_id,u.display_name responsible_name,
-    e.residential_complex_id,rc.name residential_complex,e.address,e.apartment_number,e.area_sqm,e.source_lead_id,e.source_order_id,e.project_id,
+    e.residential_complex_id,e.residential_complex_address_id,rc.name residential_complex,e.address,e.apartment_number,e.area_sqm,e.source_lead_id,e.source_order_id,e.project_id,
     e.status,e.current_version_id,e.approved_version_id,e.created_by_user_id,e.archived_at,e.created_at,e.updated_at,
     v.version current_version,v.status current_status,v.total_kopecks,v.estimated_materials_budget_kopecks
     FROM estimates e JOIN clients c ON c.id=e.client_id JOIN users u ON u.id=e.responsible_user_id
@@ -77,7 +77,7 @@ function baseSelect() {
 
 function serializeSummary(row: EstimateRow) {
   return { id: row.id, clientId: row.client_id, clientName: row.client_name, clientPhone: row.client_phone, responsibleUserId: row.responsible_user_id,
-    responsibleName: row.responsible_name, residentialComplexId: row.residential_complex_id, residentialComplex: row.residential_complex,
+    responsibleName: row.responsible_name, residentialComplexId: row.residential_complex_id, residentialComplexAddressId: row.residential_complex_address_id, residentialComplex: row.residential_complex,
     address: row.address, apartmentNumber: row.apartment_number, areaSqm: row.area_sqm == null ? null : Number(row.area_sqm),
     sourceLeadId: row.source_lead_id, sourceOrderId: row.source_order_id, projectId: row.project_id, status: row.status,
     currentVersionId: row.current_version_id, currentVersion: Number(row.current_version), currentStatus: row.current_status,
@@ -127,7 +127,7 @@ export async function listEstimates(actor: AuthUser, requestUrl: string) {
   const rows = await query<EstimateRow>(`${baseSelect()}${where} ORDER BY e.created_at DESC,e.id DESC LIMIT ${add(limit + 1)} OFFSET ${add(offset)}`, params);
   const [users, clients] = await Promise.all([
     query<{ id: string; name: string }>("SELECT id,display_name name FROM users WHERE status='ACTIVE' AND role IN ('OWNER','EMPLOYEE') ORDER BY CASE role WHEN 'OWNER' THEN 0 ELSE 1 END,display_name"),
-    query<{ id: string; name: string; phone: string; responsibleUserId: string; residentialComplexId: string | null; residentialComplex: string | null; address: string | null; apartmentNumber: string | null; areaSqm: string | number | null }>(`SELECT c.id,c.name,c.phone,c.responsible_user_id "responsibleUserId",p.residential_complex_id "residentialComplexId",rc.name "residentialComplex",p.address,p.apartment "apartmentNumber",p.area_sqm "areaSqm" FROM clients c LEFT JOIN LATERAL (SELECT * FROM projects p2 WHERE p2.client_id=c.id ORDER BY p2.created_at DESC LIMIT 1) p ON true LEFT JOIN residential_complexes rc ON rc.id=p.residential_complex_id WHERE c.status='ACTIVE'${actor.role !== "OWNER" && access.scopes.clients !== "ALL" ? " AND c.responsible_user_id=$1" : ""} ORDER BY c.name LIMIT 300`, actor.role !== "OWNER" && access.scopes.clients !== "ALL" ? [actor.id] : []),
+    query<{ id: string; name: string; phone: string; responsibleUserId: string; residentialComplexId: string | null; residentialComplexAddressId: string | null; residentialComplex: string | null; address: string | null; apartmentNumber: string | null; areaSqm: string | number | null }>(`SELECT c.id,c.name,c.phone,c.responsible_user_id "responsibleUserId",p.residential_complex_id "residentialComplexId",p.residential_complex_address_id "residentialComplexAddressId",rc.name "residentialComplex",p.address,p.apartment "apartmentNumber",p.area_sqm "areaSqm" FROM clients c LEFT JOIN LATERAL (SELECT * FROM projects p2 WHERE p2.client_id=c.id ORDER BY p2.created_at DESC LIMIT 1) p ON true LEFT JOIN residential_complexes rc ON rc.id=p.residential_complex_id WHERE c.status='ACTIVE'${actor.role !== "OWNER" && access.scopes.clients !== "ALL" ? " AND c.responsible_user_id=$1" : ""} ORDER BY c.name LIMIT 300`, actor.role !== "OWNER" && access.scopes.clients !== "ALL" ? [actor.id] : []),
   ]);
   return { items: rows.slice(0, limit).map(serializeSummary), total: Number(count?.count ?? 0), hasMore: rows.length > limit, nextOffset: rows.length > limit ? offset + limit : null,
     users, clients: clients.map((item) => ({ ...item, areaSqm: item.areaSqm == null ? null : Number(item.areaSqm) })), capabilities: { create: actor.role === "OWNER" || access.actions["estimates.create"] } };
@@ -160,16 +160,16 @@ export async function createEstimate(actor: AuthUser, input: EstimateInput) {
   await assertEstimateAccess(actor, "estimates.create");
   const clientId = idValue(input.clientId), responsibleUserId = idValue(input.responsibleUserId) ?? actor.id;
   const sourceLeadId = idValue(input.sourceLeadId), sourceOrderId = idValue(input.sourceOrderId), projectId = idValue(input.projectId);
-  const address = clean(input.address, 500), apartmentNumber = clean(input.apartmentNumber, 80);
-  if (!clientId || !address) throw new EstimateError("Выберите клиента и укажите адрес.");
+  const apartmentNumber = clean(input.apartmentNumber, 80);
+  if (!clientId) throw new EstimateError("Выберите клиента и укажите адрес.");
   const areaText = clean(input.areaSqm, 30), areaSqm = areaText ? Number(areaText.replace(",", ".")) : null;
   if (areaSqm !== null && (!Number.isFinite(areaSqm) || areaSqm <= 0)) throw new EstimateError("Проверьте площадь.");
   await assertRelations(actor, clientId, responsibleUserId, sourceLeadId, sourceOrderId, projectId);
-  const complex = await resolveResidentialComplexReference(input.residentialComplexId);
+  const location = await resolveResidentialComplexLocation(input.residentialComplexId, input.residentialComplexAddressId, input.address);
   const estimateId = crypto.randomUUID(), versionId = crypto.randomUUID(), timestamp = now(), costAccess = await costCapabilities(actor);
   const material = kopecks(input.estimatedMaterialsBudgetKopecks, true);
   await transaction([
-    { text: "INSERT INTO estimates(id,client_id,responsible_user_id,residential_complex_id,address,apartment_number,area_sqm,source_lead_id,source_order_id,project_id,status,created_by_user_id,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'ACTIVE',$11,$12,$13)", params: [estimateId, clientId, responsibleUserId, complex?.id ?? null, address, apartmentNumber, areaSqm, sourceLeadId, sourceOrderId, projectId, actor.id, timestamp, timestamp] },
+    { text: "INSERT INTO estimates(id,client_id,responsible_user_id,residential_complex_id,residential_complex_address_id,address,apartment_number,area_sqm,source_lead_id,source_order_id,project_id,status,created_by_user_id,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'ACTIVE',$12,$13,$14)", params: [estimateId, clientId, responsibleUserId, location.residentialComplex?.id ?? null, location.address?.id ?? null, location.addressText, apartmentNumber, areaSqm, sourceLeadId, sourceOrderId, projectId, actor.id, timestamp, timestamp] },
     { text: "INSERT INTO estimate_versions(id,estimate_id,project_id,version,total_kopecks,status,estimated_materials_budget_kopecks,planned_duration,client_comment,internal_comment,created_by_user_id,created_at,updated_at) VALUES($1,$2,$3,1,0,'DRAFT',$4,$5,$6,$7,$8,$9,$10)", params: [versionId, estimateId, projectId, material, clean(input.plannedDuration, 300), clean(input.clientComment, 4000), costAccess.viewCost ? clean(input.internalComment, 4000) : null, actor.id, timestamp, timestamp] },
     { text: "UPDATE estimates SET current_version_id=$1 WHERE id=$2", params: [versionId, estimateId] },
     audit(actor.id, "ESTIMATE_CREATED", "Estimate", estimateId, timestamp, { clientId, versionId, version: 1, sourceLeadId, sourceOrderId, projectId }),
@@ -357,7 +357,7 @@ export async function createRenovationFromEstimate(actor: AuthUser, estimateId: 
   const orderId = crypto.randomUUID(), detailId = crypto.randomUUID(), number = await nextOrderNumber(), timestamp = now();
   await transaction([
     { text: "INSERT INTO orders(id,number,client_id,type,title,amount_kopecks,status,responsible_user_id,comment,created_by_user_id,source_lead_id,source_order_id,created_at,updated_at) VALUES($1,$2,$3,'RENOVATION','Ремонт квартиры',$4,'NEW',$5,$6,$7,$8,$9,$10,$11)", params: [orderId, number, estimate.client_id, Number(version.total_kopecks), estimate.responsible_user_id, clean(input.comment, 3000), actor.id, estimate.source_lead_id, estimate.source_order_id, timestamp, timestamp] },
-    { text: "INSERT INTO renovation_order_details(id,order_id,residential_complex,residential_complex_id,address,apartment_number,area_sqm,approved_estimate_version_id,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)", params: [detailId, orderId, estimate.residential_complex, estimate.residential_complex_id, estimate.address, estimate.apartment_number ?? "—", estimate.area_sqm, versionId, timestamp, timestamp] },
+    { text: "INSERT INTO renovation_order_details(id,order_id,residential_complex,residential_complex_id,residential_complex_address_id,address,apartment_number,area_sqm,approved_estimate_version_id,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)", params: [detailId, orderId, estimate.residential_complex, estimate.residential_complex_id, estimate.residential_complex_address_id, estimate.address, estimate.apartment_number ?? "—", estimate.area_sqm, versionId, timestamp, timestamp] },
     audit(actor.id, "ORDER_CREATED", "Order", orderId, timestamp, { type: "RENOVATION", number, clientId: estimate.client_id, approvedEstimateVersionId: versionId }),
     audit(actor.id, "RENOVATION_ORDER_CREATED_FROM_ESTIMATE", "EstimateVersion", versionId, timestamp, { estimateId, orderId, worksTotalKopecks: Number(version.total_kopecks) }),
     event(actor.id, estimateId, versionId, "RENOVATION_ORDER_CREATED_FROM_ESTIMATE", timestamp, { orderId, number }),

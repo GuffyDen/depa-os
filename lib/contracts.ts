@@ -30,7 +30,7 @@ function event(actorId: string, contractId: string, versionId: string | null, ty
 async function permit(actor: AuthUser, action: ContractAction) { await assertModuleAction(actor, "orders", action); }
 
 const baseSelect = `SELECT c.*,cl.name client_name,cl.phone client_phone,u.display_name responsible_name,o.number order_number,o.source_lead_id,
-  rc.name residential_complex,rod.address,rod.apartment_number,rod.area_sqm,cv.version current_version,cv.status current_version_status,
+  rc.name residential_complex,rod.residential_complex_id,rod.residential_complex_address_id,rod.address,rod.apartment_number,rod.area_sqm,cv.version current_version,cv.status current_version_status,
   cv.contract_amount_kopecks,cv.contract_date,p.name project_name
   FROM contracts c JOIN clients cl ON cl.id=c.client_id JOIN users u ON u.id=c.responsible_user_id JOIN orders o ON o.id=c.order_id
   JOIN renovation_order_details rod ON rod.order_id=o.id LEFT JOIN residential_complexes rc ON rc.id=rod.residential_complex_id
@@ -49,7 +49,7 @@ function summary(row: Record<string, unknown>) {
     orderId: row.order_id, orderNumber: row.order_number, projectId: row.project_id, projectName: row.project_name, type: row.type, status: row.status,
     responsibleUserId: row.responsible_user_id, responsibleName: row.responsible_name, currentVersionId: row.current_version_id, currentVersion: Number(row.current_version),
     currentVersionStatus: row.current_version_status, signedVersionId: row.signed_version_id, contractAmountKopecks: Number(row.contract_amount_kopecks), contractDate: row.contract_date,
-    residentialComplex: row.residential_complex, address: row.address, apartmentNumber: row.apartment_number, areaSqm: row.area_sqm == null ? null : Number(row.area_sqm),
+    residentialComplex: row.residential_complex, residentialComplexId: row.residential_complex_id, residentialComplexAddressId: row.residential_complex_address_id, address: row.address, apartmentNumber: row.apartment_number, areaSqm: row.area_sqm == null ? null : Number(row.area_sqm),
     sourceLeadId: row.source_lead_id, cancellationReason: row.cancellation_reason, createdAt: row.created_at, updatedAt: row.updated_at };
 }
 
@@ -77,7 +77,7 @@ async function activeTemplate() { return first<{ id: string; version: number; bo
 export async function createContract(actor: AuthUser, input: ContractInput) {
   await permit(actor, "contracts.create"); const orderId = id(input.orderId); if (!orderId) throw new ContractError("Выберите заказ на ремонт.");
   const access = await getAccessProfile(actor), source = await first<Record<string, unknown>>(`SELECT o.id,o.number,o.client_id,o.responsible_user_id,o.source_lead_id,cl.name client_name,cl.phone,cl.email,
-    rod.address,rod.apartment_number,rod.area_sqm,rod.residential_complex_id,COALESCE(rc.name,rod.residential_complex) residential_complex,rod.approved_estimate_version_id,
+    rod.address,rod.apartment_number,rod.area_sqm,rod.residential_complex_id,rod.residential_complex_address_id,COALESCE(rc.name,rod.residential_complex) residential_complex,rod.approved_estimate_version_id,
     ev.status estimate_status,ev.total_kopecks,ev.estimated_materials_budget_kopecks,ev.planned_duration
     FROM orders o JOIN clients cl ON cl.id=o.client_id JOIN renovation_order_details rod ON rod.order_id=o.id LEFT JOIN residential_complexes rc ON rc.id=rod.residential_complex_id
     LEFT JOIN estimate_versions ev ON ev.id=rod.approved_estimate_version_id WHERE o.id=$1 AND o.type='RENOVATION' LIMIT 1`, [orderId]);
@@ -86,7 +86,7 @@ export async function createContract(actor: AuthUser, input: ContractInput) {
   const existing = await first<{ id: string; contract_number: string }>("SELECT id,contract_number FROM contracts WHERE order_id=$1",[orderId]); if (existing) throw new ContractError("Для этого заказа договор уже создан.",409,{contractId:existing.id,contractNumber:existing.contract_number});
   const contractId=crypto.randomUUID(), versionId=crypto.randomUUID(), timestamp=now(), number=await nextNumber(), company=await companySnapshot(), template=await activeTemplate();
   const client={id:source.client_id,name:source.client_name,phone:source.phone,email:source.email};
-  const property={residentialComplexId:source.residential_complex_id,residentialComplex:source.residential_complex,address:source.address,apartmentNumber:source.apartment_number,areaSqm:source.area_sqm==null?null:Number(source.area_sqm)};
+  const property={residentialComplexId:source.residential_complex_id,residentialComplexAddressId:source.residential_complex_address_id,residentialComplex:source.residential_complex,address:source.address,apartmentNumber:source.apartment_number,areaSqm:source.area_sqm==null?null:Number(source.area_sqm)};
   const terms={plannedDuration:source.planned_duration,paymentTermsText:clean(input.paymentTermsText,4000),warrantyTerm:clean(input.warrantyTerm,500)};
   await transaction([
     {text:"INSERT INTO contracts(id,contract_number,client_id,order_id,type,status,responsible_user_id,created_by_user_id,created_at,updated_at) VALUES($1,$2,$3,$4,'RENOVATION','DRAFT',$5,$6,$7,$8)",params:[contractId,number,source.client_id,orderId,source.responsible_user_id,actor.id,timestamp,timestamp]},

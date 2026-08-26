@@ -24,6 +24,23 @@ test("registry backend provides normalized duplicate checks, lifecycle and audit
   assert.doesNotMatch(service, /DELETE FROM residential_complexes/i);
 });
 
+test("0021 safely backfills many addresses and adds exact restrictive relations", async () => {
+  const migration = await read("drizzle/postgres/0021_residential_complex_addresses.sql");
+  assert.match(migration, /CREATE TABLE residential_complex_addresses/);
+  assert.match(migration, /INSERT INTO residential_complex_addresses[\s\S]*FROM residential_complexes/);
+  assert.match(migration, /Residential Complex address backfill failed/);
+  assert.match(migration, /UNIQUE\(residential_complex_id, normalized_address\)/);
+  assert.match(migration, /UNIQUE\(residential_complex_id, position\)/);
+  for (const table of ["inspections", "design_projects", "renovation_order_details", "projects", "estimates"]) {
+    assert.match(migration, new RegExp(`ALTER TABLE ${table} ADD COLUMN residential_complex_address_id`));
+    assert.match(migration, new RegExp(`${table}_residential_complex_address_owner_fkey`));
+  }
+  assert.match(migration, /prevent_last_residential_complex_address_delete/);
+  assert.match(migration, /ALTER TABLE residential_complexes DROP COLUMN address/);
+  assert.match(migration, /ALTER TABLE residential_complexes DROP COLUMN district/);
+  assert.doesNotMatch(migration, /DELETE FROM residential_complexes|DROP TABLE residential_complexes|TRUNCATE/i);
+});
+
 test("registry permissions protect directory API while selectors remain available in work modules", async () => {
   const [definitions, service, route] = await Promise.all([read("lib/permission-definitions.ts"), read("lib/residential-complexes.ts"), read("app/api/residential-complexes/route.ts")]);
   for (const permission of ["residentialComplexes.view", "residentialComplexes.create", "residentialComplexes.edit", "residentialComplexes.archive"])
@@ -34,13 +51,15 @@ test("registry permissions protect directory API while selectors remain availabl
   assert.doesNotMatch(route, /export async function DELETE/);
 });
 
-test("Inspection, Design and Project store the shared id and preserve legacy text", async () => {
-  const [orders, design, projects] = await Promise.all([read("lib/orders.ts"), read("lib/design.ts"), read("lib/projects.ts")]);
-  for (const source of [orders, design, projects]) {
+test("Inspection, Design, Estimate and Project store the exact address id and preserve snapshot text", async () => {
+  const [orders, design, estimates, projects] = await Promise.all([read("lib/orders.ts"), read("lib/design.ts"), read("lib/estimates.ts"), read("lib/projects.ts")]);
+  for (const source of [orders, design, estimates, projects]) {
     assert.match(source, /residentialComplexId/);
+    assert.match(source, /residentialComplexAddressId/);
     assert.match(source, /residential_complex_id/);
+    assert.match(source, /residential_complex_address_id/);
     assert.match(source, /residential_complex/);
-    assert.match(source, /resolveResidentialComplexReference/);
+    assert.match(source, /resolveResidentialComplexLocation/);
   }
 });
 
@@ -48,7 +67,9 @@ test("conversion flows transfer the registry id without creating duplicate compl
   const [design, projects, renovation] = await Promise.all([read("lib/design.ts"), read("lib/projects.ts"), read("app/renovation-order-card.tsx")]);
   assert.match(design, /sourceLocation/);
   assert.match(design, /inheritedLocation\?\.residential_complex_id/);
+  assert.match(design, /inheritedLocation\?\.residential_complex_address_id/);
   assert.match(projects, /rod\.residential_complex_id/);
+  assert.match(projects, /rod\.residential_complex_address_id/);
   assert.match(renovation, /residentialComplexId: details\.residentialComplexId/);
   assert.doesNotMatch(design, /createResidentialComplex/);
   assert.doesNotMatch(projects, /createResidentialComplex/);

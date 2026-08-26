@@ -12,6 +12,7 @@ type ServiceType = "INSPECTION" | "DESIGN" | "RENOVATION";
 type SchedulePreset = { date: string; startTime: string; endTime: string };
 export type OrderPrefill = {
   residentialComplexId?: string | null;
+  residentialComplexAddressId?: string | null;
   residentialComplex?: string | null;
   address?: string | null;
   apartmentNumber?: string | null;
@@ -311,6 +312,7 @@ export function UniversalOrderForm({
             <ResidentialComplexFields
               initialId={prefill?.residentialComplexId}
               initialName={prefill?.residentialComplex}
+              initialAddressId={prefill?.residentialComplexAddressId}
               initialAddress={prefill?.address}
               canCreate={
                 currentUser.role === "OWNER" ||

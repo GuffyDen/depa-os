@@ -90,9 +90,7 @@ export const residentialComplexes = pgTable(
     name: text("name").notNull(),
     normalizedName: text("normalized_name").notNull(),
     city: text("city").notNull(),
-    address: text("address").notNull(),
     developer: text("developer"),
-    district: text("district"),
     comment: text("comment"),
     status: text("status", { enum: ["ACTIVE", "ARCHIVED"] })
       .notNull()
@@ -111,10 +109,60 @@ export const residentialComplexes = pgTable(
     index("idx_residential_complexes_normalized_name").on(table.normalizedName),
     index("idx_residential_complexes_status").on(table.status),
     index("idx_residential_complexes_city").on(table.city),
-    index("idx_residential_complexes_address").on(table.address),
     check(
       "residential_complexes_status_check",
       sql`${table.status} IN ('ACTIVE','ARCHIVED')`,
+    ),
+  ],
+);
+
+export const residentialComplexAddresses = pgTable(
+  "residential_complex_addresses",
+  {
+    id: text("id").primaryKey(),
+    residentialComplexId: text("residential_complex_id")
+      .notNull()
+      .references(() => residentialComplexes.id, {
+        onDelete: "restrict",
+        onUpdate: "cascade",
+      }),
+    address: text("address").notNull(),
+    normalizedAddress: text("normalized_address").notNull(),
+    position: integer("position").notNull(),
+    ...timestamps,
+  },
+  (table) => [
+    index("idx_residential_complex_addresses_complex").on(
+      table.residentialComplexId,
+      table.position,
+      table.id,
+    ),
+    index("idx_residential_complex_addresses_search").on(
+      table.normalizedAddress,
+    ),
+    unique("residential_complex_addresses_value_unique").on(
+      table.residentialComplexId,
+      table.normalizedAddress,
+    ),
+    unique("residential_complex_addresses_identity_unique").on(
+      table.id,
+      table.residentialComplexId,
+    ),
+    unique("residential_complex_addresses_position_unique").on(
+      table.residentialComplexId,
+      table.position,
+    ),
+    check(
+      "residential_complex_addresses_address_check",
+      sql`length(trim(${table.address})) > 0`,
+    ),
+    check(
+      "residential_complex_addresses_normalized_check",
+      sql`length(trim(${table.normalizedAddress})) > 0`,
+    ),
+    check(
+      "residential_complex_addresses_position_check",
+      sql`${table.position} >= 0`,
     ),
   ],
 );
@@ -204,6 +252,12 @@ export const designProjects = pgTable(
       () => residentialComplexes.id,
       { onDelete: "restrict", onUpdate: "cascade" },
     ),
+    residentialComplexAddressId: text(
+      "residential_complex_address_id",
+    ).references(() => residentialComplexAddresses.id, {
+      onDelete: "restrict",
+      onUpdate: "cascade",
+    }),
     address: text("address").notNull(),
     apartmentNumber: text("apartment_number").notNull(),
     areaSqm: numeric("area_sqm", { precision: 10, scale: 2 }),
@@ -236,6 +290,9 @@ export const designProjects = pgTable(
     index("idx_design_projects_planned_end").on(table.plannedEndDate),
     index("idx_design_projects_residential_complex").on(
       table.residentialComplexId,
+    ),
+    index("idx_design_projects_residential_complex_address").on(
+      table.residentialComplexAddressId,
     ),
     check(
       "design_projects_area_check",
@@ -342,6 +399,12 @@ export const renovationOrderDetails = pgTable(
       () => residentialComplexes.id,
       { onDelete: "restrict", onUpdate: "cascade" },
     ),
+    residentialComplexAddressId: text(
+      "residential_complex_address_id",
+    ).references(() => residentialComplexAddresses.id, {
+      onDelete: "restrict",
+      onUpdate: "cascade",
+    }),
     address: text("address").notNull(),
     apartmentNumber: text("apartment_number").notNull(),
     areaSqm: numeric("area_sqm", { precision: 10, scale: 2 }),
@@ -355,6 +418,9 @@ export const renovationOrderDetails = pgTable(
     unique("renovation_order_details_order_unique").on(table.orderId),
     index("idx_renovation_order_details_residential_complex").on(
       table.residentialComplexId,
+    ),
+    index("idx_renovation_order_details_residential_complex_address").on(
+      table.residentialComplexAddressId,
     ),
     uniqueIndex("idx_renovation_estimate_version_unique")
       .on(table.approvedEstimateVersionId)
@@ -381,6 +447,12 @@ export const inspections = pgTable(
       () => residentialComplexes.id,
       { onDelete: "restrict", onUpdate: "cascade" },
     ),
+    residentialComplexAddressId: text(
+      "residential_complex_address_id",
+    ).references(() => residentialComplexAddresses.id, {
+      onDelete: "restrict",
+      onUpdate: "cascade",
+    }),
     address: text("address").notNull(),
     apartmentNumber: text("apartment_number").notNull(),
     areaSqm: numeric("area_sqm", { precision: 10, scale: 2 }),
@@ -401,6 +473,9 @@ export const inspections = pgTable(
     index("idx_inspections_scheduled").on(table.scheduledAt),
     index("idx_inspections_residential_complex").on(
       table.residentialComplexId,
+    ),
+    index("idx_inspections_residential_complex_address").on(
+      table.residentialComplexAddressId,
     ),
     index("idx_inspections_inspector_schedule").on(
       table.inspectorUserId,
@@ -496,6 +571,12 @@ export const projects = pgTable(
       () => residentialComplexes.id,
       { onDelete: "restrict", onUpdate: "cascade" },
     ),
+    residentialComplexAddressId: text(
+      "residential_complex_address_id",
+    ).references(() => residentialComplexAddresses.id, {
+      onDelete: "restrict",
+      onUpdate: "cascade",
+    }),
     address: text("address").notNull(),
     apartment: text("apartment").notNull(),
     areaSqm: numeric("area_sqm", { precision: 8, scale: 2 }),
@@ -560,6 +641,9 @@ export const projects = pgTable(
     index("idx_projects_client").on(table.clientId),
     index("idx_projects_order").on(table.orderId),
     index("idx_projects_residential_complex").on(table.residentialComplexId),
+    index("idx_projects_residential_complex_address").on(
+      table.residentialComplexAddressId,
+    ),
     index("idx_projects_approved_estimate_version").on(table.approvedEstimateVersionId),
     index("idx_projects_contract").on(table.contractId),
     uniqueIndex("idx_projects_order_unique")
@@ -1300,6 +1384,7 @@ export const estimates = pgTable(
     clientId: text("client_id").notNull().references(() => clients.id, { onDelete: "restrict", onUpdate: "cascade" }),
     responsibleUserId: text("responsible_user_id").notNull().references(() => users.id, { onDelete: "restrict", onUpdate: "cascade" }),
     residentialComplexId: text("residential_complex_id").references(() => residentialComplexes.id, { onDelete: "restrict", onUpdate: "cascade" }),
+    residentialComplexAddressId: text("residential_complex_address_id").references(() => residentialComplexAddresses.id, { onDelete: "restrict", onUpdate: "cascade" }),
     address: text("address").notNull(),
     apartmentNumber: text("apartment_number"),
     areaSqm: numeric("area_sqm", { precision: 10, scale: 2 }),
@@ -1323,6 +1408,7 @@ export const estimates = pgTable(
     index("idx_estimates_client").on(table.clientId),
     index("idx_estimates_responsible").on(table.responsibleUserId),
     index("idx_estimates_residential_complex").on(table.residentialComplexId),
+    index("idx_estimates_residential_complex_address").on(table.residentialComplexAddressId),
     index("idx_estimates_source_lead").on(table.sourceLeadId),
     index("idx_estimates_source_order").on(table.sourceOrderId),
     index("idx_estimates_project").on(table.projectId),

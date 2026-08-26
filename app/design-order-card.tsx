@@ -49,6 +49,7 @@ type Detail = {
   design: {
     id: string;
     residentialComplexId: string | null;
+    residentialComplexAddressId: string | null;
     residentialComplex: string | null;
     address: string;
     apartmentNumber: string;
@@ -235,7 +236,7 @@ export function DesignOrderCard({
   onOpenOrder: (orderId: string) => void;
   canCreateComplex: boolean;
   canCreateEstimate: boolean;
-  onCreateEstimate?: (context: {clientId:string;sourceOrderId:string;responsibleUserId:string;residentialComplexId:string|null;residentialComplex:string|null;address:string;apartmentNumber:string;areaSqm:number|null}) => void;
+  onCreateEstimate?: (context: {clientId:string;sourceOrderId:string;responsibleUserId:string;residentialComplexId:string|null;residentialComplexAddressId:string|null;residentialComplex:string|null;address:string;apartmentNumber:string;areaSqm:number|null}) => void;
 }) {
   const [detail, setDetail] = useState<Detail | null>(null);
   const [tab, setTab] = useState<
@@ -351,7 +352,7 @@ export function DesignOrderCard({
             </span>
           </div>
           <div className="order-card-actions">
-            {canCreateEstimate && onCreateEstimate ? <button className="secondary" onClick={()=>onCreateEstimate({clientId:order.clientId,sourceOrderId:order.id,responsibleUserId:order.responsibleUserId,residentialComplexId:design.residentialComplexId,residentialComplex:design.residentialComplex,address:design.address,apartmentNumber:design.apartmentNumber,areaSqm:design.areaSqm})}>Создать смету на ремонт</button> : null}
+            {canCreateEstimate && onCreateEstimate ? <button className="secondary" onClick={()=>onCreateEstimate({clientId:order.clientId,sourceOrderId:order.id,responsibleUserId:order.responsibleUserId,residentialComplexId:design.residentialComplexId,residentialComplexAddressId:design.residentialComplexAddressId,residentialComplex:design.residentialComplex,address:design.address,apartmentNumber:design.apartmentNumber,areaSqm:design.areaSqm})}>Создать смету на ремонт</button> : null}
             {capabilities.addPayment && (order.remainingKopecks || 0) > 0 ? (
               <button className="primary" onClick={() => onPayment(order)}>
                 ＋ Добавить оплату
@@ -413,7 +414,7 @@ export function DesignOrderCard({
                 );
               }}
             >
-              <ResidentialComplexFields initialId={design.residentialComplexId} initialName={design.residentialComplex} initialAddress={design.address} canCreate={canCreateComplex} />
+              <ResidentialComplexFields initialId={design.residentialComplexId} initialName={design.residentialComplex} initialAddressId={design.residentialComplexAddressId} initialAddress={design.address} canCreate={canCreateComplex} />
               <label>
                 <span>Квартира</span>
                 <input

@@ -4,7 +4,7 @@ import { parseAmountKopecks } from "./finance-rules";
 import { first, query, transaction } from "./postgres";
 import {
   residentialComplexRelationAudit,
-  resolveResidentialComplexReference,
+  resolveResidentialComplexLocation,
 } from "./residential-complexes";
 import {
   AccessError,
@@ -69,6 +69,7 @@ type DesignRow = {
   source_order_id: string | null;
   residential_complex: string | null;
   residential_complex_id: string | null;
+  residential_complex_address_id: string | null;
   address: string;
   apartment_number: string;
   area_sqm: string | number | null;
@@ -124,7 +125,7 @@ function designSelect() {
   return `SELECT dp.id,dp.order_id,o.number order_number,o.client_id,c.name client_name,c.phone client_phone,o.amount_kopecks price_kopecks,
     COALESCE((SELECT SUM(ft.amount_kopecks) FROM financial_transactions ft WHERE ft.order_id=o.id AND ft.type='INCOME'),0) paid_kopecks,
     o.status order_status,o.responsible_user_id,ru.display_name responsible_name,o.source_lead_id,o.source_order_id,
-    COALESCE(rc.name,dp.residential_complex) residential_complex,dp.residential_complex_id,dp.address,dp.apartment_number,dp.area_sqm,dp.designer_employee_id,de.full_name designer_name,
+    COALESCE(rc.name,dp.residential_complex) residential_complex,dp.residential_complex_id,dp.residential_complex_address_id,dp.address,dp.apartment_number,dp.area_sqm,dp.designer_employee_id,de.full_name designer_name,
     dp.planned_start_date,dp.planned_end_date,dp.actual_end_date,dp.status,o.comment order_comment,dp.comment,dp.created_at,dp.updated_at
     FROM design_projects dp JOIN orders o ON o.id=dp.order_id JOIN clients c ON c.id=o.client_id
     JOIN users ru ON ru.id=o.responsible_user_id LEFT JOIN employees de ON de.id=dp.designer_employee_id
@@ -135,12 +136,14 @@ async function sourceLocation(orderId: string | null) {
   if (!orderId) return null;
   return first<{
     residential_complex_id: string | null;
+    residential_complex_address_id: string | null;
     residential_complex: string | null;
     address: string | null;
     apartment_number: string | null;
     area_sqm: string | number | null;
   }>(
     `SELECT COALESCE(i.residential_complex_id,dp.residential_complex_id,rd.residential_complex_id) residential_complex_id,
+      COALESCE(i.residential_complex_address_id,dp.residential_complex_address_id,rd.residential_complex_address_id) residential_complex_address_id,
       COALESCE(irc.name,drc.name,rrc.name,i.residential_complex,dp.residential_complex,rd.residential_complex) residential_complex,
       COALESCE(i.address,dp.address,rd.address) address,
       COALESCE(i.apartment_number,dp.apartment_number,rd.apartment_number) apartment_number,
@@ -339,14 +342,15 @@ export async function createDesignOrder(actor: AuthUser, input: DesignInput) {
     assertOrderSourceRelations(actor, clientId, sourceLeadId, sourceOrderId),
   ]);
   const inheritedLocation = await sourceLocation(sourceOrderId);
-  const address = clean(input.address, 500) || inheritedLocation?.address;
   const apartmentNumber =
     clean(input.apartmentNumber, 80) || inheritedLocation?.apartment_number;
-  if (!address) throw new DesignError("Укажите адрес.");
   if (!apartmentNumber) throw new DesignError("Укажите квартиру.");
-  const residentialComplex = await resolveResidentialComplexReference(
+  const location = await resolveResidentialComplexLocation(
     clean(input.residentialComplexId, 100) ||
       inheritedLocation?.residential_complex_id,
+    clean(input.residentialComplexAddressId, 100) ||
+      inheritedLocation?.residential_complex_address_id,
+    clean(input.address, 500) || inheritedLocation?.address,
   );
   const duplicate = await first<{
     order_id: string;
@@ -355,7 +359,7 @@ export async function createDesignOrder(actor: AuthUser, input: DesignInput) {
     `SELECT o.id order_id,o.number FROM design_projects dp JOIN orders o ON o.id=dp.order_id
       WHERE o.client_id=$1 AND lower(dp.address)=lower($2) AND lower(dp.apartment_number)=lower($3)
       AND o.status NOT IN ('COMPLETED','CANCELLED') ORDER BY o.created_at DESC LIMIT 1`,
-    [clientId, address, apartmentNumber],
+    [clientId, location.addressText, apartmentNumber],
   );
   if (duplicate && input.allowDuplicate !== true)
     throw new DesignError("Возможный дубль дизайн-проекта.", 409, {
@@ -377,7 +381,7 @@ export async function createDesignOrder(actor: AuthUser, input: DesignInput) {
     "DesignProject",
     designProjectId,
     null,
-    residentialComplex?.id ?? null,
+    location.residentialComplex?.id ?? null,
     timestamp,
   );
   const statements = [
@@ -400,16 +404,17 @@ export async function createDesignOrder(actor: AuthUser, input: DesignInput) {
       ],
     },
     {
-      text: `INSERT INTO design_projects(id,order_id,residential_complex,residential_complex_id,address,apartment_number,area_sqm,designer_employee_id,planned_start_date,planned_end_date,status,comment,created_at,updated_at)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'PLANNING',$11,$12,$13)`,
+      text: `INSERT INTO design_projects(id,order_id,residential_complex,residential_complex_id,residential_complex_address_id,address,apartment_number,area_sqm,designer_employee_id,planned_start_date,planned_end_date,status,comment,created_at,updated_at)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'PLANNING',$12,$13,$14)`,
       params: [
         designProjectId,
         orderId,
-        residentialComplex?.name ??
+        location.residentialComplex?.name ??
           clean(input.residentialComplex, 240) ??
           inheritedLocation?.residential_complex,
-        residentialComplex?.id ?? null,
-        address,
+        location.residentialComplex?.id ?? null,
+        location.address?.id ?? null,
+        location.addressText,
         apartmentNumber,
         input.areaSqm === undefined
           ? inheritedLocation?.area_sqm == null
@@ -486,14 +491,16 @@ export async function createRenovationOrder(
     assertOrderSourceRelations(actor, clientId, sourceLeadId, sourceOrderId),
   ]);
   const inheritedLocation = await sourceLocation(sourceOrderId);
-  const address = clean(input.address, 500) || inheritedLocation?.address;
   const apartmentNumber =
     clean(input.apartmentNumber, 80) || inheritedLocation?.apartment_number;
-  if (!address || !apartmentNumber)
+  if (!apartmentNumber)
     throw new DesignError("Заполните адрес ремонта.");
-  const residentialComplex = await resolveResidentialComplexReference(
+  const location = await resolveResidentialComplexLocation(
     clean(input.residentialComplexId, 100) ||
       inheritedLocation?.residential_complex_id,
+    clean(input.residentialComplexAddressId, 100) ||
+      inheritedLocation?.residential_complex_address_id,
+    clean(input.address, 500) || inheritedLocation?.address,
   );
   const sourceOrder = sourceOrderId
     ? await first<{ type: string; design_project_id: string | null }>(
@@ -511,7 +518,7 @@ export async function createRenovationOrder(
     "RenovationOrderDetails",
     detailId,
     null,
-    residentialComplex?.id ?? null,
+    location.residentialComplex?.id ?? null,
     timestamp,
   );
   await transaction([
@@ -534,16 +541,17 @@ export async function createRenovationOrder(
       ],
     },
     {
-      text: `INSERT INTO renovation_order_details(id,order_id,residential_complex,residential_complex_id,address,apartment_number,area_sqm,created_at,updated_at)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      text: `INSERT INTO renovation_order_details(id,order_id,residential_complex,residential_complex_id,residential_complex_address_id,address,apartment_number,area_sqm,created_at,updated_at)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
       params: [
         detailId,
         orderId,
-        residentialComplex?.name ??
+        location.residentialComplex?.name ??
           clean(input.residentialComplex, 240) ??
           inheritedLocation?.residential_complex,
-        residentialComplex?.id ?? null,
-        address,
+        location.residentialComplex?.id ?? null,
+        location.address?.id ?? null,
+        location.addressText,
         apartmentNumber,
         input.areaSqm === undefined
           ? inheritedLocation?.area_sqm == null
@@ -725,6 +733,7 @@ export async function getDesignProject(actor: AuthUser, orderId: string) {
       id: row.id,
       residentialComplex: row.residential_complex,
       residentialComplexId: row.residential_complex_id,
+      residentialComplexAddressId: row.residential_complex_address_id,
       address: row.address,
       apartmentNumber: row.apartment_number,
       areaSqm: row.area_sqm == null ? null : Number(row.area_sqm),
@@ -1062,6 +1071,7 @@ export async function updateDesignProject(
       responsibleUserId: row.responsible_user_id,
       residentialComplex: row.residential_complex,
       residentialComplexId: row.residential_complex_id,
+      residentialComplexAddressId: row.residential_complex_address_id,
       address: row.address,
       apartmentNumber: row.apartment_number,
       areaSqm: row.area_sqm,
@@ -1123,8 +1133,13 @@ export async function updateDesignProject(
     input.residentialComplexId === undefined
       ? row.residential_complex_id
       : clean(input.residentialComplexId, 100);
-  const residentialComplex = await resolveResidentialComplexReference(
+  const residentialComplexAddressId = input.residentialComplexAddressId === undefined
+    ? row.residential_complex_address_id
+    : clean(input.residentialComplexAddressId, 100);
+  const location = await resolveResidentialComplexLocation(
     residentialComplexId,
+    residentialComplexAddressId,
+    input.address === undefined ? row.address : input.address,
     { allowArchivedId: row.residential_complex_id },
   );
   const relationAudit = residentialComplexRelationAudit(
@@ -1150,14 +1165,15 @@ export async function updateDesignProject(
       ],
     },
     {
-      text: `UPDATE design_projects SET residential_complex=$1,residential_complex_id=$2,address=$3,apartment_number=$4,area_sqm=$5,designer_employee_id=$6,
-        planned_start_date=$7,planned_end_date=$8,status=$9,comment=$10,actual_end_date=$11,updated_at=$12 WHERE id=$13`,
+      text: `UPDATE design_projects SET residential_complex=$1,residential_complex_id=$2,residential_complex_address_id=$3,address=$4,apartment_number=$5,area_sqm=$6,designer_employee_id=$7,
+        planned_start_date=$8,planned_end_date=$9,status=$10,comment=$11,actual_end_date=$12,updated_at=$13 WHERE id=$14`,
       params: [
         input.residentialComplexId === undefined
           ? row.residential_complex
-          : residentialComplex?.name ?? null,
+          : location.residentialComplex?.name ?? null,
         residentialComplexId,
-        clean(input.address, 500) || row.address,
+        location.address?.id ?? null,
+        location.addressText,
         clean(input.apartmentNumber, 80) || row.apartment_number,
         input.areaSqm === undefined ? row.area_sqm : area(input.areaSqm),
         designerEmployeeId,

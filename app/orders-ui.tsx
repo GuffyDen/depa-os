@@ -54,6 +54,7 @@ export type Order = {
   inspection: {
     id: string;
     residentialComplexId: string | null;
+    residentialComplexAddressId: string | null;
     residentialComplex: string | null;
     address: string;
     apartmentNumber: string;
@@ -68,6 +69,7 @@ export type Order = {
   design: {
     id: string;
     residentialComplexId: string | null;
+    residentialComplexAddressId: string | null;
     residentialComplex: string | null;
     address: string;
     apartmentNumber: string;
@@ -81,6 +83,7 @@ export type Order = {
   renovation: {
     id: string;
     residentialComplexId: string | null;
+    residentialComplexAddressId: string | null;
     residentialComplex: string | null;
     address: string;
     apartmentNumber: string;
@@ -570,7 +573,7 @@ function OrderCard({
   onPayment: (order: Order) => void;
   onOpenOrder: (orderId: string) => void;
   onCreateRelated: (type: "DESIGN" | "RENOVATION", order: Order) => void;
-  onCreateEstimate?: (context: {clientId:string;sourceOrderId:string;responsibleUserId:string;residentialComplexId:string|null;residentialComplex:string|null;address:string;apartmentNumber:string;areaSqm:number|null}) => void;
+  onCreateEstimate?: (context: {clientId:string;sourceOrderId:string;responsibleUserId:string;residentialComplexId:string|null;residentialComplexAddressId:string|null;residentialComplex:string|null;address:string;apartmentNumber:string;areaSqm:number|null}) => void;
   onOpenEstimate?: (estimateId:string) => void;
   onOpenProject?: (projectId: string) => void;
 }) {
@@ -755,7 +758,7 @@ function OrderCard({
                 Создать дизайн-проект
               </button>
             ) : null}
-            {access.actions["estimates.create"] && o.type === "INSPECTION" && i ? <button className="secondary" onClick={()=>onCreateEstimate?.({clientId:o.clientId,sourceOrderId:o.id,responsibleUserId:o.responsibleUserId,residentialComplexId:i.residentialComplexId,residentialComplex:i.residentialComplex,address:i.address,apartmentNumber:i.apartmentNumber,areaSqm:i.areaSqm})}>Создать смету на ремонт</button> : null}
+            {access.actions["estimates.create"] && o.type === "INSPECTION" && i ? <button className="secondary" onClick={()=>onCreateEstimate?.({clientId:o.clientId,sourceOrderId:o.id,responsibleUserId:o.responsibleUserId,residentialComplexId:i.residentialComplexId,residentialComplexAddressId:i.residentialComplexAddressId,residentialComplex:i.residentialComplex,address:i.address,apartmentNumber:i.apartmentNumber,areaSqm:i.areaSqm})}>Создать смету на ремонт</button> : null}
             {detail.capabilities.edit && o.type === "INSPECTION" ? (
               <button
                 className="secondary"
@@ -1164,7 +1167,7 @@ export function OrdersScreen({
   onPayment: (order: Order) => void;
   onOpenProject?: (projectId: string) => void;
   initialEstimateId?: string | null;
-  initialEstimateContext?: {clientId:string;sourceLeadId?:string|null;sourceOrderId?:string|null;projectId?:string|null;responsibleUserId:string;residentialComplexId?:string|null;residentialComplex?:string|null;address?:string|null;apartmentNumber?:string|null;areaSqm?:number|null} | null;
+  initialEstimateContext?: {clientId:string;sourceLeadId?:string|null;sourceOrderId?:string|null;projectId?:string|null;responsibleUserId:string;residentialComplexId?:string|null;residentialComplexAddressId?:string|null;residentialComplex?:string|null;address?:string|null;apartmentNumber?:string|null;areaSqm?:number|null} | null;
   initialContractId?: string | null;
 }) {
   const router = useRouter();
@@ -1324,6 +1327,7 @@ export function OrdersScreen({
       sourceLeadId: null,
       prefill: {
         residentialComplexId: location?.residentialComplexId,
+        residentialComplexAddressId: location?.residentialComplexAddressId,
         residentialComplex: location?.residentialComplex,
         address: location?.address,
         apartmentNumber: location?.apartmentNumber,
