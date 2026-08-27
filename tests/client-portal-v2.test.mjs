@@ -3,11 +3,12 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
-const [domain, ui, css, baseCss, access, route, photosRoute, clientFiles] = await Promise.all([
+const [domain, ui, css, baseCss, authFixCss, access, route, photosRoute, clientFiles] = await Promise.all([
   read("lib/client-portal.ts"),
   read("app/client/client-portal-ui.tsx"),
   read("app/client/client-portal-v2.css"),
   read("app/client/client-portal.css"),
+  read("app/client/client-auth-layout-fix.css"),
   read("app/clients-ui.tsx"),
   read("app/api/client/portal/route.ts"),
   read("app/api/client/photos/route.ts"),
@@ -51,4 +52,20 @@ test("v2 additions keep touch targets and responsive layout", () => {
   assert.match(access, /clientPortal\.manageAccess/);
   assert.match(photosRoute, /Требуется авторизация клиента/);
   assert.match(ui, /Показать ещё/);
+});
+
+test("public auth grid cannot grow beyond the viewport", () => {
+  assert.match(authFixCss, /minmax\(0, 1\.08fr\) minmax\(0, 0\.92fr\)/);
+  assert.match(authFixCss, /\.cp-auth-brand,[\s\S]*\.cp-auth-card,[\s\S]*min-width: 0/);
+  assert.doesNotMatch(authFixCss, /100vw|overflow-x:\s*hidden/);
+});
+
+test("public auth form controls stay inside the card", () => {
+  assert.match(authFixCss, /\.cp-field input,[\s\S]*width: 100%;[\s\S]*min-width: 0/);
+  assert.match(authFixCss, /\.cp-password > button[\s\S]*min-width: 44px;[\s\S]*min-height: 44px/);
+});
+
+test("public auth mobile inputs use an iOS-safe font size", () => {
+  assert.match(authFixCss, /@media \(max-width: 760px\)[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
+  assert.match(authFixCss, /@media \(max-width: 760px\)[\s\S]*font-size: 16px/);
 });

@@ -1,0 +1,47 @@
+/* Public Client Portal auth screens use zero-minimum grid tracks so intrinsic
+   text and form widths cannot enlarge the page beyond the viewport. */
+.cp-auth {
+  grid-template-columns: minmax(0, 1.08fr) minmax(0, 0.92fr);
+}
+
+.cp-auth-brand,
+.cp-auth-card,
+.cp-field,
+.cp-password {
+  min-width: 0;
+}
+
+.cp-auth-brand h1 {
+  font-size: clamp(46px, 6vw, 104px);
+}
+
+.cp-auth-card {
+  justify-self: center;
+}
+
+.cp-field input,
+.cp-field select,
+.cp-field textarea,
+.cp-header select {
+  width: 100%;
+  min-width: 0;
+}
+
+.cp-password > button {
+  right: 4px;
+  bottom: 2px;
+  min-width: 44px;
+  min-height: 44px;
+}
+
+@media (max-width: 760px) {
+  .cp-auth {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .cp-field input,
+  .cp-field select,
+  .cp-field textarea {
+    font-size: 16px;
+  }
+}
