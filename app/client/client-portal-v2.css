@@ -1,0 +1,140 @@
+.cp-hero.completed {
+  border-color: #28543f;
+  background: linear-gradient(145deg, #17251e, var(--cp-surface));
+}
+
+.cp-latest h2 {
+  margin-top: 10px;
+  font-size: clamp(20px, 3vw, 30px);
+}
+
+.cp-latest p {
+  margin-bottom: 0;
+  color: var(--cp-muted);
+}
+
+.cp-hero > .cp-progress ~ div {
+  margin-top: 20px;
+  padding-top: 18px;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 16px;
+  border-top: 1px solid var(--cp-border);
+}
+
+.cp-hero > .cp-progress ~ div span {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--cp-muted);
+}
+
+.cp-hero > .cp-progress ~ div b {
+  text-align: right;
+}
+
+.cp-photo-grid a {
+  padding: 0;
+  overflow: hidden;
+}
+
+.cp-photo-grid a img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 140px;
+  object-fit: cover;
+}
+
+.cp-photo-grid a small {
+  padding: 10px 12px;
+  background: rgb(17 17 17 / 92%);
+}
+
+.cp-wide {
+  width: 100%;
+  margin-top: 16px;
+}
+
+.cp-more-list {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border: 1px solid var(--cp-border);
+}
+
+.cp-more-list button {
+  min-height: 92px;
+  padding: 18px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  text-align: left;
+  border: 0;
+  border-right: 1px solid var(--cp-border);
+  border-bottom: 1px solid var(--cp-border);
+  background: var(--cp-surface-2);
+  color: var(--cp-text);
+}
+
+.cp-more-list button:nth-child(2n) {
+  border-right: 0;
+}
+
+.cp-more-list button b {
+  color: var(--cp-orange);
+}
+
+.cp-obligations small {
+  margin-top: 4px;
+  color: var(--cp-muted);
+}
+
+@media (max-width: 760px) {
+  .cp-more-list {
+    grid-template-columns: 1fr;
+  }
+
+  .cp-more-list button {
+    border-right: 0;
+  }
+
+  .cp-object-head p {
+    overflow-wrap: anywhere;
+  }
+
+  .cp-hero > .cp-progress ~ div {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .cp-hero > .cp-progress ~ div b {
+    text-align: left;
+  }
+
+  .cp-header-actions button {
+    padding: 0 4px;
+  }
+
+  .cp-bottom button {
+    font-size: 10px;
+  }
+
+  .cp-photo-grid a img {
+    min-height: 130px;
+  }
+}
+
+@media (max-width: 390px) {
+  .cp-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .cp-grid button {
+    border-right: 1px solid var(--cp-border);
+  }
+
+  .cp-grid button:nth-child(2n) {
+    border-right: 0;
+  }
+}

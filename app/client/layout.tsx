@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./client-portal.css";
+import "./client-portal-v2.css";
 import "./client-additional-works.css";
 import "./client-handover.css";
 import "./client-passport.css";
