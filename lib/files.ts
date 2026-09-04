@@ -1,4 +1,4 @@
-import { del, head, type PutBlobResult } from "@vercel/blob";
+import { BlobNotFoundError, del, head, put, type HeadBlobResult, type PutBlobResult } from "@vercel/blob";
 import type { AuthUser } from "./auth";
 import { first, query, transaction } from "./postgres";
 import { AccessError, assertModuleAction, canViewCashbox, canViewContract, canViewDesignProject, canViewProject, getAccessProfile } from "./permissions";
@@ -22,9 +22,13 @@ export const PHOTO_LONG_EDGE_PX = 2400;
 export const RECEIPT_MAX_BYTES = 10 * 1024 * 1024;
 export const PHOTO_MAX_BYTES = 20 * 1024 * 1024;
 export const DOCUMENT_MAX_BYTES = 25 * 1024 * 1024;
+export const FINANCE_SERVER_FALLBACK_MAX_BYTES = 2 * 1024 * 1024;
+export const FINANCE_SERVER_BLOB_UPLOAD_TIMEOUT_MS = 30_000;
+export const FINANCE_SERVER_BLOB_CONFIRM_TIMEOUT_MS = 10_000;
 
 export type UploadClientPayload = {
   attachmentId: string;
+  uploadAttemptId?: string | null;
   originalFilename: string;
   mimeType: string;
   sizeBytes: number;
@@ -62,10 +66,20 @@ type AttachmentRow = {
   visibility: FileVisibility;
   upload_status: "PENDING" | "UPLOADED" | "LINKED" | "FAILED" | "DELETED";
   deleted_at: number | string | null;
+  completed_at: number | string | null;
+  linked_at: number | string | null;
+  metadata_json: Record<string, unknown>;
 };
 
 export class FileError extends Error {
   constructor(message: string, public status = 400) { super(message); }
+}
+
+export class ServerFallbackError extends FileError {
+  constructor(message: string, readonly failureCode: "SERVER_FALLBACK_FAILED" | "SERVER_FALLBACK_PAYLOAD_TOO_LARGE" | "SERVER_BLOB_UPLOAD_FAILED" | "SERVER_BLOB_CONFIRMATION_FAILED", status = 400) {
+    super(message, status);
+    this.name = "ServerFallbackError";
+  }
 }
 
 function nowSeconds() { return Math.floor(Date.now() / 1000); }
@@ -94,6 +108,17 @@ function extensionForMime(mimeType: string) {
 
 function categoryFolder(category: FileCategory) { return category.toLocaleLowerCase("en-US").replaceAll("_", "-"); }
 
+async function withBlobTimeout<T>(operation: (signal: AbortSignal) => Promise<T>, timeoutMs: number) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try { return await operation(controller.signal); }
+  finally { clearTimeout(timeoutId); }
+}
+
+async function confirmedBlobHead(pathname: string, headBlob: typeof head = head) {
+  return withBlobTimeout((abortSignal) => headBlob(pathname, { abortSignal }), FINANCE_SERVER_BLOB_CONFIRM_TIMEOUT_MS);
+}
+
 export function attachmentPath(attachmentId: string, category: FileCategory, mimeType: string) {
   if (!UUID.test(attachmentId)) throw new FileError("Некорректный идентификатор файла.");
   return `depa-os/${categoryFolder(category)}/${attachmentId}.${extensionForMime(mimeType)}`;
@@ -107,6 +132,7 @@ function parsePayload(payload: string | null): UploadClientPayload {
   const category = cleanText(value.category, 40) as FileCategory;
   if (!(FILE_CATEGORIES as readonly string[]).includes(category)) throw new FileError("Неизвестная категория файла.");
   const attachmentId = cleanText(value.attachmentId, 100);
+  const uploadAttemptId = cleanText(value.uploadAttemptId, 100) || null;
   const originalFilename = cleanText(value.originalFilename, 240);
   const mimeType = cleanText(value.mimeType, 100).toLocaleLowerCase("en-US");
   const sizeBytes = Number(value.sizeBytes);
@@ -119,7 +145,7 @@ function parsePayload(payload: string | null): UploadClientPayload {
   if (checksumSha256 && !SHA256.test(checksumSha256)) throw new FileError("Некорректная контрольная сумма файла.");
   if (!["INTERNAL", "PROJECT", "CLIENT"].includes(visibility)) throw new FileError("Некорректная видимость файла.");
   return {
-    attachmentId, originalFilename, mimeType, sizeBytes, checksumSha256, category, visibility, entityType,
+    attachmentId, uploadAttemptId, originalFilename, mimeType, sizeBytes, checksumSha256, category, visibility, entityType,
     entityId: cleanText(value.entityId, 120) || null,
     projectId: cleanText(value.projectId, 120) || null,
     contractVersionId: cleanText(value.contractVersionId, 120) || null,
@@ -194,6 +220,9 @@ export async function prepareAttachmentUpload(actor: AuthUser, pathname: string,
   if (payload.category === "RECEIPT" && payload.entityType === "FINANCIAL_TRANSACTION" && !payload.entityId) {
     throw new FileError("Страница финансов устарела. Обновите её и повторите создание операции.", 409);
   }
+  if (payload.category === "RECEIPT" && payload.entityType === "FINANCIAL_TRANSACTION" && (!payload.uploadAttemptId || !UUID.test(payload.uploadAttemptId))) {
+    throw new FileError("Некорректный идентификатор попытки загрузки.", 409);
+  }
   const isHandoverFile = payload.category.startsWith("HANDOVER_");
   const isDesignFile = DESIGN_DOCUMENT_CATEGORIES.has(payload.category) || ["DesignProject", "DesignStage"].includes(payload.entityType);
   const isContractFile = CONTRACT_CATEGORIES.has(payload.category) || payload.entityType === "ContractVersion";
@@ -226,10 +255,11 @@ export async function prepareAttachmentUpload(actor: AuthUser, pathname: string,
   if (pathname !== expectedPath) throw new FileError("Путь загрузки файла отклонён.");
   const timestamp = nowSeconds();
   const existing = await first<{ uploaded_by_user_id: string; upload_status: string; transaction_id: string | null; project_id: string | null; original_filename: string; mime_type: string; storage_key: string; metadata_json: Record<string, unknown> }>("SELECT uploaded_by_user_id,upload_status,transaction_id,project_id,original_filename,mime_type,storage_key,metadata_json FROM attachments WHERE id=$1 LIMIT 1", [payload.attachmentId]);
-  if (existing && (existing.uploaded_by_user_id !== actor.id || existing.upload_status !== "PENDING")) throw new FileError("Эта загрузка уже использована.", 409);
+  if (existing && ((existing.uploaded_by_user_id !== actor.id && actor.role !== "OWNER") || existing.upload_status !== "PENDING")) throw new FileError("Эта загрузка уже использована.", 409);
   if (existing && (existing.storage_key !== expectedPath || existing.mime_type !== payload.mimeType || existing.original_filename !== payload.originalFilename || existing.transaction_id !== (payload.entityId ?? null) || existing.project_id !== (payload.projectId ?? null))) throw new FileError("Параметры загрузки не соответствуют подготовленному вложению.", 409);
+  if (existing && payload.uploadAttemptId && existing.metadata_json?.uploadAttemptId !== payload.uploadAttemptId) throw new FileError("Попытка загрузки устарела.", 409);
   if (!existing && payload.category === "RECEIPT" && payload.entityId) throw new FileError("Сначала подготовьте вложение в финансовой операции.", 409);
-  if (existing) await query("UPDATE attachments SET checksum_sha256=$1,metadata_json=metadata_json || $2::jsonb,updated_at=$3 WHERE id=$4 AND upload_status='PENDING'", [payload.checksumSha256, JSON.stringify({ optimizedDeclaredSizeBytes: payload.sizeBytes }), timestamp, payload.attachmentId]);
+  if (existing) await query("UPDATE attachments SET checksum_sha256=$1,metadata_json=metadata_json || $2::jsonb,updated_at=$3 WHERE id=$4 AND upload_status='PENDING' AND ($5::text IS NULL OR metadata_json->>'uploadAttemptId'=$5)", [payload.checksumSha256, JSON.stringify({ optimizedDeclaredSizeBytes: payload.sizeBytes, directDestinationHostname: "vercel.com" }), timestamp, payload.attachmentId, payload.uploadAttemptId]);
   if (!existing) {
     await query(`INSERT INTO attachments
       (id,transaction_id,project_id,contract_version_id,additional_work_version_id,handover_id,handover_round_id,handover_defect_id,storage_provider,storage_key,blob_url,original_filename,mime_type,size_bytes,checksum_sha256,uploaded_by_user_id,entity_type,entity_id,category,visibility,upload_status,metadata_json,created_at,updated_at)
@@ -243,46 +273,139 @@ export async function prepareAttachmentUpload(actor: AuthUser, pathname: string,
     addRandomSuffix: false,
     allowOverwrite: Number(existing?.metadata_json?.attemptCount ?? 1) > 1,
     cacheControlMaxAge: 60,
-    tokenPayload: JSON.stringify({ attachmentId: payload.attachmentId, uploadedByUserId: actor.id }),
+    tokenPayload: JSON.stringify({ attachmentId: payload.attachmentId, uploadedByUserId: existing?.uploaded_by_user_id ?? actor.id, uploadAttemptId: payload.uploadAttemptId }),
   };
 }
 
 export async function finalizeAttachmentUpload(blob: PutBlobResult, tokenPayload: string | null | undefined) {
-  let signed: { attachmentId?: string; uploadedByUserId?: string };
-  try { signed = JSON.parse(tokenPayload ?? "null") as { attachmentId?: string; uploadedByUserId?: string }; }
+  let signed: { attachmentId?: string; uploadedByUserId?: string; uploadAttemptId?: string | null };
+  try { signed = JSON.parse(tokenPayload ?? "null") as { attachmentId?: string; uploadedByUserId?: string; uploadAttemptId?: string | null }; }
   catch { throw new FileError("Некорректное подтверждение загрузки."); }
   if (!signed?.attachmentId || !signed.uploadedByUserId) throw new FileError("Подтверждение загрузки не содержит идентификатор.");
-  await finalizeAttachmentMetadata(signed.attachmentId, signed.uploadedByUserId, blob);
+  await finalizeAttachmentMetadata(signed.attachmentId, signed.uploadedByUserId, signed.uploadAttemptId ?? null, blob);
 }
 
-async function finalizeAttachmentMetadata(attachmentId: string, userId: string, blob: Pick<PutBlobResult, "url" | "pathname" | "contentType"> & { size?: number }) {
+async function finalizeAttachmentMetadata(attachmentId: string, userId: string, uploadAttemptId: string | null, blob: Pick<PutBlobResult, "url" | "pathname" | "contentType"> & { size?: number }, confirmedMetadata?: HeadBlobResult) {
   const row = await first<AttachmentRow>("SELECT * FROM attachments WHERE id=$1 LIMIT 1", [attachmentId]);
   if (!row || row.uploaded_by_user_id !== userId || row.deleted_at) throw new FileError("Загрузка файла не найдена.", 404);
+  if (uploadAttemptId && row.metadata_json?.uploadAttemptId !== uploadAttemptId) throw new FileError("Попытка загрузки устарела.", 409);
   if (row.storage_key !== blob.pathname || !blob.url.includes(".private.blob.vercel-storage.com/")) throw new FileError("Blob не соответствует разрешённой загрузке.");
-  const metadata = blob.size == null ? await head(row.storage_key) : blob;
+  const metadata = confirmedMetadata ?? await confirmedBlobHead(row.storage_key);
   const sizeBytes = Number(metadata.size);
-  const mimeType = cleanText(blob.contentType || row.mime_type, 100).toLocaleLowerCase("en-US");
+  const mimeType = cleanText(metadata.contentType || row.mime_type, 100).toLocaleLowerCase("en-US");
   if (!allowedMimeTypes(row.category).includes(mimeType) || sizeBytes <= 0 || sizeBytes > fileLimitBytes(row.category)) throw new FileError("Загруженный файл не прошёл проверку типа или размера.");
   const timestamp = nowSeconds();
   const auditAction = row.transaction_id ? "ATTACHMENT_ADDED" : "FILE_UPLOADED";
   await query(`WITH updated AS (
       UPDATE attachments SET blob_url=$1,mime_type=$2,size_bytes=$3,upload_status=CASE WHEN transaction_id IS NOT NULL OR category='ADDITIONAL_WORK' THEN 'LINKED' ELSE 'UPLOADED' END,completed_at=$4,linked_at=CASE WHEN transaction_id IS NOT NULL OR category='ADDITIONAL_WORK' THEN $4 ELSE linked_at END,updated_at=$5
-      WHERE id=$6 AND uploaded_by_user_id=$7 AND upload_status='PENDING' RETURNING id
+      WHERE id=$6 AND uploaded_by_user_id=$7 AND upload_status='PENDING' AND ($11::text IS NULL OR metadata_json->>'uploadAttemptId'=$11) RETURNING id
     ) INSERT INTO audit_logs (id,actor_user_id,action,entity_type,entity_id,occurred_at,metadata_json)
       SELECT $8,$7,$9,'Attachment',id,$4,$10 FROM updated`,
-  [blob.url, mimeType, sizeBytes, timestamp, timestamp, attachmentId, userId, crypto.randomUUID(), auditAction, JSON.stringify({ category: row.category, mimeType, sizeBytes, transactionId: row.transaction_id })]);
+  [metadata.url, mimeType, sizeBytes, timestamp, timestamp, attachmentId, userId, crypto.randomUUID(), auditAction, JSON.stringify({ category: row.category, mimeType, sizeBytes, transactionId: row.transaction_id, uploadAttemptId }), uploadAttemptId]);
 }
 
-export async function confirmAttachmentUpload(actor: AuthUser, attachmentId: string) {
+export async function confirmAttachmentUpload(actor: AuthUser, attachmentId: string, uploadAttemptId: string | null = null) {
   const row = await first<AttachmentRow>("SELECT * FROM attachments WHERE id=$1 LIMIT 1", [attachmentId]);
-  if (!row || row.uploaded_by_user_id !== actor.id || row.deleted_at) throw new FileError("Файл не найден.", 404);
+  if (!row || (row.uploaded_by_user_id !== actor.id && actor.role !== "OWNER") || row.deleted_at) throw new FileError("Файл не найден.", 404);
+  if (uploadAttemptId && row.metadata_json?.uploadAttemptId !== uploadAttemptId) throw new FileError("Попытка загрузки устарела.", 409);
   if (row.upload_status === "PENDING") {
-    const blob = await head(row.storage_key);
-    await finalizeAttachmentMetadata(row.id, actor.id, blob);
+    const blob = await confirmedBlobHead(row.storage_key);
+    await finalizeAttachmentMetadata(row.id, row.uploaded_by_user_id, uploadAttemptId, blob, blob);
+  } else if (["UPLOADED", "LINKED"].includes(row.upload_status)) {
+    await confirmedBlobHead(row.storage_key);
   }
   const ready = await first<AttachmentRow>("SELECT * FROM attachments WHERE id=$1 LIMIT 1", [attachmentId]);
   if (!ready || !["UPLOADED", "LINKED"].includes(ready.upload_status)) throw new FileError("Загрузка файла ещё не завершена.", 409);
   return ready;
+}
+
+type FinanceServerFallbackInput = {
+  attachmentId: string;
+  transactionId: string;
+  uploadAttemptId: string;
+  checksumSha256: string;
+};
+
+type FinanceServerFallbackHooks = {
+  putBlob?: typeof put;
+  headBlob?: typeof head;
+};
+
+async function assertFinanceFallbackAccess(actor: AuthUser, row: AttachmentRow) {
+  try { await assertModuleAction(actor, "finance", "finance.view"); }
+  catch (error) { if (error instanceof AccessError) throw new ServerFallbackError("Нет права загружать чек этой операции.", "SERVER_FALLBACK_FAILED", 403); throw error; }
+  const finance = await first<{ id: string; cashbox_id: string | null; investment_account_id: string | null; expense_type: string | null }>("SELECT id,cashbox_id,investment_account_id,expense_type FROM financial_transactions WHERE id=$1 LIMIT 1", [row.transaction_id]);
+  if (!finance) throw new ServerFallbackError("Финансовая операция не найдена.", "SERVER_FALLBACK_FAILED", 404);
+  if (actor.role !== "OWNER") {
+    const access = await getAccessProfile(actor);
+    if (finance.cashbox_id && !(await canViewCashbox(actor, finance.cashbox_id))) throw new ServerFallbackError("Операция недоступна.", "SERVER_FALLBACK_FAILED", 403);
+    if (finance.investment_account_id && !access.actions["finance.viewInvestments"]) throw new ServerFallbackError("Операция недоступна.", "SERVER_FALLBACK_FAILED", 403);
+    if (finance.expense_type === "ADMIN" && !access.actions["finance.viewAdministrativeExpenses"]) throw new ServerFallbackError("Операция недоступна.", "SERVER_FALLBACK_FAILED", 403);
+  }
+}
+
+async function digestSha256(blob: Blob) {
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", await blob.arrayBuffer()));
+  return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function hasExpectedFallbackSignature(blob: Blob, mimeType: string) {
+  const bytes = new Uint8Array(await blob.slice(0, 8).arrayBuffer());
+  if (mimeType === "image/jpeg") return bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  if (mimeType === "application/pdf") return bytes.length >= 5 && String.fromCharCode(...bytes.slice(0, 5)) === "%PDF-";
+  return false;
+}
+
+export async function uploadFinanceAttachmentFallback(actor: AuthUser, input: FinanceServerFallbackInput, file: Blob, hooks: FinanceServerFallbackHooks = {}) {
+  const attachmentId = cleanText(input.attachmentId, 100);
+  const transactionId = cleanText(input.transactionId, 100);
+  const uploadAttemptId = cleanText(input.uploadAttemptId, 100);
+  const declaredChecksum = cleanText(input.checksumSha256, 64).toLocaleLowerCase("en-US");
+  if (!UUID.test(attachmentId) || !UUID.test(transactionId) || !UUID.test(uploadAttemptId) || !SHA256.test(declaredChecksum)) throw new ServerFallbackError("Некорректные параметры резервной загрузки.", "SERVER_FALLBACK_FAILED");
+  if (file.size <= 0 || file.size > FINANCE_SERVER_FALLBACK_MAX_BYTES) throw new ServerFallbackError("Подготовленный файл превышает лимит резервной загрузки 2 МБ.", "SERVER_FALLBACK_PAYLOAD_TOO_LARGE", 413);
+  const row = await first<AttachmentRow>("SELECT * FROM attachments WHERE id=$1 AND deleted_at IS NULL LIMIT 1", [attachmentId]);
+  if (!row || row.transaction_id !== transactionId || row.entity_id !== transactionId || row.entity_type !== "FINANCIAL_TRANSACTION" || row.category !== "RECEIPT") throw new ServerFallbackError("Вложение финансовой операции не найдено.", "SERVER_FALLBACK_FAILED", 404);
+  if (row.uploaded_by_user_id !== actor.id && actor.role !== "OWNER") throw new ServerFallbackError("Нет права продолжить эту загрузку.", "SERVER_FALLBACK_FAILED", 403);
+  await assertFinanceFallbackAccess(actor, row);
+  if (row.metadata_json?.uploadAttemptId !== uploadAttemptId) throw new ServerFallbackError("Попытка загрузки устарела.", "SERVER_FALLBACK_FAILED", 409);
+  if (row.storage_key !== attachmentPath(row.id, "RECEIPT", row.mime_type) || !["image/jpeg", "application/pdf"].includes(row.mime_type) || file.type !== row.mime_type) throw new ServerFallbackError("Файл не соответствует подготовленному вложению.", "SERVER_FALLBACK_FAILED", 409);
+  if (!(await hasExpectedFallbackSignature(file, row.mime_type))) throw new ServerFallbackError("Содержимое файла не соответствует заявленному MIME-типу.", "SERVER_FALLBACK_FAILED", 415);
+  const actualChecksum = await digestSha256(file);
+  if (actualChecksum !== declaredChecksum || (row.checksum_sha256 && row.checksum_sha256 !== actualChecksum)) throw new ServerFallbackError("Контрольная сумма резервной загрузки не совпала.", "SERVER_FALLBACK_FAILED", 409);
+  const headBlob = hooks.headBlob ?? head;
+  if (row.upload_status === "LINKED") {
+    try { await confirmedBlobHead(row.storage_key, headBlob); }
+    catch { throw new ServerFallbackError("Связанный Blob не прошёл повторную проверку.", "SERVER_BLOB_CONFIRMATION_FAILED", 502); }
+    return { ok: true, status: "LINKED" as const, idempotent: true, uploadDurationMs: 0, confirmationDurationMs: 0 };
+  }
+  if (row.upload_status !== "PENDING" || row.blob_url || row.completed_at || row.linked_at) throw new ServerFallbackError("Вложение не находится в ожидаемом состоянии загрузки.", "SERVER_FALLBACK_FAILED", 409);
+  const fallbackStartedAt = performance.now();
+  await query("UPDATE attachments SET checksum_sha256=$1,metadata_json=metadata_json || $2::jsonb,updated_at=$3 WHERE id=$4 AND upload_status='PENDING' AND metadata_json->>'uploadAttemptId'=$5", [actualChecksum, JSON.stringify({ fallbackUsed: true, pathUsed: "SERVER_FALLBACK", fallbackStartedAt: nowSeconds(), fallbackPayloadBytes: file.size }), nowSeconds(), row.id, uploadAttemptId]);
+  let existingBlob: HeadBlobResult | null = null;
+  try { existingBlob = await confirmedBlobHead(row.storage_key, headBlob); }
+  catch (error) { if (!(error instanceof BlobNotFoundError) && (error as { code?: string })?.code !== "not_found") throw new ServerFallbackError("Не удалось проверить Blob перед резервной загрузкой.", "SERVER_BLOB_CONFIRMATION_FAILED", 502); }
+  let uploadDurationMs = 0;
+  if (!existingBlob) {
+    const uploadStartedAt = performance.now();
+    try {
+      await withBlobTimeout((abortSignal) => (hooks.putBlob ?? put)(row.storage_key, file, { access: "private", contentType: row.mime_type, addRandomSuffix: false, allowOverwrite: Number(row.metadata_json?.attemptCount ?? 1) > 1, cacheControlMaxAge: 60, abortSignal }), FINANCE_SERVER_BLOB_UPLOAD_TIMEOUT_MS);
+      uploadDurationMs = Math.round(performance.now() - uploadStartedAt);
+    } catch {
+      try { existingBlob = await confirmedBlobHead(row.storage_key, headBlob); }
+      catch { throw new ServerFallbackError("Vercel Blob отклонил резервную загрузку.", "SERVER_BLOB_UPLOAD_FAILED", 502); }
+    }
+  }
+  const confirmationStartedAt = performance.now();
+  let confirmed: HeadBlobResult;
+  try { confirmed = existingBlob ?? await confirmedBlobHead(row.storage_key, headBlob); }
+  catch { throw new ServerFallbackError("Blob не найден после резервной загрузки.", "SERVER_BLOB_CONFIRMATION_FAILED", 502); }
+  const confirmationDurationMs = Math.round(performance.now() - confirmationStartedAt);
+  if (confirmed.pathname !== row.storage_key || confirmed.size !== file.size || confirmed.contentType !== row.mime_type || !confirmed.url.includes(".private.blob.vercel-storage.com/")) throw new ServerFallbackError("Blob не прошёл проверку пути, типа или размера.", "SERVER_BLOB_CONFIRMATION_FAILED", 502);
+  await finalizeAttachmentMetadata(row.id, row.uploaded_by_user_id, uploadAttemptId, confirmed, confirmed);
+  const ready = await first<AttachmentRow>("SELECT * FROM attachments WHERE id=$1 LIMIT 1", [row.id]);
+  if (!ready || ready.upload_status !== "LINKED") throw new ServerFallbackError("Вложение не перешло в статус LINKED.", "SERVER_BLOB_CONFIRMATION_FAILED", 409);
+  await query("UPDATE attachments SET metadata_json=metadata_json || $1::jsonb,updated_at=$2 WHERE id=$3 AND upload_status='LINKED' AND metadata_json->>'uploadAttemptId'=$4", [JSON.stringify({ fallbackUsed: true, pathUsed: "SERVER_FALLBACK", fallbackUploadMs: uploadDurationMs, fallbackConfirmationMs: confirmationDurationMs, fallbackCompletedAt: nowSeconds() }), nowSeconds(), row.id, uploadAttemptId]);
+  return { ok: true, status: "LINKED" as const, idempotent: false, uploadDurationMs: uploadDurationMs || Math.round(performance.now() - fallbackStartedAt), confirmationDurationMs };
 }
 
 export async function cleanupUnlinkedAttachment(actor: AuthUser, attachmentId: string, reason = "OPERATION_FAILED") {

@@ -31,7 +31,7 @@ export async function PATCH(request: Request) {
   const user = await getRequestUser(request);
   const log = createRequestLogger(request, { route: "/api/finance/attachments", action: "FINANCE_ATTACHMENT_STATUS", actorType: user ? "EMPLOYEE" : "ANONYMOUS", actorId: user?.id ?? null });
   if (!user) return log.json({ error: "Требуется авторизация." }, { status: 401 });
-  let body: { attachmentId?: unknown; status?: unknown; failureCode?: unknown; failureStage?: unknown; telemetry?: unknown; processing?: unknown };
+  let body: { attachmentId?: unknown; uploadAttemptId?: unknown; status?: unknown; failureCode?: unknown; failureStage?: unknown; telemetry?: unknown; processing?: unknown };
   try { body = await request.json() as typeof body; }
   catch (error) { log.failure("FINANCE_ATTACHMENT_STATUS_FAILURE", error, { errorCode: "INVALID_JSON" }); return log.json({ error: "Некорректные параметры вложения." }, { status: 400 }); }
   if (body.status !== "FAILED" && body.status !== "UPLOADED") return log.json({ error: "Некорректный статус вложения." }, { status: 400 });

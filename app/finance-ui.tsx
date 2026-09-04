@@ -431,6 +431,7 @@ function TransactionDetailModal({ transaction, canEdit, canAcceptAttention, onCl
         file, draft, transactionId: transaction.id, projectId: transaction.projectId,
         onPhase: (phase) => {
           if (phase === "uploading") setUploadNotice(`Загружаем ${pairs.length === 1 ? "1 файл" : `${pairs.length} файла`}…`);
+          if (phase === "fallback") setUploadNotice("Не удалось загрузить напрямую. Пробуем резервный способ…");
           if (phase === "ready" || phase === "failed") setAttachments((current) => current.map((item) => item.id === draft.attachmentId ? { ...item, status: phase === "ready" ? "LINKED" : "FAILED" } : item));
         },
       })));

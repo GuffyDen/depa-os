@@ -21,6 +21,7 @@
     "test:db:down": "NODE_ENV=test node --env-file=.env.test scripts/test-db.mjs down",
     "test:integration": "NODE_ENV=test node --env-file=.env.test --experimental-strip-types --test tests/postgres/*.test.mjs",
     "test:e2e": "NODE_ENV=test node --env-file=.env.test scripts/run-e2e.mjs",
+    "test:e2e:finance-upload": "NODE_ENV=test node --env-file=.env.test scripts/run-finance-upload-fallback-e2e.mjs",
     "build:cloudflare": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext build"
   },
   "dependencies": {
