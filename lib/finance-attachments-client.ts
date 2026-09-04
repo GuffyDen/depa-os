@@ -1,5 +1,9 @@
 export const FINANCE_ATTACHMENT_ACCEPT = ".jpg,.jpeg,.png,.webp,.heic,.heif,.pdf,image/jpeg,image/png,image/webp,image/heic,image/heif,application/pdf";
 export const FINANCE_ATTACHMENT_MAX_ORIGINAL_BYTES = 25 * 1024 * 1024;
+export const FINANCE_HEIC_CONVERSION_TIMEOUT_MS = 20_000;
+export const FINANCE_IMAGE_COMPRESSION_TIMEOUT_MS = 20_000;
+export const FINANCE_BLOB_UPLOAD_TIMEOUT_MS = 90_000;
+export const FINANCE_ATTACHMENT_CONFIRM_TIMEOUT_MS = 10_000;
 
 export type FinanceAttachmentDraft = {
   attachmentId: string;
@@ -10,6 +14,24 @@ export type FinanceAttachmentDraft = {
 };
 
 type UploadPhase = "preparing" | "uploading" | "ready" | "failed";
+
+type LifecycleDetail = string | number | boolean | null | undefined;
+
+export function logFinanceLifecycle(stage: string, details: Record<string, LifecycleDetail> = {}) {
+  console.info("FINANCE_ATTACHMENT_LIFECYCLE", { stage, ...details });
+}
+
+export async function financePromiseWithTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string) {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => { timeoutId = setTimeout(() => reject(new Error(message)), timeoutMs); }),
+    ]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+}
 
 function inferredMimeType(file: File) {
   const declared = file.type.toLocaleLowerCase("en-US");
@@ -42,23 +64,33 @@ export function createFinanceAttachmentDraft(file: File): FinanceAttachmentDraft
   };
 }
 
-export async function prepareFinanceAttachmentFile(file: File, draft: FinanceAttachmentDraft) {
+export async function prepareFinanceAttachmentFile(file: File, draft: FinanceAttachmentDraft, traceId = crypto.randomUUID()) {
   if (draft.mimeType === "application/pdf") return file;
   let source = file;
   if (draft.originalMimeType === "image/heic" || draft.originalMimeType === "image/heif") {
-    const { heicTo } = await import("heic-to/next");
-    const blob = await heicTo({ blob: file, type: "image/jpeg", quality: 0.92 });
+    const conversionStartedAt = performance.now();
+    logFinanceLifecycle("heic_conversion_started", { traceId, attachmentId: draft.attachmentId });
+    const blob = await financePromiseWithTimeout((async () => {
+      const { heicTo } = await import("heic-to/next");
+      return heicTo({ blob: file, type: "image/jpeg", quality: 0.92 });
+    })(), FINANCE_HEIC_CONVERSION_TIMEOUT_MS, "Не удалось обработать HEIC за отведённое время.");
+    logFinanceLifecycle("heic_conversion_finished", { traceId, attachmentId: draft.attachmentId, durationMs: Math.round(performance.now() - conversionStartedAt) });
     source = new File([blob], `${file.name.replace(/\.(heic|heif)$/iu, "")}.jpg`, { type: "image/jpeg", lastModified: file.lastModified });
   }
-  const { default: imageCompression } = await import("browser-image-compression");
-  return imageCompression(source, {
-    maxSizeMB: 1.1,
-    maxWidthOrHeight: 1800,
-    initialQuality: 0.84,
-    fileType: "image/jpeg",
-    useWebWorker: true,
-    preserveExif: false,
-  });
+  const compressionStartedAt = performance.now();
+  const optimized = await financePromiseWithTimeout((async () => {
+    const { default: imageCompression } = await import("browser-image-compression");
+    return imageCompression(source, {
+      maxSizeMB: 1.1,
+      maxWidthOrHeight: 1800,
+      initialQuality: 0.84,
+      fileType: "image/jpeg",
+      useWebWorker: true,
+      preserveExif: false,
+    });
+  })(), FINANCE_IMAGE_COMPRESSION_TIMEOUT_MS, "Не удалось сжать изображение за отведённое время.");
+  logFinanceLifecycle("compression_finished", { traceId, attachmentId: draft.attachmentId, durationMs: Math.round(performance.now() - compressionStartedAt), optimizedSizeBytes: optimized.size });
+  return optimized;
 }
 
 async function sha256(file: File) {
@@ -72,22 +104,26 @@ export async function uploadFinanceAttachment({
   transactionId,
   projectId,
   onPhase,
+  traceId = crypto.randomUUID(),
 }: {
   file: File;
   draft: FinanceAttachmentDraft;
   transactionId: string;
   projectId: string | null;
   onPhase?: (phase: UploadPhase) => void;
+  traceId?: string;
 }) {
   const startedAt = performance.now();
   try {
     onPhase?.("preparing");
-    const optimized = await prepareFinanceAttachmentFile(file, draft);
+    logFinanceLifecycle("attachment_preprocessing_started", { traceId, attachmentId: draft.attachmentId, transactionId, originalMimeType: draft.originalMimeType, originalSizeBytes: draft.originalSizeBytes });
+    const optimized = await prepareFinanceAttachmentFile(file, draft, traceId);
     const preparationMs = Math.round(performance.now() - startedAt);
     const checksumSha256 = await sha256(optimized);
     onPhase?.("uploading");
+    logFinanceLifecycle("blob_upload_started", { traceId, attachmentId: draft.attachmentId, transactionId, optimizedSizeBytes: optimized.size, preparationMs });
     const { upload } = await import("@vercel/blob/client");
-    await upload(`depa-os/receipt/${draft.attachmentId}.${draft.mimeType === "application/pdf" ? "pdf" : "jpg"}`, optimized, {
+    await financePromiseWithTimeout(upload(`depa-os/receipt/${draft.attachmentId}.${draft.mimeType === "application/pdf" ? "pdf" : "jpg"}`, optimized, {
       access: "private",
       handleUploadUrl: "/api/files/upload",
       contentType: draft.mimeType,
@@ -104,15 +140,16 @@ export async function uploadFinanceAttachment({
         entityId: transactionId,
         projectId,
       }),
-    });
+    }), FINANCE_BLOB_UPLOAD_TIMEOUT_MS, "Загрузка файла не завершилась за отведённое время.");
+    logFinanceLifecycle("blob_upload_finished", { traceId, attachmentId: draft.attachmentId, transactionId, durationMs: Math.round(performance.now() - startedAt) - preparationMs });
     let confirmed = false;
     for (let attempt = 0; attempt < 3 && !confirmed; attempt += 1) {
       if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, attempt * 300));
-      const response = await fetch("/api/finance/attachments", {
+      const response = await financePromiseWithTimeout(fetch("/api/finance/attachments", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ attachmentId: draft.attachmentId, status: "UPLOADED" }),
-      });
+      }), FINANCE_ATTACHMENT_CONFIRM_TIMEOUT_MS, "Подтверждение загрузки не завершилось за отведённое время.");
       if (response.ok) confirmed = true;
       else if (response.status !== 409 || attempt === 2) {
         const result = await response.json().catch(() => ({})) as { error?: string };
@@ -120,6 +157,7 @@ export async function uploadFinanceAttachment({
       }
     }
     if (!confirmed) throw new Error("Не удалось подтвердить загрузку файла.");
+    logFinanceLifecycle("attachment_link_confirmed", { traceId, attachmentId: draft.attachmentId, transactionId });
     onPhase?.("ready");
     console.info("FINANCE_ATTACHMENT_UPLOAD_SUCCESS", {
       attachmentId: draft.attachmentId,
@@ -134,11 +172,12 @@ export async function uploadFinanceAttachment({
     return { originalSizeBytes: draft.originalSizeBytes, optimizedSizeBytes: optimized.size };
   } catch (error) {
     onPhase?.("failed");
-    await fetch("/api/finance/attachments", {
+    await financePromiseWithTimeout(fetch("/api/finance/attachments", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ attachmentId: draft.attachmentId, status: "FAILED" }),
-    }).catch(() => undefined);
+    }), FINANCE_ATTACHMENT_CONFIRM_TIMEOUT_MS, "Не удалось сохранить статус ошибки вложения.").catch(() => undefined);
+    logFinanceLifecycle("attachment_failed", { traceId, attachmentId: draft.attachmentId, transactionId, durationMs: Math.round(performance.now() - startedAt), error: error instanceof Error ? error.message : "UNKNOWN_ERROR" });
     console.error("FINANCE_ATTACHMENT_UPLOAD_FAILURE", {
       attachmentId: draft.attachmentId,
       transactionId,

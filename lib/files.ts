@@ -191,6 +191,9 @@ async function assertAdditionalWorkFileAccess(actor: AuthUser, versionId: string
 
 export async function prepareAttachmentUpload(actor: AuthUser, pathname: string, clientPayload: string | null) {
   const payload = parsePayload(clientPayload);
+  if (payload.category === "RECEIPT" && payload.entityType === "FINANCIAL_TRANSACTION" && !payload.entityId) {
+    throw new FileError("Страница финансов устарела. Обновите её и повторите создание операции.", 409);
+  }
   const isHandoverFile = payload.category.startsWith("HANDOVER_");
   const isDesignFile = DESIGN_DOCUMENT_CATEGORIES.has(payload.category) || ["DesignProject", "DesignStage"].includes(payload.entityType);
   const isContractFile = CONTRACT_CATEGORIES.has(payload.category) || payload.entityType === "ContractVersion";
