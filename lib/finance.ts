@@ -1,5 +1,5 @@
 import type { AuthUser } from "./auth";
-import { confirmAttachmentUpload, FileError } from "./files";
+import { attachmentPath, confirmAttachmentUpload, FileError } from "./files";
 import { first, query, transaction } from "./postgres";
 import { FINANCE_CATEGORY_GROUPS, categoryRequiresReceipt, financeCategoryLabel } from "./finance-categories";
 import { INCOME_PURPOSES, investmentBalance, parseAmountKopecks, projectLedgerTotals, transferPreview, validateAllocations, validateExpense, validateInvestmentRepayment, type ExpenseKind, type FinanceOperationType } from "./finance-rules";
@@ -45,6 +45,7 @@ type TransactionRow = {
   created_at: string | number;
   attachment_count: string | number;
   attachment_id: string | null;
+  attachments_json: unknown;
   allocations_json: unknown;
 };
 
@@ -101,6 +102,7 @@ export class FinanceError extends Error {
 function nowSeconds() { return Math.floor(Date.now() / 1000); }
 function number(value: string | number | null | undefined) { return Number(value ?? 0); }
 function cleanText(value: unknown, max = 500) { return typeof value === "string" ? value.trim().slice(0, max) : ""; }
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 function professionalCashboxName(value: string | null | undefined) {
   return String(value ?? "").replaceAll("Касса \u041f\u0430\u0448\u0438", "Касса Павла").replaceAll("Касса \u041f\u0430\u0445\u0438", "Касса Павла");
 }
@@ -110,6 +112,21 @@ function parseAllocationsJson(value: unknown) {
     const row = item as { id?: unknown; projectId?: unknown; projectName?: unknown; amountKopecks?: unknown; purpose?: unknown };
     return { id: String(row.id ?? ""), projectId: String(row.projectId ?? ""), projectName: String(row.projectName ?? ""), amountKopecks: number(row.amountKopecks as string | number), purpose: String(row.purpose ?? "MATERIALS") };
   });
+}
+
+function parseAttachmentsJson(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => {
+    const row = item as { id?: unknown; originalFilename?: unknown; mimeType?: unknown; sizeBytes?: unknown; status?: unknown; createdAt?: unknown };
+    return {
+      id: cleanText(row.id, 100),
+      originalFilename: cleanText(row.originalFilename, 240),
+      mimeType: cleanText(row.mimeType, 100),
+      sizeBytes: number(row.sizeBytes as string | number | undefined),
+      status: cleanText(row.status, 20) as "PENDING" | "LINKED" | "FAILED",
+      createdAt: number(row.createdAt as string | number | undefined),
+    };
+  }).filter((item) => item.id);
 }
 
 function personalCashboxName(user: Pick<AuthUser, "id" | "name">) {
@@ -229,6 +246,7 @@ function serializeTransaction(row: TransactionRow) {
     originalTransactionId: row.original_transaction_id, projectId: row.project_id, projectName: row.project_name, clientId: row.client_id,
     category: row.category, source: row.source, purpose: row.purpose, title: row.title, comment: row.comment, showToClient: Boolean(number(row.show_to_client)),
     authorUserId: row.author_user_id, authorName: row.author_name, createdAt: number(row.created_at), attachmentCount: number(row.attachment_count), attachmentId: row.attachment_id,
+    attachments: parseAttachmentsJson(row.attachments_json),
     allocations: parseAllocationsJson(row.allocations_json),
   };
 }
@@ -306,6 +324,7 @@ export async function getFinanceOverview(actor: AuthUser) {
     query<TransactionRow>(`SELECT ft.*, source_box.name AS cashbox_name, destination_box.name AS destination_cashbox_name, ia.name AS investment_account_name,iu.display_name AS investment_owner_name,p.name AS project_name, u.display_name AS author_name,
       (SELECT COUNT(*) FROM attachments a WHERE a.transaction_id = ft.id AND a.upload_status='LINKED' AND a.deleted_at IS NULL) AS attachment_count,
       (SELECT a.id FROM attachments a WHERE a.transaction_id = ft.id AND a.upload_status='LINKED' AND a.deleted_at IS NULL ORDER BY a.created_at LIMIT 1) AS attachment_id,
+      COALESCE((SELECT jsonb_agg(jsonb_build_object('id',a.id,'originalFilename',a.original_filename,'mimeType',a.mime_type,'sizeBytes',a.size_bytes,'status',CASE WHEN a.upload_status='PENDING' AND a.created_at < EXTRACT(EPOCH FROM now())::integer-600 THEN 'FAILED' ELSE a.upload_status END,'createdAt',a.created_at) ORDER BY a.created_at,a.id) FROM attachments a WHERE a.transaction_id=ft.id AND a.upload_status IN ('PENDING','LINKED','FAILED') AND a.deleted_at IS NULL),'[]'::jsonb) AS attachments_json,
       COALESCE((SELECT jsonb_agg(jsonb_build_object('id',ta.id,'projectId',ta.project_id,'projectName',ap.name,'amountKopecks',ta.amount_kopecks,'purpose',ta.purpose) ORDER BY ap.name) FROM transaction_allocations ta JOIN projects ap ON ap.id=ta.project_id WHERE ta.transaction_id=ft.id),'[]'::jsonb) AS allocations_json
       FROM financial_transactions ft LEFT JOIN cashboxes source_box ON source_box.id = ft.cashbox_id LEFT JOIN cashboxes destination_box ON destination_box.id = ft.destination_cashbox_id LEFT JOIN investment_accounts ia ON ia.id=ft.investment_account_id LEFT JOIN users iu ON iu.id=ia.owner_user_id LEFT JOIN projects p ON p.id = ft.project_id JOIN users u ON u.id = ft.author_user_id ${transactionCondition} ORDER BY ft.transaction_date DESC, ft.created_at DESC LIMIT 200`, params),
     allProjects
@@ -488,6 +507,7 @@ export async function getCashboxHistory(actor: AuthUser, filters: CashboxHistory
   const rows = await query<TransactionRow>(`SELECT ft.*, source_box.name AS cashbox_name, destination_box.name AS destination_cashbox_name, ia.name AS investment_account_name,iu.display_name AS investment_owner_name,p.name AS project_name, u.display_name AS author_name,
     (SELECT COUNT(*) FROM attachments a WHERE a.transaction_id=ft.id AND a.upload_status='LINKED' AND a.deleted_at IS NULL) AS attachment_count,
     (SELECT a.id FROM attachments a WHERE a.transaction_id=ft.id AND a.upload_status='LINKED' AND a.deleted_at IS NULL ORDER BY a.created_at LIMIT 1) AS attachment_id,
+    COALESCE((SELECT jsonb_agg(jsonb_build_object('id',a.id,'originalFilename',a.original_filename,'mimeType',a.mime_type,'sizeBytes',a.size_bytes,'status',CASE WHEN a.upload_status='PENDING' AND a.created_at < EXTRACT(EPOCH FROM now())::integer-600 THEN 'FAILED' ELSE a.upload_status END,'createdAt',a.created_at) ORDER BY a.created_at,a.id) FROM attachments a WHERE a.transaction_id=ft.id AND a.upload_status IN ('PENDING','LINKED','FAILED') AND a.deleted_at IS NULL),'[]'::jsonb) AS attachments_json,
     COALESCE((SELECT jsonb_agg(jsonb_build_object('id',ta.id,'projectId',ta.project_id,'projectName',ap.name,'amountKopecks',ta.amount_kopecks,'purpose',ta.purpose) ORDER BY ap.name) FROM transaction_allocations ta JOIN projects ap ON ap.id=ta.project_id WHERE ta.transaction_id=ft.id),'[]'::jsonb) AS allocations_json
     FROM financial_transactions ft
     LEFT JOIN cashboxes source_box ON source_box.id=ft.cashbox_id
@@ -511,9 +531,42 @@ export async function getCashboxHistory(actor: AuthUser, filters: CashboxHistory
 export type CreateFinanceOperationInput = {
   type?: unknown; amount?: unknown; date?: unknown; cashboxId?: unknown; destinationCashboxId?: unknown; expenseType?: unknown;
   category?: unknown; projectId?: unknown; clientId?: unknown; orderId?: unknown; purpose?: unknown; source?: unknown; title?: unknown; comment?: unknown;
-  showToClient?: unknown; originalTransactionId?: unknown; attachmentId?: unknown;
+  showToClient?: unknown; originalTransactionId?: unknown; attachmentId?: unknown; idempotencyKey?: unknown; attachments?: unknown;
   allocations?: unknown; paymentSource?: unknown; destinationType?: unknown; investmentAccountId?: unknown;
 };
+
+type FinanceAttachmentSlotInput = { attachmentId: string; originalFilename: string; originalMimeType: string; originalSizeBytes: number; mimeType: "image/jpeg" | "application/pdf" };
+
+function parseFinanceAttachmentSlots(value: unknown): FinanceAttachmentSlotInput[] {
+  if (value == null) return [];
+  if (!Array.isArray(value) || value.length > 10) throw new FinanceError("К одной операции можно добавить не больше 10 файлов за раз.");
+  return value.map((item) => {
+    const row = item && typeof item === "object" ? item as Record<string, unknown> : {};
+    const attachmentId = cleanText(row.attachmentId, 100);
+    const originalFilename = cleanText(row.originalFilename, 240);
+    const originalMimeType = cleanText(row.originalMimeType, 100).toLocaleLowerCase("en-US");
+    const originalSizeBytes = Number(row.originalSizeBytes);
+    const mimeType = cleanText(row.mimeType, 100).toLocaleLowerCase("en-US");
+    if (!UUID.test(attachmentId) || !originalFilename) throw new FinanceError("Некорректные параметры вложения.");
+    if (!["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif", "application/pdf"].includes(originalMimeType)) throw new FinanceError("Разрешены PDF, JPG, PNG, WebP и HEIC/HEIF.");
+    const maximumOriginalBytes = originalMimeType === "application/pdf" ? 10 * 1024 * 1024 : 25 * 1024 * 1024;
+    if (!Number.isInteger(originalSizeBytes) || originalSizeBytes <= 0 || originalSizeBytes > maximumOriginalBytes) throw new FinanceError(originalMimeType === "application/pdf" ? "PDF должен быть не больше 10 МБ." : "Исходное изображение должно быть не больше 25 МБ.");
+    if (mimeType !== (originalMimeType === "application/pdf" ? "application/pdf" : "image/jpeg")) throw new FinanceError("Некорректный формат оптимизированного вложения.");
+    return { attachmentId, originalFilename, originalMimeType, originalSizeBytes, mimeType } as FinanceAttachmentSlotInput;
+  });
+}
+
+function attachmentSlotStatements(actor: AuthUser, transactionId: string, projectId: string | null, slots: FinanceAttachmentSlotInput[], timestamp: number) {
+  return slots.flatMap((slot) => {
+    const storageKey = attachmentPath(slot.attachmentId, "RECEIPT", slot.mimeType);
+    const metadata = JSON.stringify({ originalMimeType: slot.originalMimeType, originalSizeBytes: slot.originalSizeBytes, optimizedLongEdgePx: slot.mimeType === "image/jpeg" ? 1800 : null, optimizedTargetBytes: slot.mimeType === "image/jpeg" ? 1153434 : null });
+    return [
+      { text: `INSERT INTO attachments (id,transaction_id,project_id,storage_provider,storage_key,blob_url,original_filename,mime_type,size_bytes,checksum_sha256,uploaded_by_user_id,entity_type,entity_id,category,visibility,upload_status,metadata_json,created_at,updated_at)
+        VALUES ($1,$2,$3,'VERCEL_BLOB',$4,NULL,$5,$6,0,NULL,$7,'FINANCIAL_TRANSACTION',$2,'RECEIPT','INTERNAL','PENDING',$8::jsonb,$9,$9)`, params: [slot.attachmentId, transactionId, projectId, storageKey, slot.originalFilename, slot.mimeType, actor.id, metadata, timestamp] },
+      { text: "INSERT INTO audit_logs (id,actor_user_id,action,entity_type,entity_id,occurred_at,metadata_json) VALUES ($1,$2,'ATTACHMENT_UPLOAD_QUEUED','Attachment',$3,$4,$5)", params: [crypto.randomUUID(), actor.id, slot.attachmentId, timestamp, JSON.stringify({ transactionId, originalMimeType: slot.originalMimeType, originalSizeBytes: slot.originalSizeBytes })] },
+    ];
+  });
+}
 
 export async function createFinanceOperation(actor: AuthUser, input: CreateFinanceOperationInput) {
   await Promise.all([ensurePersonalCashboxes(), ensureInvestmentAccounts()]);
@@ -524,6 +577,15 @@ export async function createFinanceOperation(actor: AuthUser, input: CreateFinan
   const requiredPermission = requestedType === "EXPENSE" ? "finance.createExpense" : requestedType === "INCOME" ? "finance.createIncome" : requestedType === "TRANSFER" ? "finance.createTransfer" : "finance.editTransaction";
   try { await assertActionPermission(actor, requiredPermission); }
   catch (error) { if (error instanceof AccessError) throw new FinanceError("Нет права на создание этой операции.", 403); throw error; }
+  const idempotencyKey = cleanText(input.idempotencyKey, 100);
+  if (idempotencyKey && !UUID.test(idempotencyKey)) throw new FinanceError("Некорректный ключ защиты от повторного создания.");
+  if (idempotencyKey) {
+    const existing = await first<{ id: string; author_user_id: string; type: string }>("SELECT id,author_user_id,type FROM financial_transactions WHERE id=$1 LIMIT 1", [idempotencyKey]);
+    if (existing) {
+      if (existing.author_user_id !== actor.id || (existing.type !== requestedType && !(requestedType === "TRANSFER" && existing.type === "INVESTMENT_REPAYMENT"))) throw new FinanceError("Ключ операции уже использован.", 409);
+      return { id: existing.id, idempotent: true, balanceBeforeKopecks: null, balanceAfterKopecks: null, destinationBalanceAfterKopecks: null, investmentOutstandingAfterKopecks: null, warning: null };
+    }
+  }
   const amountKopecks = parseAmountKopecks(input.amount);
   if (!amountKopecks) throw new FinanceError("Сумма должна быть больше нуля.");
   const cashboxId = cleanText(input.cashboxId, 100);
@@ -638,7 +700,8 @@ export async function createFinanceOperation(actor: AuthUser, input: CreateFinan
     }
   }
 
-  const id = crypto.randomUUID();
+  const id = idempotencyKey || crypto.randomUUID();
+  const attachmentSlots = parseFinanceAttachmentSlots(input.attachments);
   const balanceBefore = sourceCashbox ? number(sourceCashbox.balance_kopecks) : null;
   const sourceDelta = personalExpense ? 0 : type === "EXPENSE" || type === "TRANSFER" || type === "INVESTMENT_REPAYMENT" ? -amountKopecks : amountKopecks;
   const statements: { text: string; params: unknown[] }[] = [];
@@ -661,6 +724,7 @@ export async function createFinanceOperation(actor: AuthUser, input: CreateFinan
   statements.push(
     { text: "INSERT INTO financial_transactions (id, amount_kopecks, transaction_date, type, expense_type, author_user_id, cashbox_id, investment_account_id, destination_cashbox_id, original_transaction_id, client_id, project_id, order_id, category, source, purpose, title, comment, show_to_client, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)", params: [id, amountKopecks, transactionDate, type, expenseType || null, actor.id, sourceCashbox?.id ?? null, investmentAccount?.id ?? null, destinationCashbox?.id ?? null, originalTransactionId, clientId, projectId, orderId, category, source, purpose, title, comment, showToClient ? 1 : 0, timestamp, timestamp] },
   );
+  statements.push(...attachmentSlotStatements(actor, id, projectId, attachmentSlots, timestamp));
   if (sourceCashbox && sourceDelta !== 0) statements.push({ text: "UPDATE cashboxes SET balance_kopecks = balance_kopecks + $1, updated_at = $2 WHERE id = $3 AND status = 'ACTIVE'", params: [sourceDelta, timestamp, sourceCashbox.id] });
   const allocationPurpose = category === "MATERIALS" ? "MATERIALS" : category === "CONTRACTOR_WORK" ? "WORKS" : "OTHER";
   for (const allocation of allocations) {
@@ -687,6 +751,10 @@ export async function createFinanceOperation(actor: AuthUser, input: CreateFinan
   statements.push({ text: "INSERT INTO audit_logs (id, actor_user_id, action, entity_type, entity_id, occurred_at, metadata_json) VALUES ($1,$2,$3,'FinancialTransaction',$4,$5,$6)", params: [crypto.randomUUID(), actor.id, type === "TRANSFER" ? "TRANSFER_CREATED" : type === "INVESTMENT_REPAYMENT" ? "INVESTMENT_REPAYMENT_TRANSACTION_CREATED" : "FINANCIAL_TRANSACTION_CREATED", id, timestamp, JSON.stringify({ type, amountKopecks, cashboxId: sourceCashbox?.id ?? null, investmentAccountId: investmentAccount?.id ?? null, destinationCashboxId: destinationCashbox?.id ?? null, projectId, orderId, allocations })] });
   try { await transaction(statements); }
   catch (error) {
+    if (idempotencyKey && (error as { code?: string }).code === "23505") {
+      const existing = await first<{ id: string; author_user_id: string }>("SELECT id,author_user_id FROM financial_transactions WHERE id=$1 LIMIT 1", [id]);
+      if (existing?.author_user_id === actor.id) return { id, idempotent: true, balanceBeforeKopecks: null, balanceAfterKopecks: null, destinationBalanceAfterKopecks: null, investmentOutstandingAfterKopecks: null, warning: null };
+    }
     if ((error as { code?: string }).code === "22012") throw new FinanceError(investmentRepayment ? "Сумма возврата превышает остаток инвестиции." : "Состояние кассы или возврата изменилось. Обновите данные и повторите операцию.", 409);
     throw error;
   }
@@ -694,7 +762,60 @@ export async function createFinanceOperation(actor: AuthUser, input: CreateFinan
   const preview = destinationCashbox && balanceBefore !== null ? transferPreview(balanceBefore, number(destinationCashbox.balance_kopecks), amountKopecks) : null;
   const balanceAfter = balanceBefore === null ? null : balanceBefore + sourceDelta;
   const investmentAfter = investmentOutstandingBefore === null ? null : investmentOutstandingBefore + (personalExpense ? amountKopecks : -amountKopecks);
-  return { id, balanceBeforeKopecks: balanceBefore, balanceAfterKopecks: balanceAfter, destinationBalanceAfterKopecks: preview?.toAfterKopecks ?? null, investmentOutstandingAfterKopecks: investmentAfter, warning: preview?.warning ?? (balanceAfter !== null && balanceAfter < 0 ? `После операции баланс ${sourceCashbox?.name ?? "кассы"} отрицательный.` : null) };
+  return { id, idempotent: false, balanceBeforeKopecks: balanceBefore, balanceAfterKopecks: balanceAfter, destinationBalanceAfterKopecks: preview?.toAfterKopecks ?? null, investmentOutstandingAfterKopecks: investmentAfter, warning: preview?.warning ?? (balanceAfter !== null && balanceAfter < 0 ? `После операции баланс ${sourceCashbox?.name ?? "кассы"} отрицательный.` : null) };
+}
+
+async function financeTransactionForAttachment(actor: AuthUser, transactionId: string) {
+  await assertFinanceAccess(actor);
+  const row = await first<{ id: string; author_user_id: string; cashbox_id: string | null; investment_account_id: string | null; expense_type: string | null; project_id: string | null }>("SELECT id,author_user_id,cashbox_id,investment_account_id,expense_type,project_id FROM financial_transactions WHERE id=$1 LIMIT 1", [transactionId]);
+  if (!row) throw new FinanceError("Финансовая операция не найдена.", 404);
+  const access = await getAccessProfile(actor);
+  if (actor.role !== "OWNER" && row.author_user_id !== actor.id && !access.actions["finance.editTransaction"]) throw new FinanceError("Нет права добавлять файлы к этой операции.", 403);
+  if (row.cashbox_id && !(await canViewCashbox(actor, row.cashbox_id))) throw new FinanceError("Операция недоступна.", 403);
+  if (row.investment_account_id && actor.role !== "OWNER" && !access.actions["finance.viewInvestments"]) throw new FinanceError("Операция недоступна.", 403);
+  if (row.expense_type === "ADMIN" && actor.role !== "OWNER" && !access.actions["finance.viewAdministrativeExpenses"]) throw new FinanceError("Операция недоступна.", 403);
+  return row;
+}
+
+export async function createFinanceAttachmentSlots(actor: AuthUser, input: { transactionId?: unknown; attachments?: unknown }) {
+  const transactionId = cleanText(input.transactionId, 100);
+  if (!transactionId) throw new FinanceError("Не указана финансовая операция.");
+  const transactionRow = await financeTransactionForAttachment(actor, transactionId);
+  const slots = parseFinanceAttachmentSlots(input.attachments);
+  if (!slots.length) throw new FinanceError("Выберите хотя бы один файл.");
+  const timestamp = nowSeconds();
+  await transaction(attachmentSlotStatements(actor, transactionId, transactionRow.project_id, slots, timestamp));
+  return { transactionId, attachments: slots.map((slot) => ({ attachmentId: slot.attachmentId, status: "PENDING" as const })) };
+}
+
+export async function confirmFinanceAttachmentUpload(actor: AuthUser, input: { attachmentId?: unknown }) {
+  const attachmentId = cleanText(input.attachmentId, 100);
+  const attachment = await first<{ id: string; transaction_id: string; uploaded_by_user_id: string }>("SELECT id,transaction_id,uploaded_by_user_id FROM attachments WHERE id=$1 AND transaction_id IS NOT NULL AND deleted_at IS NULL LIMIT 1", [attachmentId]);
+  if (!attachment) throw new FinanceError("Вложение не найдено.", 404);
+  await financeTransactionForAttachment(actor, attachment.transaction_id);
+  if (attachment.uploaded_by_user_id !== actor.id) throw new FinanceError("Подтвердить загрузку может только её автор.", 403);
+  try {
+    const ready = await confirmAttachmentUpload(actor, attachmentId);
+    return { ok: true, status: ready.upload_status as "LINKED" | "UPLOADED" };
+  } catch (error) {
+    if (error instanceof FileError) throw new FinanceError(error.message, error.status);
+    throw error;
+  }
+}
+
+export async function markFinanceAttachmentFailed(actor: AuthUser, input: { attachmentId?: unknown }) {
+  const attachmentId = cleanText(input.attachmentId, 100);
+  const attachment = await first<{ id: string; transaction_id: string; uploaded_by_user_id: string; upload_status: string }>("SELECT id,transaction_id,uploaded_by_user_id,upload_status FROM attachments WHERE id=$1 AND transaction_id IS NOT NULL AND deleted_at IS NULL LIMIT 1", [attachmentId]);
+  if (!attachment) throw new FinanceError("Вложение не найдено.", 404);
+  await financeTransactionForAttachment(actor, attachment.transaction_id);
+  if (attachment.uploaded_by_user_id !== actor.id && actor.role !== "OWNER") throw new FinanceError("Нет права изменить эту загрузку.", 403);
+  if (attachment.upload_status === "LINKED") return { ok: true, status: "LINKED" as const };
+  const timestamp = nowSeconds();
+  await transaction([
+    { text: "UPDATE attachments SET upload_status='FAILED',updated_at=$1 WHERE id=$2 AND upload_status IN ('PENDING','UPLOADED')", params: [timestamp, attachmentId] },
+    { text: "INSERT INTO audit_logs (id,actor_user_id,action,entity_type,entity_id,occurred_at,metadata_json) VALUES ($1,$2,'ATTACHMENT_UPLOAD_FAILED','Attachment',$3,$4,$5)", params: [crypto.randomUUID(), actor.id, attachmentId, timestamp, JSON.stringify({ transactionId: attachment.transaction_id })] },
+  ]);
+  return { ok: true, status: "FAILED" as const };
 }
 
 export async function updateFinanceOperation(actor: AuthUser, input: { id?: unknown; title?: unknown; comment?: unknown; showToClient?: unknown }) {

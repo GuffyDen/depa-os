@@ -6,16 +6,16 @@ const root = new URL("../", import.meta.url);
 const read = (path) => readFile(new URL(path, root), "utf8");
 
 test("attachments use private Blob metadata instead of Base64", async () => {
-  const [schema, files, client, migration] = await Promise.all([
-    read("db/schema.ts"), read("lib/files.ts"), read("app/finance-ui.tsx"), read("drizzle/postgres/0004_postgres_integrity_and_blob.sql"),
+  const [schema, files, client, financeAttachmentClient, migration] = await Promise.all([
+    read("db/schema.ts"), read("lib/files.ts"), read("app/finance-ui.tsx"), read("lib/finance-attachments-client.ts"), read("drizzle/postgres/0004_postgres_integrity_and_blob.sql"),
   ]);
   assert.match(schema, /storageProvider/);
   assert.match(schema, /checksumSha256/);
   assert.doesNotMatch(schema, /contentBase64|content_base64/);
   assert.match(files, /\.private\.blob\.vercel-storage\.com/);
   assert.match(files, /RECEIPT_MAX_BYTES = 10/);
-  assert.match(client, /access: "private"/);
-  assert.doesNotMatch(client, /btoa\(|readAsDataURL|contentBase64/);
+  assert.match(financeAttachmentClient, /access: "private"/);
+  assert.doesNotMatch(client + financeAttachmentClient, /btoa\(|readAsDataURL|contentBase64/);
   assert.match(migration, /DROP COLUMN content_base64/);
 });
 

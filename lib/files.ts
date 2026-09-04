@@ -195,7 +195,7 @@ export async function prepareAttachmentUpload(actor: AuthUser, pathname: string,
   const isDesignFile = DESIGN_DOCUMENT_CATEGORIES.has(payload.category) || ["DesignProject", "DesignStage"].includes(payload.entityType);
   const isContractFile = CONTRACT_CATEGORIES.has(payload.category) || payload.entityType === "ContractVersion";
   try {
-    if (payload.category === "RECEIPT") await assertModuleAction(actor, "finance", "finance.createExpense");
+    if (payload.category === "RECEIPT") await assertModuleAction(actor, "finance", payload.entityId ? "finance.view" : "finance.createExpense");
     else if (payload.category === "DAILY_REPORT") await assertModuleAction(actor, "projects", "dailyReports.uploadPhotos");
     else if (payload.category === "HIDDEN_WORK") await assertModuleAction(actor, "projects", "hiddenWorks.upload");
     else if (payload.category === "ADDITIONAL_WORK") await assertModuleAction(actor, "projects", "additionalWorks.uploadFiles");
@@ -222,8 +222,11 @@ export async function prepareAttachmentUpload(actor: AuthUser, pathname: string,
   const expectedPath = attachmentPath(payload.attachmentId, payload.category, payload.mimeType);
   if (pathname !== expectedPath) throw new FileError("Путь загрузки файла отклонён.");
   const timestamp = nowSeconds();
-  const existing = await first<{ uploaded_by_user_id: string; upload_status: string }>("SELECT uploaded_by_user_id,upload_status FROM attachments WHERE id=$1 LIMIT 1", [payload.attachmentId]);
+  const existing = await first<{ uploaded_by_user_id: string; upload_status: string; transaction_id: string | null; project_id: string | null; original_filename: string; mime_type: string; storage_key: string }>("SELECT uploaded_by_user_id,upload_status,transaction_id,project_id,original_filename,mime_type,storage_key FROM attachments WHERE id=$1 LIMIT 1", [payload.attachmentId]);
   if (existing && (existing.uploaded_by_user_id !== actor.id || existing.upload_status !== "PENDING")) throw new FileError("Эта загрузка уже использована.", 409);
+  if (existing && (existing.storage_key !== expectedPath || existing.mime_type !== payload.mimeType || existing.original_filename !== payload.originalFilename || existing.transaction_id !== (payload.entityId ?? null) || existing.project_id !== (payload.projectId ?? null))) throw new FileError("Параметры загрузки не соответствуют подготовленному вложению.", 409);
+  if (!existing && payload.category === "RECEIPT" && payload.entityId) throw new FileError("Сначала подготовьте вложение в финансовой операции.", 409);
+  if (existing) await query("UPDATE attachments SET checksum_sha256=$1,metadata_json=metadata_json || $2::jsonb,updated_at=$3 WHERE id=$4 AND upload_status='PENDING'", [payload.checksumSha256, JSON.stringify({ optimizedDeclaredSizeBytes: payload.sizeBytes }), timestamp, payload.attachmentId]);
   if (!existing) {
     await query(`INSERT INTO attachments
       (id,transaction_id,project_id,contract_version_id,additional_work_version_id,handover_id,handover_round_id,handover_defect_id,storage_provider,storage_key,blob_url,original_filename,mime_type,size_bytes,checksum_sha256,uploaded_by_user_id,entity_type,entity_id,category,visibility,upload_status,metadata_json,created_at,updated_at)
@@ -258,12 +261,13 @@ async function finalizeAttachmentMetadata(attachmentId: string, userId: string, 
   const mimeType = cleanText(blob.contentType || row.mime_type, 100).toLocaleLowerCase("en-US");
   if (!allowedMimeTypes(row.category).includes(mimeType) || sizeBytes <= 0 || sizeBytes > fileLimitBytes(row.category)) throw new FileError("Загруженный файл не прошёл проверку типа или размера.");
   const timestamp = nowSeconds();
+  const auditAction = row.transaction_id ? "ATTACHMENT_ADDED" : "FILE_UPLOADED";
   await query(`WITH updated AS (
-      UPDATE attachments SET blob_url=$1,mime_type=$2,size_bytes=$3,upload_status=CASE WHEN category='ADDITIONAL_WORK' THEN 'LINKED' ELSE 'UPLOADED' END,completed_at=$4,linked_at=CASE WHEN category='ADDITIONAL_WORK' THEN $4 ELSE linked_at END,updated_at=$5
+      UPDATE attachments SET blob_url=$1,mime_type=$2,size_bytes=$3,upload_status=CASE WHEN transaction_id IS NOT NULL OR category='ADDITIONAL_WORK' THEN 'LINKED' ELSE 'UPLOADED' END,completed_at=$4,linked_at=CASE WHEN transaction_id IS NOT NULL OR category='ADDITIONAL_WORK' THEN $4 ELSE linked_at END,updated_at=$5
       WHERE id=$6 AND uploaded_by_user_id=$7 AND upload_status='PENDING' RETURNING id
     ) INSERT INTO audit_logs (id,actor_user_id,action,entity_type,entity_id,occurred_at,metadata_json)
-      SELECT $8,$7,'FILE_UPLOADED','Attachment',id,$4,$9 FROM updated`,
-  [blob.url, mimeType, sizeBytes, timestamp, timestamp, attachmentId, userId, crypto.randomUUID(), JSON.stringify({ category: row.category, mimeType, sizeBytes })]);
+      SELECT $8,$7,$9,'Attachment',id,$4,$10 FROM updated`,
+  [blob.url, mimeType, sizeBytes, timestamp, timestamp, attachmentId, userId, crypto.randomUUID(), auditAction, JSON.stringify({ category: row.category, mimeType, sizeBytes, transactionId: row.transaction_id })]);
 }
 
 export async function confirmAttachmentUpload(actor: AuthUser, attachmentId: string) {
@@ -274,7 +278,7 @@ export async function confirmAttachmentUpload(actor: AuthUser, attachmentId: str
     await finalizeAttachmentMetadata(row.id, actor.id, blob);
   }
   const ready = await first<AttachmentRow>("SELECT * FROM attachments WHERE id=$1 LIMIT 1", [attachmentId]);
-  if (!ready || ready.upload_status !== "UPLOADED") throw new FileError("Загрузка файла ещё не завершена.", 409);
+  if (!ready || !["UPLOADED", "LINKED"].includes(ready.upload_status)) throw new FileError("Загрузка файла ещё не завершена.", 409);
   return ready;
 }
 

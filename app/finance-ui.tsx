@@ -1,6 +1,7 @@
 "use client";
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FINANCE_CATEGORY_GROUPS, INCOME_PURPOSE_OPTIONS, financeCategoryLabel, financePurposeLabel } from "../lib/finance-categories";
+import { createFinanceAttachmentDraft, FINANCE_ATTACHMENT_ACCEPT, uploadFinanceAttachment, type FinanceAttachmentDraft } from "../lib/finance-attachments-client";
 import { ClientPaymentInboxForm } from "./client-payment-inbox";
 
 export type FinanceMode = "EXPENSE" | "INCOME" | "TRANSFER" | "REFUND";
@@ -25,6 +26,7 @@ type FinanceTransaction = {
   investmentAccountId: string | null; investmentAccountName: string | null; investmentOwnerName: string | null;
   clientId: string | null; category: string; source: string | null; purpose: string | null; title: string; comment: string | null; showToClient: boolean;
   authorUserId: string; authorName: string; createdAt: number; attachmentCount: number; attachmentId: string | null;
+  attachments: { id: string; originalFilename: string; mimeType: string; sizeBytes: number; status: "PENDING" | "LINKED" | "FAILED"; createdAt: number }[];
   allocations: { id: string; projectId: string; projectName: string; amountKopecks: number; purpose: string }[];
 };
 type InvestmentMovement = {
@@ -105,14 +107,14 @@ function TransactionRow({ transaction, cashboxId, clientName, structured = false
       <span className="finance-col-source">{source}</span>
       <span className="finance-col-author">{transaction.authorName}</span>
       <span className="finance-col-date">{new Date(transaction.transactionDate * 1000).toLocaleDateString("ru-RU")}</span>
-      <span className="finance-col-receipt">{transaction.attachmentId ? <a href={`/api/files/${transaction.attachmentId}`} target="_blank" rel="noreferrer">Есть чек</a> : "Без чека"}</span>
+      <span className="finance-col-receipt">{transaction.attachmentCount ? <a href={`/api/files/${transaction.attachmentId}`} target="_blank" rel="noreferrer">{transaction.attachmentCount > 1 ? `${transaction.attachmentCount} файла` : "Чек прикреплён"}</a> : transaction.attachments.some((item) => item.status === "PENDING") ? "Чек загружается…" : transaction.attachments.some((item) => item.status === "FAILED") ? "Ошибка загрузки" : "Без чека"}</span>
       <strong className={positive ? "plus" : neutral ? "" : "minus"}>{amount}</strong>
       {onOpen ? <button type="button" className="finance-row-action" aria-label={`Открыть операцию ${transaction.title}`} onClick={onOpen}>›</button> : <span className="finance-row-action" aria-hidden="true" />}
     </div>;
   }
   return <div className="transaction finance-transaction">
     <span className={`transaction-icon ${positive || investment ? "plus" : transaction.type === "TRANSFER" || transaction.type === "INVESTMENT_REPAYMENT" ? "transfer" : "minus"}`}>{transaction.type === "TRANSFER" || transaction.type === "INVESTMENT_REPAYMENT" ? "⇄" : investment ? "+" : positive ? "↓" : "↑"}</span>
-    <div><b>{transaction.title}</b><small>{transactionLabel(transaction)}{transaction.projectName ? ` · ${transaction.projectName}` : ""}{transaction.allocations.length ? ` · ${transaction.allocations.map((item) => `${item.projectName} ${money(item.amountKopecks)}`).join("; ")}` : ""}{transaction.purpose ? ` · ${financePurposeLabel(transaction.purpose)}` : ""}<br />{new Date(transaction.transactionDate * 1000).toLocaleDateString("ru-RU")} · {transaction.authorName}{transaction.attachmentId ? <> · <a href={`/api/files/${transaction.attachmentId}`} target="_blank" rel="noreferrer">чек приложен</a></> : " · без чека"}{onOpen && <> · <button type="button" className="inline-detail" onClick={onOpen}>подробнее</button></>}</small></div>
+    <div><b>{transaction.title}</b><small>{transactionLabel(transaction)}{transaction.projectName ? ` · ${transaction.projectName}` : ""}{transaction.allocations.length ? ` · ${transaction.allocations.map((item) => `${item.projectName} ${money(item.amountKopecks)}`).join("; ")}` : ""}{transaction.purpose ? ` · ${financePurposeLabel(transaction.purpose)}` : ""}<br />{new Date(transaction.transactionDate * 1000).toLocaleDateString("ru-RU")} · {transaction.authorName}{transaction.attachmentCount ? <> · <a href={`/api/files/${transaction.attachmentId}`} target="_blank" rel="noreferrer">{transaction.attachmentCount > 1 ? `${transaction.attachmentCount} файла` : "чек приложен"}</a></> : transaction.attachments.some((item) => item.status === "PENDING") ? " · чек загружается" : " · без чека"}{onOpen && <> · <button type="button" className="inline-detail" onClick={onOpen}>подробнее</button></>}</small></div>
     <span className="person-pill">{transaction.investmentAccountName ?? transaction.cashboxName}</span><strong className={positive ? "plus" : neutral ? "" : "minus"}>{amount}</strong>
   </div>;
 }
@@ -276,7 +278,7 @@ export function FinanceScreen({ onNew }: { onNew: (mode: FinanceMode) => void })
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [selectedTransaction, setSelectedTransaction] = useState<FinanceTransaction | null>(null);
-  async function refresh() { try { setError(""); setData(await readFinance()); } catch (reason) { setError(reason instanceof Error ? reason.message : "Не удалось загрузить финансы."); } }
+  async function refresh() { try { setError(""); const next = await readFinance(); setData(next); return next; } catch (reason) { setError(reason instanceof Error ? reason.message : "Не удалось загрузить финансы."); return null; } }
   useEffect(() => {
     let cancelled = false;
     readFinance().then((result) => { if (!cancelled) setData(result); }).catch((reason) => { if (!cancelled) setError(reason instanceof Error ? reason.message : "Не удалось загрузить финансы."); });
@@ -325,24 +327,66 @@ export function FinanceScreen({ onNew }: { onNew: (mode: FinanceMode) => void })
       <ClientPaymentInboxForm cashboxes={data.cashboxes} onChanged={refresh}/>
       <div className="metrics-grid finance-metrics finance-summary"><div className="metric"><div className="metric-top"><span>{data.capabilities.cashboxScope === "OWN" ? "МОЯ КАССА" : "ФИЗИЧЕСКИ В КАССАХ"}</span><i>↗</i></div><strong className={data.physicalTotalKopecks < 0 ? "minus" : ""}>{money(data.physicalTotalKopecks)}</strong><small>{data.cashboxes.filter((box) => box.status === "ACTIVE").length} активные кассы в доступной области</small></div>{data.capabilities.viewInvestments && data.investmentOutstandingKopecks !== null ? <div className="metric"><div className="metric-top"><span>ИНВЕСТИЦИИ · К ВОЗВРАТУ</span><i className="orange">↗</i></div><strong>{money(data.investmentOutstandingKopecks)}</strong><small>{data.investmentAccounts.map((account) => `${account.ownerName.split(" ")[0]}: ${money(account.outstandingKopecks)}`).join(" · ")}</small></div> : null}{data.capabilities.viewClientFunds && data.clientFundsKopecks !== null ? <div className="metric"><div className="metric-top"><span>СРЕДСТВА КЛИЕНТОВ</span><i>↗</i></div><strong>{money(data.clientFundsKopecks)}</strong><small>Текущий остаток клиентских средств</small></div> : null}{data.capabilities.viewProfit && data.depaProfitKopecks !== null ? <div className="metric"><div className="metric-top"><span>ПРИБЫЛЬ DEPA</span><i>↗</i></div><strong>{money(data.depaProfitKopecks)}</strong><small>Управленческий показатель</small></div> : null}</div>
       {data.attentionItems.length > 0 && <div className="panel finance-attention"><div className="table-toolbar"><strong>Требует внимания</strong><small>{data.attentionItems.length}</small></div>{data.attentionItems.slice(0, 8).map((item, index) => <div className="finance-attention-row" key={`${item.type}-${item.transactionId ?? item.projectId ?? item.cashboxId ?? index}`}><i>!</i><span><b>{item.title}</b><small>{item.detail}</small></span></div>)}</div>}
-      <div className="panel table-panel"><div className="table-toolbar"><strong>Все операции</strong><small>{filteredTransactions.length} из {data.transactions.length}</small></div><div className="finance-filter-bar"><input aria-label="Поиск операций" placeholder="Комментарий, клиент, объект" value={query} onChange={(event) => setQuery(event.target.value)} /><select aria-label="Тип" value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}><option value="">Все типы</option><option value="INCOME">Доход</option><option value="EXPENSE">Расход</option><option value="TRANSFER">Перевод</option><option value="INVESTMENT">Инвестиция</option><option value="INVESTMENT_REPAYMENT">Возврат инвестиции</option></select><select aria-label="Касса" value={cashboxFilter} onChange={(event) => setCashboxFilter(event.target.value)}><option value="">Все кассы</option>{data.cashboxes.map((box) => <option value={box.id} key={box.id}>{box.name}</option>)}</select><select aria-label="Категория" value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}><option value="">Все категории</option>{categoryOptions.map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}</select><select aria-label="Объект" value={projectFilter} onChange={(event) => setProjectFilter(event.target.value)}><option value="">Все объекты</option>{data.projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select><select aria-label="Автор" value={authorFilter} onChange={(event) => setAuthorFilter(event.target.value)}><option value="">Все авторы</option>{authors.map(([id, name]) => <option key={id} value={id}>{name}</option>)}</select><select aria-label="Чек" value={receiptFilter} onChange={(event) => setReceiptFilter(event.target.value)}><option value="">Чек: любой</option><option value="YES">Есть чек</option><option value="NO">Нет чека</option></select><input aria-label="Дата от" type="date" value={dateFrom} onChange={(event) => setDateFrom(event.target.value)} /><input aria-label="Дата до" type="date" value={dateTo} onChange={(event) => setDateTo(event.target.value)} /></div>{filteredTransactions.length ? <div className="finance-operation-table"><div className="finance-operation-row head"><span>Операция</span><span className="finance-col-client">Клиент</span><span className="finance-col-project">Объект</span><span className="finance-col-category">Категория</span><span className="finance-col-source">Касса / источник</span><span className="finance-col-author">Автор</span><span className="finance-col-date">Дата</span><span className="finance-col-receipt">Документ</span><span>Сумма</span><span aria-hidden="true" /></div>{filteredTransactions.map((item) => <TransactionRow key={item.id} transaction={item} structured clientName={data.clients.find((client) => client.id === item.clientId)?.name} onOpen={data.capabilities.editTransaction ? () => setSelectedTransaction(item) : undefined} />)}</div> : <div className="finance-empty">По выбранным фильтрам операций нет.</div>}</div>
+      <div className="panel table-panel"><div className="table-toolbar"><strong>Все операции</strong><small>{filteredTransactions.length} из {data.transactions.length}</small></div><div className="finance-filter-bar"><input aria-label="Поиск операций" placeholder="Комментарий, клиент, объект" value={query} onChange={(event) => setQuery(event.target.value)} /><select aria-label="Тип" value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}><option value="">Все типы</option><option value="INCOME">Доход</option><option value="EXPENSE">Расход</option><option value="TRANSFER">Перевод</option><option value="INVESTMENT">Инвестиция</option><option value="INVESTMENT_REPAYMENT">Возврат инвестиции</option></select><select aria-label="Касса" value={cashboxFilter} onChange={(event) => setCashboxFilter(event.target.value)}><option value="">Все кассы</option>{data.cashboxes.map((box) => <option value={box.id} key={box.id}>{box.name}</option>)}</select><select aria-label="Категория" value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}><option value="">Все категории</option>{categoryOptions.map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}</select><select aria-label="Объект" value={projectFilter} onChange={(event) => setProjectFilter(event.target.value)}><option value="">Все объекты</option>{data.projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select><select aria-label="Автор" value={authorFilter} onChange={(event) => setAuthorFilter(event.target.value)}><option value="">Все авторы</option>{authors.map(([id, name]) => <option key={id} value={id}>{name}</option>)}</select><select aria-label="Чек" value={receiptFilter} onChange={(event) => setReceiptFilter(event.target.value)}><option value="">Чек: любой</option><option value="YES">Есть чек</option><option value="NO">Нет чека</option></select><input aria-label="Дата от" type="date" value={dateFrom} onChange={(event) => setDateFrom(event.target.value)} /><input aria-label="Дата до" type="date" value={dateTo} onChange={(event) => setDateTo(event.target.value)} /></div>{filteredTransactions.length ? <div className="finance-operation-table"><div className="finance-operation-row head"><span>Операция</span><span className="finance-col-client">Клиент</span><span className="finance-col-project">Объект</span><span className="finance-col-category">Категория</span><span className="finance-col-source">Касса / источник</span><span className="finance-col-author">Автор</span><span className="finance-col-date">Дата</span><span className="finance-col-receipt">Документ</span><span>Сумма</span><span aria-hidden="true" /></div>{filteredTransactions.map((item) => <TransactionRow key={item.id} transaction={item} structured clientName={data.clients.find((client) => client.id === item.clientId)?.name} onOpen={() => setSelectedTransaction(item)} />)}</div> : <div className="finance-empty">По выбранным фильтрам операций нет.</div>}</div>
     </div> : activeTab === "CASHBOXES" ? <CashboxWorkspace data={data} onOpen={data.capabilities.editTransaction ? setSelectedTransaction : () => undefined} /> : <InvestmentWorkspace data={data} onOpen={setSelectedTransaction} />)}
-    {selectedTransaction && <TransactionDetailModal transaction={selectedTransaction} onClose={() => setSelectedTransaction(null)} onSaved={async () => { setSelectedTransaction(null); await refresh(); }} />}
+    {selectedTransaction && <TransactionDetailModal key={`${selectedTransaction.id}-${selectedTransaction.attachments.map((item) => `${item.id}:${item.status}`).join(",")}`} transaction={selectedTransaction} canEdit={data?.capabilities.editTransaction === true} onClose={() => setSelectedTransaction(null)} onSaved={async () => { setSelectedTransaction(null); await refresh(); }} onAttachmentsChanged={async () => { const next = await refresh(); setSelectedTransaction(next?.transactions.find((item) => item.id === selectedTransaction.id) ?? null); }} />}
   </section>;
 }
 
-function TransactionDetailModal({ transaction, onClose, onSaved }: { transaction: FinanceTransaction; onClose: () => void; onSaved: () => void }) {
+function fileSize(value: number) {
+  if (!value) return "—";
+  return value >= 1024 * 1024 ? `${(value / 1024 / 1024).toFixed(1)} МБ` : `${Math.ceil(value / 1024)} КБ`;
+}
+
+function TransactionDetailModal({ transaction, canEdit, onClose, onSaved, onAttachmentsChanged }: { transaction: FinanceTransaction; canEdit: boolean; onClose: () => void; onSaved: () => void; onAttachmentsChanged: () => void }) {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [uploadNotice, setUploadNotice] = useState("");
+  const [attachments, setAttachments] = useState(transaction.attachments);
+
+  async function addAttachments(files: File[]) {
+    if (!files.length || uploading) return;
+    setError(""); setUploadNotice("");
+    let pairs: { file: File; draft: FinanceAttachmentDraft }[];
+    try { pairs = files.map((file) => ({ file, draft: createFinanceAttachmentDraft(file) })); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "Файл не прошёл проверку."); return; }
+    setUploading(true);
+    try {
+      const slotResponse = await fetch("/api/finance/attachments", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ transactionId: transaction.id, attachments: pairs.map((item) => item.draft) }) });
+      const slotResult = await slotResponse.json() as { error?: string };
+      if (!slotResponse.ok) throw new Error(slotResult.error ?? "Не удалось подготовить вложения.");
+      setAttachments((current) => [...current, ...pairs.map(({ draft }) => ({ id: draft.attachmentId, originalFilename: draft.originalFilename, mimeType: draft.mimeType, sizeBytes: 0, status: "PENDING" as const, createdAt: Math.floor(Date.now() / 1000) }))]);
+      setUploadNotice(`Подготавливаем ${pairs.length === 1 ? "фото" : `${pairs.length} файла`}…`);
+      const results = await Promise.allSettled(pairs.map(({ file, draft }) => uploadFinanceAttachment({
+        file, draft, transactionId: transaction.id, projectId: transaction.projectId,
+        onPhase: (phase) => {
+          if (phase === "uploading") setUploadNotice(`Загружаем ${pairs.length === 1 ? "1 файл" : `${pairs.length} файла`}…`);
+          if (phase === "ready" || phase === "failed") setAttachments((current) => current.map((item) => item.id === draft.attachmentId ? { ...item, status: phase === "ready" ? "LINKED" : "FAILED" } : item));
+        },
+      })));
+      const failed = results.filter((result) => result.status === "rejected").length;
+      setUploadNotice(failed ? `Операция не изменилась. Не удалось загрузить ${failed} ${failed === 1 ? "файл" : "файла"}.` : "Все файлы прикреплены.");
+      onAttachmentsChanged();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Не удалось загрузить вложения.");
+    } finally { setUploading(false); }
+  }
+
   async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault(); setLoading(true); setError("");
+    event.preventDefault(); if (!canEdit) return; setLoading(true); setError("");
     const form = new FormData(event.currentTarget);
     const response = await fetch("/api/finance", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: transaction.id, title: form.get("title"), comment: form.get("comment"), showToClient: form.get("showToClient") === "on" }) });
     const result = await response.json() as { error?: string };
     if (!response.ok) { setError(result.error ?? "Не удалось обновить операцию."); setLoading(false); return; }
     onSaved();
   }
-  return <div className="modal-wrap" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className="modal finance-detail-modal" role="dialog" aria-modal="true" aria-labelledby="transaction-detail-title"><div className="modal-head"><div><span className="eyebrow">ФИНАНСОВАЯ ОПЕРАЦИЯ</span><h3 id="transaction-detail-title">{transactionLabel(transaction)}</h3></div><button onClick={onClose} aria-label="Закрыть">×</button></div><div className="transaction-facts"><span>Сумма <b>{money(transaction.amountKopecks)}</b></span><span>Дата <b>{new Date(transaction.transactionDate * 1000).toLocaleDateString("ru-RU")}</b></span><span>Источник <b>{transactionSourceLabel(transaction)}</b></span><span>Автор <b>{transaction.authorName}</b></span></div>{transaction.allocations.length > 0 && <div className="detail-allocations">{transaction.allocations.map((item) => <span key={item.id}>{item.projectName}<b>{money(item.amountKopecks)}</b></span>)}</div>}<form onSubmit={submit}><label><span>Название</span><input name="title" defaultValue={transaction.title} required /></label><label><span>Комментарий</span><textarea name="comment" defaultValue={transaction.comment ?? ""} /></label>{transaction.expenseType === "PROJECT" && <label className="toggle-row"><span><b>Показывать клиенту</b><small>Изменение будет записано в audit log</small></span><input name="showToClient" type="checkbox" defaultChecked={transaction.showToClient} /></label>}<div className="immutable-note">Сумма, источник, категория, объект и распределение защищены от тихого редактирования.</div>{transaction.attachmentId && <a className="secondary receipt-link" href={`/api/files/${transaction.attachmentId}`} target="_blank" rel="noreferrer">Открыть чек</a>}{error && <div className="auth-error" role="alert"><i>!</i><span>{error}</span></div>}<div className="modal-actions"><button type="button" onClick={onClose}>Закрыть</button><button className="primary" type="submit" disabled={loading}>{loading ? "Сохраняем…" : "Сохранить изменения"}</button></div></form></section></div>;
+  return <div className="modal-wrap" onMouseDown={(event) => { if (event.target === event.currentTarget && !uploading) onClose(); }}><section className="modal finance-detail-modal" role="dialog" aria-modal="true" aria-labelledby="transaction-detail-title"><div className="modal-head"><div><span className="eyebrow">ФИНАНСОВАЯ ОПЕРАЦИЯ</span><h3 id="transaction-detail-title">{transactionLabel(transaction)}</h3></div><button onClick={onClose} aria-label="Закрыть">×</button></div><div className="transaction-facts"><span>Сумма <b>{money(transaction.amountKopecks)}</b></span><span>Дата <b>{new Date(transaction.transactionDate * 1000).toLocaleDateString("ru-RU")}</b></span><span>Источник <b>{transactionSourceLabel(transaction)}</b></span><span>Автор <b>{transaction.authorName}</b></span></div>{transaction.allocations.length > 0 && <div className="detail-allocations">{transaction.allocations.map((item) => <span key={item.id}>{item.projectName}<b>{money(item.amountKopecks)}</b></span>)}</div>}
+    <section className="finance-attachments"><header><div><span className="eyebrow">ДОКУМЕНТЫ / ВЛОЖЕНИЯ</span><b>{attachments.filter((item) => item.status === "LINKED").length} прикреплено</b></div><label className="secondary finance-attachment-add"><input type="file" multiple accept={FINANCE_ATTACHMENT_ACCEPT} disabled={uploading} onChange={(event) => { void addAttachments(Array.from(event.target.files ?? [])); event.currentTarget.value = ""; }} />{uploading ? "Загружаем…" : "＋ Добавить чек / фото"}</label></header>
+      <div className="finance-attachment-list">{attachments.length ? attachments.map((attachment) => <article key={attachment.id}><i>{attachment.mimeType === "application/pdf" ? "PDF" : "IMG"}</i><span><b>{attachment.originalFilename}</b><small>{attachment.status === "PENDING" ? "Чек загружается…" : attachment.status === "FAILED" ? "Не удалось загрузить файл" : `Чек прикреплён · ${fileSize(attachment.sizeBytes)}`}</small></span>{attachment.status === "LINKED" ? <a href={`/api/files/${attachment.id}`} target="_blank" rel="noreferrer">Открыть</a> : attachment.status === "FAILED" ? <label className="link finance-attachment-retry"><input type="file" accept={FINANCE_ATTACHMENT_ACCEPT} disabled={uploading} onChange={(event) => { void addAttachments(Array.from(event.target.files ?? [])); event.currentTarget.value = ""; }} />Повторить</label> : <em>Загрузка…</em>}</article>) : <p>Файлов пока нет. Операция сохранена без чека.</p>}</div>
+      {uploadNotice && <div className={uploadNotice.includes("Не удалось") ? "auth-error" : "auth-success"} role="status"><i>{uploadNotice.includes("Не удалось") ? "!" : "✓"}</i><span>{uploadNotice}</span></div>}
+    </section>
+    <form onSubmit={submit}><label><span>Название</span><input name="title" defaultValue={transaction.title} required disabled={!canEdit} /></label><label><span>Комментарий</span><textarea name="comment" defaultValue={transaction.comment ?? ""} disabled={!canEdit} /></label>{transaction.expenseType === "PROJECT" && <label className="toggle-row"><span><b>Показывать клиенту</b><small>Изменение будет записано в audit log</small></span><input name="showToClient" type="checkbox" defaultChecked={transaction.showToClient} disabled={!canEdit} /></label>}<div className="immutable-note">Добавление файлов не изменяет сумму, источник, категорию, объект или балансы.</div>{error && <div className="auth-error" role="alert"><i>!</i><span>{error}</span></div>}<div className="modal-actions"><button type="button" onClick={onClose}>Закрыть</button>{canEdit && <button className="primary" type="submit" disabled={loading}>{loading ? "Сохраняем…" : "Сохранить изменения"}</button>}</div></form></section></div>;
 }
 
 export function OperationPickerModal({ onClose, onSelect, allowed }: { onClose: () => void; onSelect: (mode: FinanceMode) => void; allowed: Partial<Record<FinanceMode, boolean>> }) {
@@ -351,27 +395,6 @@ export function OperationPickerModal({ onClose, onSelect, allowed }: { onClose: 
     {allowed.INCOME ? <button onClick={() => onSelect("INCOME")}><i>＋</i><span><b>Поступление</b><small>Только в собственную кассу</small></span><em>→</em></button> : null}
     {allowed.TRANSFER ? <button onClick={() => onSelect("TRANSFER")}><i>⇄</i><span><b>Перевод</b><small>В другую кассу или в счёт возврата инвестиции</small></span><em>→</em></button> : null}
   </div></section></div>;
-}
-
-async function uploadReceipt(file: File | undefined, projectId: string | null) {
-  if (!file) return null;
-  const mimeType = file.type.toLocaleLowerCase("en-US");
-  const extensions: Record<string, string> = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/heic": "heic", "image/heif": "heif", "application/pdf": "pdf" };
-  if (!extensions[mimeType]) throw new Error("Разрешены PDF, JPG, PNG, WebP и HEIC/HEIF.");
-  if (file.size > 10 * 1024 * 1024) throw new Error("Чек должен быть не больше 10 МБ.");
-  const attachmentId = crypto.randomUUID();
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", await file.arrayBuffer()));
-  const checksumSha256 = Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
-  const pathname = `depa-os/receipt/${attachmentId}.${extensions[mimeType]}`;
-  const { upload } = await import("@vercel/blob/client");
-  await upload(pathname, file, {
-    access: "private",
-    handleUploadUrl: "/api/files/upload",
-    contentType: mimeType,
-    multipart: file.size > 5 * 1024 * 1024,
-    clientPayload: JSON.stringify({ attachmentId, originalFilename: file.name, mimeType, sizeBytes: file.size, checksumSha256, category: "RECEIPT", visibility: "INTERNAL", entityType: "FINANCIAL_TRANSACTION", entityId: null, projectId }),
-  });
-  return attachmentId;
 }
 
 export function FinanceOperationModal({ mode, onClose, onSaved, initialProjectId = "", initialClientId = "",initialOrderId="",initialOrderNumber="",initialAmount="",initialTitle="" }: { mode: FinanceMode; onClose: () => void; onSaved: () => void; initialProjectId?: string; initialClientId?: string;initialOrderId?:string;initialOrderNumber?:string;initialAmount?:string;initialTitle?:string }) {
@@ -389,7 +412,10 @@ export function FinanceOperationModal({ mode, onClose, onSaved, initialProjectId
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
-  const [attachmentName, setAttachmentName] = useState("");
+  const [selectedAttachments, setSelectedAttachments] = useState<{ file: File; draft: FinanceAttachmentDraft }[]>([]);
+  const [uploadStatus, setUploadStatus] = useState("");
+  const idempotencyKeyRef = useRef("");
+  const submittingRef = useRef(false);
   const [splitAcrossProjects, setSplitAcrossProjects] = useState(false);
   const [allocations, setAllocations] = useState([{ projectId: initialProjectId, amount: "" }, { projectId: "", amount: "" }]);
   const [category, setCategory] = useState("MATERIALS");
@@ -411,24 +437,36 @@ export function FinanceOperationModal({ mode, onClose, onSaved, initialProjectId
   const selectedProject = data?.projects.find((item) => item.id === projectId);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault(); setError(""); setLoading(true);
+    event.preventDefault();
+    if (submittingRef.current) return;
+    submittingRef.current = true; setError(""); setLoading(true); setUploadStatus("");
     const form = new FormData(event.currentTarget);
     try {
-      const receiptProjectId = splitAcrossProjects ? null : expenseType === "PROJECT" || mode !== "EXPENSE" ? projectId || null : null;
-      const attachmentId = await uploadReceipt(form.get("attachment") instanceof File && (form.get("attachment") as File).size > 0 ? form.get("attachment") as File : undefined, receiptProjectId);
+      const receiptProjectId = mode === "TRANSFER" || splitAcrossProjects || mode === "EXPENSE" && expenseType === "ADMIN" ? null : projectId || null;
       const effectiveCashboxId = mode === "REFUND" && selectedOriginal ? selectedOriginal.cashboxId : cashboxId;
+      if (!idempotencyKeyRef.current) idempotencyKeyRef.current = crypto.randomUUID();
+      const transactionStartedAt = performance.now();
       const response = await fetch("/api/finance", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
         type: mode, amount, date: form.get("date"), cashboxId: effectiveCashboxId, destinationCashboxId, expenseType, paymentSource, destinationType, investmentAccountId,
         category: form.get("category"), projectId: expenseType === "PROJECT" || mode !== "EXPENSE" ? projectId || null : null,
         clientId: clientId || null,orderId:initialOrderId||null, purpose: form.get("purpose"), source: form.get("source"), title: form.get("title"), comment: form.get("comment"),
-        showToClient: expenseType === "PROJECT" && form.get("showToClient") === "on", originalTransactionId: originalTransactionId || null, attachmentId,
+        showToClient: expenseType === "PROJECT" && form.get("showToClient") === "on", originalTransactionId: originalTransactionId || null,
         allocations: mode === "EXPENSE" && expenseType === "PROJECT" && splitAcrossProjects ? allocations : [],
+        idempotencyKey: idempotencyKeyRef.current, attachments: selectedAttachments.map((item) => item.draft),
       }) });
-      const result = await response.json() as { error?: string; operation?: { warning?: string | null } };
+      const result = await response.json() as { error?: string; operation?: { id: string; warning?: string | null; idempotent?: boolean } };
       if (!response.ok) throw new Error(result.error ?? "Не удалось провести операцию.");
-      setSuccess(result.operation?.warning ? `Операция проведена. ${result.operation.warning}` : "Операция проведена и записана в историю.");
-      onSaved(); setTimeout(onClose, 1400);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Не удалось провести операцию."); setLoading(false); }
+      if (!result.operation?.id) throw new Error("Сервер не вернул идентификатор операции.");
+      console.info("FINANCE_TRANSACTION_CREATE_SUCCESS", { transactionId: result.operation.id, durationMs: Math.round(performance.now() - transactionStartedAt), idempotent: Boolean(result.operation.idempotent), attachmentCount: selectedAttachments.length });
+      setSuccess(result.operation.warning ? `Операция создана. ${result.operation.warning}` : "Операция создана и записана в историю.");
+      onSaved();
+      if (!selectedAttachments.length) { setTimeout(onClose, 1200); return; }
+      setUploadStatus(`Подготавливаем ${selectedAttachments.length === 1 ? "фото" : `${selectedAttachments.length} файла`}…`);
+      const results = await Promise.allSettled(selectedAttachments.map(({ file, draft }) => uploadFinanceAttachment({ file, draft, transactionId: result.operation!.id, projectId: receiptProjectId, onPhase: (phase) => { if (phase === "uploading") setUploadStatus(`Операция создана. Загружаем ${selectedAttachments.length} ${selectedAttachments.length === 1 ? "файл" : "файла"}…`); } })));
+      const failed = results.filter((item) => item.status === "rejected").length;
+      setUploadStatus(failed ? `Расход создан. Не удалось загрузить ${failed} ${failed === 1 ? "файл" : "файла"}. Откройте операцию, чтобы повторить.` : "Операция создана. Все файлы прикреплены.");
+      onSaved(); setTimeout(onClose, failed ? 2800 : 1400);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Не удалось провести операцию."); setLoading(false); submittingRef.current = false; }
   }
 
   return <div className="modal-wrap" onMouseDown={(event) => { if (event.target === event.currentTarget && !loading) onClose(); }}><section className="modal finance-modal" role="dialog" aria-modal="true" aria-labelledby="finance-modal-title"><div className="modal-head"><div><span className="eyebrow">ФИНАНСЫ</span><h3 id="finance-modal-title">{modeLabels[mode]}</h3></div><button onClick={onClose} aria-label="Закрыть">×</button></div>
@@ -444,13 +482,13 @@ export function FinanceOperationModal({ mode, onClose, onSaved, initialProjectId
         <label className="wide"><span>Комментарий</span><textarea name="comment" placeholder={mode === "TRANSFER" ? "Передал на закупки" : "Необязательно"} /></label>
       </div>
       {mode === "EXPENSE" && expenseType === "PROJECT" && <><label className="toggle-row"><span><b>Распределить между несколькими объектами</b><small>Один исходный чек останется у общей операции</small></span><input type="checkbox" checked={splitAcrossProjects} disabled={(data?.projects.length ?? 0) < 2} onChange={(event) => { setSplitAcrossProjects(event.target.checked); if (event.target.checked) { setAllocations([{ projectId: projectId || initialProjectId, amount }, { projectId: "", amount: "" }]); setProjectId(""); setClientId(""); } }} /></label>{splitAcrossProjects && <div className="allocation-editor"><div className="table-toolbar"><strong>Распределение</strong><small>Общая сумма: {money(amountKopecks)}</small></div>{allocations.map((allocation, index) => <div className="allocation-row" key={index}><select aria-label={`Объект распределения ${index + 1}`} value={allocation.projectId} onChange={(event) => setAllocations((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, projectId: event.target.value } : item))} required><option value="">Выберите объект</option>{data?.projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select><div className="amount-input"><input aria-label={`Сумма распределения ${index + 1}`} value={allocation.amount} onChange={(event) => setAllocations((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, amount: event.target.value } : item))} inputMode="decimal" required placeholder="0" /><b>₽</b></div>{allocations.length > 2 && <button type="button" aria-label="Удалить строку распределения" onClick={() => setAllocations((current) => current.filter((_, itemIndex) => itemIndex !== index))}>×</button>}</div>)}<button type="button" className="link" onClick={() => setAllocations((current) => [...current, { projectId: "", amount: "" }])}>＋ Добавить объект</button><div className={allocationRemainingKopecks === 0 ? "allocation-total ready" : "allocation-total"}><span>Осталось распределить</span><b>{money(allocationRemainingKopecks)}</b></div></div>}</>}
-      <label className="upload"><input name="attachment" type="file" accept=".jpg,.jpeg,.png,.webp,.heic,.heif,.pdf,image/jpeg,image/png,image/webp,image/heic,image/heif,application/pdf" onChange={(event) => setAttachmentName(event.target.files?.[0]?.name ?? "")} /><i>＋</i><span><b>{attachmentName || "Прикрепить чек"}</b><small>PDF, JPG, PNG, WebP или HEIC до 10 МБ · необязательно</small></span></label>
+      <label className="upload"><input name="attachment" type="file" multiple accept={FINANCE_ATTACHMENT_ACCEPT} onChange={(event) => { try { const next = Array.from(event.target.files ?? []).map((file) => ({ file, draft: createFinanceAttachmentDraft(file) })); setSelectedAttachments(next); setError(""); } catch (reason) { setSelectedAttachments([]); setError(reason instanceof Error ? reason.message : "Файл не прошёл проверку."); } }} /><i>＋</i><span><b>{selectedAttachments.length ? `${selectedAttachments.length} ${selectedAttachments.length === 1 ? "файл выбран" : "файла выбрано"}` : "Прикрепить чек / фото"}</b><small>До 10 файлов · изображения до 25 МБ, PDF до 10 МБ · необязательно</small></span></label>
       {mode === "EXPENSE" && expenseType === "PROJECT" && <label className="toggle-row"><span><b>Показывать клиенту</b><small>Расход появится в клиентском кабинете</small></span><input name="showToClient" type="checkbox" defaultChecked /></label>}
       <div className={`warning after-posting ${cashboxAffected && sourceAfter < 0 || repaymentOverBalance ? "negative" : ""}`}><b>После проведения</b>{cashboxAffected && selectedCashbox && <><span>{selectedCashbox.name}</span><strong>{money(selectedCashbox.balanceKopecks)} → {money(sourceAfter)}</strong></>}{mode === "TRANSFER" && destinationType === "CASHBOX" && destinationCashbox && <><span>{destinationCashbox.name}</span><strong>{money(destinationCashbox.balanceKopecks)} → {money(destinationAfter)}</strong></>}{selectedInvestmentAccount && (mode === "EXPENSE" && paymentSource === "INVESTMENT" || mode === "TRANSFER" && destinationType === "INVESTMENT") ? <><span>{selectedInvestmentAccount.name}</span><strong>{money(selectedInvestmentAccount.outstandingKopecks)} → {money(investmentAfter)}</strong></> : null}{cashboxAffected && sourceAfter < 0 && <p>Баланс кассы станет отрицательным. Операция разрешена.</p>}{repaymentOverBalance && <p>Сумма возврата превышает остаток инвестиции.</p>}</div>
       {mode === "EXPENSE" && expenseType === "PROJECT" && category === "MATERIALS" && !splitAcrossProjects && selectedProject && <div className={`warning after-posting ${selectedProject.materialsBalanceKopecks - amountKopecks < 0 ? "negative" : ""}`}><b>Клиентский бюджет материалов</b><span>{selectedProject.name}</span><strong>{money(selectedProject.materialsBalanceKopecks)} → {money(selectedProject.materialsBalanceKopecks - amountKopecks)}</strong>{selectedProject.materialsBalanceKopecks - amountKopecks < 0 && <p>Возникнет долг клиента {money(Math.abs(selectedProject.materialsBalanceKopecks - amountKopecks))}. Операция разрешена.</p>}</div>}
       {error && <div className="auth-error" role="alert"><i>!</i><span>{error}</span></div>}
       <div className="modal-actions"><button type="button" onClick={onClose}>Отмена</button><button type="submit" className="primary" disabled={loading || !data || repaymentOverBalance || (splitAcrossProjects && allocationRemainingKopecks !== 0)}>{loading ? "Проводим…" : mode === "TRANSFER" && destinationType === "INVESTMENT" ? "Вернуть инвестицию" : mode === "TRANSFER" ? "Провести перемещение" : "Провести операцию"}</button></div>
-    </form>}
+    </form>}{success && uploadStatus && <div className={uploadStatus.includes("Не удалось") ? "auth-error finance-upload-status" : "auth-success finance-upload-status"} role="status"><i>{uploadStatus.includes("Не удалось") ? "!" : "✓"}</i><span>{uploadStatus}</span></div>}
   </section></div>;
 }
 
