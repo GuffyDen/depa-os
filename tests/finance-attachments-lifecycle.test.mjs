@@ -46,15 +46,18 @@ test("completed receipt is linked independently and audited without file content
 });
 
 test("HEIC is converted and receipt images are compressed in a worker-friendly pipeline", async () => {
-  const client = await read("lib/finance-attachments-client.ts");
-  assert.match(client, /heic-to\/next/);
+  const [client, config] = await Promise.all([read("lib/finance-attachments-client.ts"), read("next.config.ts")]);
+  assert.match(client, /heic-to\/csp/);
+  assert.doesNotMatch(client, /heic-to\/next/);
+  assert.doesNotMatch(config, /unsafe-eval/);
   assert.match(client, /type: "image\/jpeg"/);
   assert.match(client, /maxWidthOrHeight: 1800/);
   assert.match(client, /maxSizeMB: 1\.1/);
   assert.match(client, /initialQuality: 0\.84/);
   assert.match(client, /useWebWorker: true/);
-  assert.match(client, /FINANCE_HEIC_CONVERSION_TIMEOUT_MS = 20_000/);
-  assert.match(client, /FINANCE_IMAGE_COMPRESSION_TIMEOUT_MS = 20_000/);
+  assert.match(client, /FINANCE_HEIC_CONVERSION_TIMEOUT_MS = 45_000/);
+  assert.match(client, /FINANCE_HEIC_FALLBACK_TIMEOUT_MS = 30_000/);
+  assert.match(client, /FINANCE_IMAGE_COMPRESSION_TIMEOUT_MS = 30_000/);
   assert.match(client, /FINANCE_BLOB_UPLOAD_TIMEOUT_MS = 90_000/);
   assert.match(client, /financePromiseWithTimeout/);
   assert.match(client, /Не удалось обработать HEIC за отведённое время/);
@@ -65,19 +68,45 @@ test("HEIC is converted and receipt images are compressed in a worker-friendly p
 test("finance lifecycle emits safe timing stages and stale upload-first clients are rejected", async () => {
   const [ui, client, files] = await Promise.all([read("app/finance-ui.tsx"), read("lib/finance-attachments-client.ts"), read("lib/files.ts")]);
   for (const stage of ["submit_clicked", "form_validation_done", "transaction_create_request_started", "transaction_create_response_received", "transaction_id_obtained", "ui_success_state", "modal_closed", "attachment_background_started", "attachment_background_finished"]) assert.match(ui, new RegExp(stage));
-  for (const stage of ["attachment_preprocessing_started", "heic_conversion_finished", "compression_finished", "blob_upload_started", "blob_upload_finished", "attachment_link_confirmed", "attachment_failed"]) assert.match(client, new RegExp(stage));
+  for (const stage of ["HEIC_DETECT", "HEIC_CONVERT_START", "HEIC_PRIMARY_SUCCESS", "HEIC_PRIMARY_FAILED", "HEIC_FALLBACK_START", "HEIC_FALLBACK_SUCCESS", "HEIC_FALLBACK_FAILED", "COMPRESS_SUCCESS", "COMPRESS_FAILED", "UPLOAD_START", "UPLOAD_SUCCESS", "UPLOAD_FAILED", "LINK_SUCCESS", "LINK_FAILED"]) assert.match(client, new RegExp(stage));
   assert.match(files, /payload\.category === "RECEIPT" && payload\.entityType === "FINANCIAL_TRANSACTION" && !payload\.entityId/);
   assert.match(files, /Страница финансов устарела\. Обновите её и повторите создание операции\./);
 });
 
 test("existing operation card lists, opens, adds and retries attachments", async () => {
-  const ui = await read("app/finance-ui.tsx");
+  const [ui, finance, route] = await Promise.all([read("app/finance-ui.tsx"), read("lib/finance.ts"), read("app/api/finance/attachments/route.ts")]);
   assert.match(ui, /ДОКУМЕНТЫ \/ ВЛОЖЕНИЯ/);
   assert.match(ui, /Добавить чек \/ фото/);
   assert.match(ui, /multiple accept=\{FINANCE_ATTACHMENT_ACCEPT\}/);
   assert.match(ui, /Не удалось обработать фото\. Операция сохранена без вложения\./);
   assert.match(ui, /Повторить/);
   assert.match(ui, /href=\{`\/api\/files\/\$\{attachment\.id\}`\}/);
+  assert.match(ui, /createFinanceAttachmentDraft\(file, retryAttachment\?\.id\)/);
+  assert.match(ui, /visibleFinanceAttachments/);
+  assert.match(finance, /ATTACHMENT_UPLOAD_RETRY_QUEUED/);
+  assert.match(finance, /attemptCount.*\+1/s);
+  assert.match(route, /retryFinanceAttachmentSlot/);
+});
+
+test("HEIC detection accepts iPhone MIME variants, extension and ISO-BMFF signature", async () => {
+  const [client, finance] = await Promise.all([read("lib/finance-attachments-client.ts"), read("lib/finance.ts")]);
+  for (const mime of ["image/heic", "image/heif", "image/heic-sequence", "image/heif-sequence"]) assert.match(client, new RegExp(mime));
+  assert.match(client, /application\/octet-stream|originalMimeType/);
+  assert.match(client, /String\.fromCharCode.*ftyp/s);
+  assert.match(client, /HEIC_BRANDS/);
+  assert.match(finance, /detectedMimeType/);
+});
+
+test("failure diagnostics are persisted without a schema migration", async () => {
+  const [client, finance] = await Promise.all([read("lib/finance-attachments-client.ts"), read("lib/finance.ts")]);
+  for (const code of ["UNSUPPORTED_FILE_TYPE", "HEIC_DECODE_FAILED", "HEIC_WORKER_FAILED", "HEIC_WORKER_TIMEOUT", "IMAGE_COMPRESSION_FAILED", "UPLOAD_TOKEN_FAILED", "BLOB_UPLOAD_FAILED", "LINK_CONFIRMATION_FAILED", "PROCESS_TIMEOUT"]) {
+    assert.match(client, new RegExp(code));
+    assert.match(finance, new RegExp(code));
+  }
+  assert.match(finance, /lastFailureCode/);
+  assert.match(finance, /lastFailureAt/);
+  assert.match(finance, /processingEvents/);
+  assert.match(finance, /metadata_json=metadata_json \|\|/);
 });
 
 test("missing receipt detector resolves only after a linked upload", async () => {

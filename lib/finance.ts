@@ -123,7 +123,7 @@ function parseAllocationsJson(value: unknown) {
 function parseAttachmentsJson(value: unknown) {
   if (!Array.isArray(value)) return [];
   return value.map((item) => {
-    const row = item as { id?: unknown; originalFilename?: unknown; mimeType?: unknown; sizeBytes?: unknown; status?: unknown; createdAt?: unknown };
+    const row = item as { id?: unknown; originalFilename?: unknown; mimeType?: unknown; sizeBytes?: unknown; status?: unknown; createdAt?: unknown; failureCode?: unknown; attemptCount?: unknown; lastFailureAt?: unknown };
     return {
       id: cleanText(row.id, 100),
       originalFilename: cleanText(row.originalFilename, 240),
@@ -131,6 +131,9 @@ function parseAttachmentsJson(value: unknown) {
       sizeBytes: number(row.sizeBytes as string | number | undefined),
       status: cleanText(row.status, 20) as "PENDING" | "LINKED" | "FAILED",
       createdAt: number(row.createdAt as string | number | undefined),
+      failureCode: cleanText(row.failureCode, 80) || null,
+      attemptCount: Math.max(1, number(row.attemptCount as string | number | undefined)),
+      lastFailureAt: number(row.lastFailureAt as string | number | undefined) || null,
     };
   }).filter((item) => item.id);
 }
@@ -345,7 +348,7 @@ export async function getFinanceOverview(actor: AuthUser) {
       attention.status AS attention_issue_status,attention.accepted_at AS attention_accepted_at,attention.accepted_by_user_id AS attention_accepted_by_user_id,attention_user.display_name AS attention_accepted_by_name,attention.acceptance_comment AS attention_acceptance_comment,
       (SELECT COUNT(*) FROM attachments a WHERE a.transaction_id = ft.id AND a.upload_status='LINKED' AND a.deleted_at IS NULL) AS attachment_count,
       (SELECT a.id FROM attachments a WHERE a.transaction_id = ft.id AND a.upload_status='LINKED' AND a.deleted_at IS NULL ORDER BY a.created_at LIMIT 1) AS attachment_id,
-      COALESCE((SELECT jsonb_agg(jsonb_build_object('id',a.id,'originalFilename',a.original_filename,'mimeType',a.mime_type,'sizeBytes',a.size_bytes,'status',CASE WHEN a.upload_status='PENDING' AND a.created_at < EXTRACT(EPOCH FROM now())::integer-600 THEN 'FAILED' ELSE a.upload_status END,'createdAt',a.created_at) ORDER BY a.created_at,a.id) FROM attachments a WHERE a.transaction_id=ft.id AND a.upload_status IN ('PENDING','LINKED','FAILED') AND a.deleted_at IS NULL),'[]'::jsonb) AS attachments_json,
+      COALESCE((SELECT jsonb_agg(jsonb_build_object('id',a.id,'originalFilename',a.original_filename,'mimeType',a.mime_type,'sizeBytes',a.size_bytes,'status',CASE WHEN a.upload_status='PENDING' AND a.created_at < EXTRACT(EPOCH FROM now())::integer-600 THEN 'FAILED' ELSE a.upload_status END,'createdAt',a.created_at,'failureCode',a.metadata_json->>'lastFailureCode','attemptCount',COALESCE((a.metadata_json->>'attemptCount')::integer,1),'lastFailureAt',(a.metadata_json->>'lastFailureAt')::integer) ORDER BY a.created_at,a.id) FROM attachments a WHERE a.transaction_id=ft.id AND a.upload_status IN ('PENDING','LINKED','FAILED') AND a.deleted_at IS NULL),'[]'::jsonb) AS attachments_json,
       COALESCE((SELECT jsonb_agg(jsonb_build_object('id',ta.id,'projectId',ta.project_id,'projectName',ap.name,'amountKopecks',ta.amount_kopecks,'purpose',ta.purpose) ORDER BY ap.name) FROM transaction_allocations ta JOIN projects ap ON ap.id=ta.project_id WHERE ta.transaction_id=ft.id),'[]'::jsonb) AS allocations_json
       FROM financial_transactions ft LEFT JOIN cashboxes source_box ON source_box.id = ft.cashbox_id LEFT JOIN cashboxes destination_box ON destination_box.id = ft.destination_cashbox_id LEFT JOIN investment_accounts ia ON ia.id=ft.investment_account_id LEFT JOIN users iu ON iu.id=ia.owner_user_id LEFT JOIN projects p ON p.id = ft.project_id JOIN users u ON u.id = ft.author_user_id LEFT JOIN finance_attention_acknowledgements attention ON attention.transaction_id=ft.id AND attention.issue_type='MISSING_RECEIPT' LEFT JOIN users attention_user ON attention_user.id=attention.accepted_by_user_id ${transactionCondition} ORDER BY ft.transaction_date DESC, ft.created_at DESC LIMIT 200`, params),
     allProjects
@@ -530,7 +533,7 @@ export async function getCashboxHistory(actor: AuthUser, filters: CashboxHistory
     attention.status AS attention_issue_status,attention.accepted_at AS attention_accepted_at,attention.accepted_by_user_id AS attention_accepted_by_user_id,attention_user.display_name AS attention_accepted_by_name,attention.acceptance_comment AS attention_acceptance_comment,
     (SELECT COUNT(*) FROM attachments a WHERE a.transaction_id=ft.id AND a.upload_status='LINKED' AND a.deleted_at IS NULL) AS attachment_count,
     (SELECT a.id FROM attachments a WHERE a.transaction_id=ft.id AND a.upload_status='LINKED' AND a.deleted_at IS NULL ORDER BY a.created_at LIMIT 1) AS attachment_id,
-    COALESCE((SELECT jsonb_agg(jsonb_build_object('id',a.id,'originalFilename',a.original_filename,'mimeType',a.mime_type,'sizeBytes',a.size_bytes,'status',CASE WHEN a.upload_status='PENDING' AND a.created_at < EXTRACT(EPOCH FROM now())::integer-600 THEN 'FAILED' ELSE a.upload_status END,'createdAt',a.created_at) ORDER BY a.created_at,a.id) FROM attachments a WHERE a.transaction_id=ft.id AND a.upload_status IN ('PENDING','LINKED','FAILED') AND a.deleted_at IS NULL),'[]'::jsonb) AS attachments_json,
+    COALESCE((SELECT jsonb_agg(jsonb_build_object('id',a.id,'originalFilename',a.original_filename,'mimeType',a.mime_type,'sizeBytes',a.size_bytes,'status',CASE WHEN a.upload_status='PENDING' AND a.created_at < EXTRACT(EPOCH FROM now())::integer-600 THEN 'FAILED' ELSE a.upload_status END,'createdAt',a.created_at,'failureCode',a.metadata_json->>'lastFailureCode','attemptCount',COALESCE((a.metadata_json->>'attemptCount')::integer,1),'lastFailureAt',(a.metadata_json->>'lastFailureAt')::integer) ORDER BY a.created_at,a.id) FROM attachments a WHERE a.transaction_id=ft.id AND a.upload_status IN ('PENDING','LINKED','FAILED') AND a.deleted_at IS NULL),'[]'::jsonb) AS attachments_json,
     COALESCE((SELECT jsonb_agg(jsonb_build_object('id',ta.id,'projectId',ta.project_id,'projectName',ap.name,'amountKopecks',ta.amount_kopecks,'purpose',ta.purpose) ORDER BY ap.name) FROM transaction_allocations ta JOIN projects ap ON ap.id=ta.project_id WHERE ta.transaction_id=ft.id),'[]'::jsonb) AS allocations_json
     FROM financial_transactions ft
     LEFT JOIN cashboxes source_box ON source_box.id=ft.cashbox_id
@@ -560,7 +563,7 @@ export type CreateFinanceOperationInput = {
   allocations?: unknown; paymentSource?: unknown; destinationType?: unknown; investmentAccountId?: unknown;
 };
 
-type FinanceAttachmentSlotInput = { attachmentId: string; originalFilename: string; originalMimeType: string; originalSizeBytes: number; mimeType: "image/jpeg" | "application/pdf" };
+type FinanceAttachmentSlotInput = { attachmentId: string; originalFilename: string; originalMimeType: string; detectedMimeType: "image/jpeg" | "image/png" | "image/webp" | "image/heic" | "image/heif" | "application/pdf"; originalSizeBytes: number; mimeType: "image/jpeg" | "application/pdf" };
 
 function parseFinanceAttachmentSlots(value: unknown): FinanceAttachmentSlotInput[] {
   if (value == null) return [];
@@ -570,25 +573,28 @@ function parseFinanceAttachmentSlots(value: unknown): FinanceAttachmentSlotInput
     const attachmentId = cleanText(row.attachmentId, 100);
     const originalFilename = cleanText(row.originalFilename, 240);
     const originalMimeType = cleanText(row.originalMimeType, 100).toLocaleLowerCase("en-US");
+    const legacyDetectedMimeType = originalMimeType === "image/heic-sequence" ? "image/heic" : originalMimeType === "image/heif-sequence" ? "image/heif" : originalMimeType;
+    const detectedMimeType = (cleanText(row.detectedMimeType, 100).toLocaleLowerCase("en-US") || legacyDetectedMimeType) as FinanceAttachmentSlotInput["detectedMimeType"];
     const originalSizeBytes = Number(row.originalSizeBytes);
     const mimeType = cleanText(row.mimeType, 100).toLocaleLowerCase("en-US");
     if (!UUID.test(attachmentId) || !originalFilename) throw new FinanceError("Некорректные параметры вложения.");
-    if (!["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif", "application/pdf"].includes(originalMimeType)) throw new FinanceError("Разрешены PDF, JPG, PNG, WebP и HEIC/HEIF.");
-    const maximumOriginalBytes = originalMimeType === "application/pdf" ? 10 * 1024 * 1024 : 25 * 1024 * 1024;
-    if (!Number.isInteger(originalSizeBytes) || originalSizeBytes <= 0 || originalSizeBytes > maximumOriginalBytes) throw new FinanceError(originalMimeType === "application/pdf" ? "PDF должен быть не больше 10 МБ." : "Исходное изображение должно быть не больше 25 МБ.");
-    if (mimeType !== (originalMimeType === "application/pdf" ? "application/pdf" : "image/jpeg")) throw new FinanceError("Некорректный формат оптимизированного вложения.");
-    return { attachmentId, originalFilename, originalMimeType, originalSizeBytes, mimeType } as FinanceAttachmentSlotInput;
+    if (originalMimeType && !/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/i.test(originalMimeType)) throw new FinanceError("Некорректный исходный MIME-тип.");
+    if (!["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif", "application/pdf"].includes(detectedMimeType)) throw new FinanceError("Разрешены PDF, JPG, PNG, WebP и HEIC/HEIF.");
+    const maximumOriginalBytes = detectedMimeType === "application/pdf" ? 10 * 1024 * 1024 : 25 * 1024 * 1024;
+    if (!Number.isInteger(originalSizeBytes) || originalSizeBytes <= 0 || originalSizeBytes > maximumOriginalBytes) throw new FinanceError(detectedMimeType === "application/pdf" ? "PDF должен быть не больше 10 МБ." : "Исходное изображение должно быть не больше 25 МБ.");
+    if (mimeType !== (detectedMimeType === "application/pdf" ? "application/pdf" : "image/jpeg")) throw new FinanceError("Некорректный формат оптимизированного вложения.");
+    return { attachmentId, originalFilename, originalMimeType, detectedMimeType, originalSizeBytes, mimeType } as FinanceAttachmentSlotInput;
   });
 }
 
 function attachmentSlotStatements(actor: AuthUser, transactionId: string, projectId: string | null, slots: FinanceAttachmentSlotInput[], timestamp: number) {
   return slots.flatMap((slot) => {
     const storageKey = attachmentPath(slot.attachmentId, "RECEIPT", slot.mimeType);
-    const metadata = JSON.stringify({ originalMimeType: slot.originalMimeType, originalSizeBytes: slot.originalSizeBytes, optimizedLongEdgePx: slot.mimeType === "image/jpeg" ? 1800 : null, optimizedTargetBytes: slot.mimeType === "image/jpeg" ? 1153434 : null });
+    const metadata = JSON.stringify({ originalFilename: slot.originalFilename, originalMimeType: slot.originalMimeType, detectedMimeType: slot.detectedMimeType, originalSize: slot.originalSizeBytes, originalSizeBytes: slot.originalSizeBytes, storedMimeType: slot.mimeType, conversionApplied: slot.detectedMimeType === "image/heic" || slot.detectedMimeType === "image/heif", attemptCount: 1, optimizedLongEdgePx: slot.mimeType === "image/jpeg" ? 1800 : null, optimizedTargetBytes: slot.mimeType === "image/jpeg" ? 1153434 : null });
     return [
       { text: `INSERT INTO attachments (id,transaction_id,project_id,storage_provider,storage_key,blob_url,original_filename,mime_type,size_bytes,checksum_sha256,uploaded_by_user_id,entity_type,entity_id,category,visibility,upload_status,metadata_json,created_at,updated_at)
         VALUES ($1,$2,$3,'VERCEL_BLOB',$4,NULL,$5,$6,0,NULL,$7,'FINANCIAL_TRANSACTION',$2,'RECEIPT','INTERNAL','PENDING',$8::jsonb,$9,$9)`, params: [slot.attachmentId, transactionId, projectId, storageKey, slot.originalFilename, slot.mimeType, actor.id, metadata, timestamp] },
-      { text: "INSERT INTO audit_logs (id,actor_user_id,action,entity_type,entity_id,occurred_at,metadata_json) VALUES ($1,$2,'ATTACHMENT_UPLOAD_QUEUED','Attachment',$3,$4,$5)", params: [crypto.randomUUID(), actor.id, slot.attachmentId, timestamp, JSON.stringify({ transactionId, originalMimeType: slot.originalMimeType, originalSizeBytes: slot.originalSizeBytes })] },
+      { text: "INSERT INTO audit_logs (id,actor_user_id,action,entity_type,entity_id,occurred_at,metadata_json) VALUES ($1,$2,'ATTACHMENT_UPLOAD_QUEUED','Attachment',$3,$4,$5)", params: [crypto.randomUUID(), actor.id, slot.attachmentId, timestamp, JSON.stringify({ transactionId, originalMimeType: slot.originalMimeType, detectedMimeType: slot.detectedMimeType, originalSizeBytes: slot.originalSizeBytes, attemptCount: 1 })] },
     ];
   });
 }
@@ -813,7 +819,71 @@ export async function createFinanceAttachmentSlots(actor: AuthUser, input: { tra
   return { transactionId, attachments: slots.map((slot) => ({ attachmentId: slot.attachmentId, status: "PENDING" as const })) };
 }
 
-export async function confirmFinanceAttachmentUpload(actor: AuthUser, input: { attachmentId?: unknown }) {
+const FINANCE_ATTACHMENT_FAILURE_CODES = new Set(["UNSUPPORTED_FILE_TYPE", "HEIC_DECODE_FAILED", "HEIC_WORKER_FAILED", "HEIC_WORKER_TIMEOUT", "IMAGE_COMPRESSION_FAILED", "UPLOAD_TOKEN_FAILED", "BLOB_UPLOAD_FAILED", "LINK_CONFIRMATION_FAILED", "PROCESS_TIMEOUT"]);
+const FINANCE_ATTACHMENT_TELEMETRY_EVENTS = new Set(["HEIC_DETECT", "HEIC_CONVERT_START", "HEIC_PRIMARY_SUCCESS", "HEIC_PRIMARY_FAILED", "HEIC_FALLBACK_START", "HEIC_FALLBACK_SUCCESS", "HEIC_FALLBACK_FAILED", "COMPRESS_SUCCESS", "COMPRESS_FAILED", "UPLOAD_START", "UPLOAD_SUCCESS", "UPLOAD_FAILED", "LINK_SUCCESS", "LINK_FAILED"]);
+
+function finiteTelemetryNumber(value: unknown, maximum: number) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.min(Math.round(parsed), maximum) : undefined;
+}
+
+function parseFinanceAttachmentTelemetry(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 30).flatMap((item) => {
+    const row = item && typeof item === "object" ? item as Record<string, unknown> : {};
+    const event = cleanText(row.event, 50);
+    if (!FINANCE_ATTACHMENT_TELEMETRY_EVENTS.has(event)) return [];
+    const failureCode = cleanText(row.failureCode, 80);
+    const converter = cleanText(row.converter, 80);
+    return [{
+      event,
+      atMs: finiteTelemetryNumber(row.atMs, 300_000) ?? 0,
+      ...(finiteTelemetryNumber(row.durationMs, 300_000) == null ? {} : { durationMs: finiteTelemetryNumber(row.durationMs, 300_000) }),
+      ...(finiteTelemetryNumber(row.sizeBytes, 30 * 1024 * 1024) == null ? {} : { sizeBytes: finiteTelemetryNumber(row.sizeBytes, 30 * 1024 * 1024) }),
+      ...(FINANCE_ATTACHMENT_FAILURE_CODES.has(failureCode) ? { failureCode } : {}),
+      ...(["heic-to-csp-worker", "browser-native", "browser-image-compression-worker", "browser-image-compression-main"].includes(converter) ? { converter } : {}),
+    }];
+  });
+}
+
+function parseFinanceAttachmentProcessing(value: unknown) {
+  const row = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const storedMimeType = cleanText(row.storedMimeType, 100);
+  return {
+    conversionApplied: row.conversionApplied === true,
+    conversionMs: finiteTelemetryNumber(row.conversionMs, 300_000) ?? 0,
+    compressionMs: finiteTelemetryNumber(row.compressionMs, 300_000) ?? 0,
+    storedMimeType: storedMimeType === "application/pdf" ? "application/pdf" : "image/jpeg",
+    storedSize: finiteTelemetryNumber(row.storedSizeBytes, 30 * 1024 * 1024) ?? 0,
+    storedSizeBytes: finiteTelemetryNumber(row.storedSizeBytes, 30 * 1024 * 1024) ?? 0,
+  };
+}
+
+export async function retryFinanceAttachmentSlot(actor: AuthUser, input: { transactionId?: unknown; retryAttachmentId?: unknown; attachments?: unknown }) {
+  const transactionId = cleanText(input.transactionId, 100);
+  const retryAttachmentId = cleanText(input.retryAttachmentId, 100);
+  if (!transactionId || !UUID.test(retryAttachmentId)) throw new FinanceError("Некорректные параметры повторной загрузки.");
+  const transactionRow = await financeTransactionForAttachment(actor, transactionId);
+  const slots = parseFinanceAttachmentSlots(input.attachments);
+  if (slots.length !== 1 || slots[0].attachmentId !== retryAttachmentId) throw new FinanceError("Для повтора выберите один файл.");
+  const slot = slots[0];
+  const attachment = await first<{ id: string; transaction_id: string; entity_id: string; uploaded_by_user_id: string; upload_status: string; storage_key: string; blob_url: string | null; completed_at: number | null; linked_at: number | null }>("SELECT id,transaction_id,entity_id,uploaded_by_user_id,upload_status,storage_key,blob_url,completed_at,linked_at FROM attachments WHERE id=$1 AND deleted_at IS NULL LIMIT 1", [retryAttachmentId]);
+  if (!attachment || attachment.transaction_id !== transactionId || attachment.entity_id !== transactionId) throw new FinanceError("Вложение для повтора не найдено.", 404);
+  if (attachment.uploaded_by_user_id !== actor.id && actor.role !== "OWNER") throw new FinanceError("Нет права повторить эту загрузку.", 403);
+  if (attachment.upload_status !== "FAILED" || attachment.blob_url || attachment.completed_at || attachment.linked_at) throw new FinanceError("Повтор доступен только для незавершённого вложения.", 409);
+  const storageKey = attachmentPath(slot.attachmentId, "RECEIPT", slot.mimeType);
+  if (attachment.storage_key !== storageKey) throw new FinanceError("Формат повторной загрузки не соответствует вложению.", 409);
+  const timestamp = nowSeconds();
+  const metadata = JSON.stringify({ originalFilename: slot.originalFilename, originalMimeType: slot.originalMimeType, detectedMimeType: slot.detectedMimeType, originalSize: slot.originalSizeBytes, originalSizeBytes: slot.originalSizeBytes, storedMimeType: slot.mimeType, conversionApplied: slot.detectedMimeType === "image/heic" || slot.detectedMimeType === "image/heif", retryStartedAt: timestamp });
+  await transaction([
+    { text: "SELECT 1/CASE WHEN COUNT(*)=1 THEN 1 ELSE 0 END FROM (SELECT id FROM attachments WHERE id=$1 AND transaction_id=$2 AND entity_id=$2 AND upload_status='FAILED' AND blob_url IS NULL AND completed_at IS NULL AND linked_at IS NULL AND deleted_at IS NULL FOR UPDATE) guarded", params: [retryAttachmentId, transactionId] },
+    { text: "UPDATE attachments SET original_filename=$1,mime_type=$2,size_bytes=0,checksum_sha256=NULL,upload_status='PENDING',metadata_json=metadata_json || $3::jsonb || jsonb_build_object('attemptCount',COALESCE((metadata_json->>'attemptCount')::integer,1)+1),updated_at=$4 WHERE id=$5 AND upload_status='FAILED' AND transaction_id=$6 AND entity_id=$6 AND blob_url IS NULL AND completed_at IS NULL AND linked_at IS NULL", params: [slot.originalFilename, slot.mimeType, metadata, timestamp, retryAttachmentId, transactionId] },
+    { text: "INSERT INTO audit_logs (id,actor_user_id,action,entity_type,entity_id,occurred_at,metadata_json) VALUES ($1,$2,'ATTACHMENT_UPLOAD_RETRY_QUEUED','Attachment',$3,$4,jsonb_build_object('transactionId',$5::text,'detectedMimeType',$6::text,'originalSizeBytes',$7::bigint))", params: [crypto.randomUUID(), actor.id, retryAttachmentId, timestamp, transactionId, slot.detectedMimeType, slot.originalSizeBytes] },
+  ]);
+  return { transactionId, attachments: [{ attachmentId: retryAttachmentId, status: "PENDING" as const }], retry: true, projectId: transactionRow.project_id };
+}
+
+export async function confirmFinanceAttachmentUpload(actor: AuthUser, input: { attachmentId?: unknown; telemetry?: unknown; processing?: unknown }) {
   const attachmentId = cleanText(input.attachmentId, 100);
   const attachment = await first<{ id: string; transaction_id: string; uploaded_by_user_id: string }>("SELECT id,transaction_id,uploaded_by_user_id FROM attachments WHERE id=$1 AND transaction_id IS NOT NULL AND deleted_at IS NULL LIMIT 1", [attachmentId]);
   if (!attachment) throw new FinanceError("Вложение не найдено.", 404);
@@ -821,6 +891,14 @@ export async function confirmFinanceAttachmentUpload(actor: AuthUser, input: { a
   if (attachment.uploaded_by_user_id !== actor.id) throw new FinanceError("Подтвердить загрузку может только её автор.", 403);
   try {
     const ready = await confirmAttachmentUpload(actor, attachmentId);
+    const timestamp = nowSeconds();
+    const telemetry = parseFinanceAttachmentTelemetry(input.telemetry);
+    const processing = parseFinanceAttachmentProcessing(input.processing);
+    const metadata = JSON.stringify({ ...processing, processingEvents: [...telemetry, { event: "LINK_SUCCESS", serverAt: timestamp }], lastSuccessAt: timestamp });
+    await transaction([
+      { text: "UPDATE attachments SET metadata_json=metadata_json || $1::jsonb,updated_at=$2 WHERE id=$3 AND upload_status='LINKED'", params: [metadata, timestamp, attachmentId] },
+      { text: "INSERT INTO audit_logs (id,actor_user_id,action,entity_type,entity_id,occurred_at,metadata_json) VALUES ($1,$2,'ATTACHMENT_PROCESSING_COMPLETED','Attachment',$3,$4,$5)", params: [crypto.randomUUID(), actor.id, attachmentId, timestamp, JSON.stringify({ event: "LINK_SUCCESS", transactionId: attachment.transaction_id, ...processing, telemetry })] },
+    ]);
     return { ok: true, status: ready.upload_status as "LINKED" | "UPLOADED" };
   } catch (error) {
     if (error instanceof FileError) throw new FinanceError(error.message, error.status);
@@ -828,7 +906,7 @@ export async function confirmFinanceAttachmentUpload(actor: AuthUser, input: { a
   }
 }
 
-export async function markFinanceAttachmentFailed(actor: AuthUser, input: { attachmentId?: unknown }) {
+export async function markFinanceAttachmentFailed(actor: AuthUser, input: { attachmentId?: unknown; failureCode?: unknown; failureStage?: unknown; telemetry?: unknown }) {
   const attachmentId = cleanText(input.attachmentId, 100);
   const attachment = await first<{ id: string; transaction_id: string; uploaded_by_user_id: string; upload_status: string }>("SELECT id,transaction_id,uploaded_by_user_id,upload_status FROM attachments WHERE id=$1 AND transaction_id IS NOT NULL AND deleted_at IS NULL LIMIT 1", [attachmentId]);
   if (!attachment) throw new FinanceError("Вложение не найдено.", 404);
@@ -836,9 +914,14 @@ export async function markFinanceAttachmentFailed(actor: AuthUser, input: { atta
   if (attachment.uploaded_by_user_id !== actor.id && actor.role !== "OWNER") throw new FinanceError("Нет права изменить эту загрузку.", 403);
   if (attachment.upload_status === "LINKED") return { ok: true, status: "LINKED" as const };
   const timestamp = nowSeconds();
+  const requestedFailureCode = cleanText(input.failureCode, 80);
+  const failureCode = FINANCE_ATTACHMENT_FAILURE_CODES.has(requestedFailureCode) ? requestedFailureCode : "PROCESS_TIMEOUT";
+  const failureStage = cleanText(input.failureStage, 80) || "UNKNOWN";
+  const telemetry = parseFinanceAttachmentTelemetry(input.telemetry);
+  const metadata = JSON.stringify({ lastFailureCode: failureCode, lastFailureAt: timestamp, lastFailureStage: failureStage, processingEvents: [...telemetry, { event: failureStage === "LINK_CONFIRMATION" ? "LINK_FAILED" : "PROCESS_FAILED", failureCode, serverAt: timestamp }] });
   await transaction([
-    { text: "UPDATE attachments SET upload_status='FAILED',updated_at=$1 WHERE id=$2 AND upload_status IN ('PENDING','UPLOADED')", params: [timestamp, attachmentId] },
-    { text: "INSERT INTO audit_logs (id,actor_user_id,action,entity_type,entity_id,occurred_at,metadata_json) VALUES ($1,$2,'ATTACHMENT_UPLOAD_FAILED','Attachment',$3,$4,$5)", params: [crypto.randomUUID(), actor.id, attachmentId, timestamp, JSON.stringify({ transactionId: attachment.transaction_id })] },
+    { text: "UPDATE attachments SET upload_status='FAILED',metadata_json=metadata_json || $1::jsonb,updated_at=$2 WHERE id=$3 AND upload_status IN ('PENDING','UPLOADED')", params: [metadata, timestamp, attachmentId] },
+    { text: "INSERT INTO audit_logs (id,actor_user_id,action,entity_type,entity_id,occurred_at,metadata_json) VALUES ($1,$2,'ATTACHMENT_UPLOAD_FAILED','Attachment',$3,$4,$5)", params: [crypto.randomUUID(), actor.id, attachmentId, timestamp, JSON.stringify({ transactionId: attachment.transaction_id, failureCode, failureStage, telemetry })] },
   ]);
   return { ok: true, status: "FAILED" as const };
 }

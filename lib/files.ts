@@ -225,7 +225,7 @@ export async function prepareAttachmentUpload(actor: AuthUser, pathname: string,
   const expectedPath = attachmentPath(payload.attachmentId, payload.category, payload.mimeType);
   if (pathname !== expectedPath) throw new FileError("Путь загрузки файла отклонён.");
   const timestamp = nowSeconds();
-  const existing = await first<{ uploaded_by_user_id: string; upload_status: string; transaction_id: string | null; project_id: string | null; original_filename: string; mime_type: string; storage_key: string }>("SELECT uploaded_by_user_id,upload_status,transaction_id,project_id,original_filename,mime_type,storage_key FROM attachments WHERE id=$1 LIMIT 1", [payload.attachmentId]);
+  const existing = await first<{ uploaded_by_user_id: string; upload_status: string; transaction_id: string | null; project_id: string | null; original_filename: string; mime_type: string; storage_key: string; metadata_json: Record<string, unknown> }>("SELECT uploaded_by_user_id,upload_status,transaction_id,project_id,original_filename,mime_type,storage_key,metadata_json FROM attachments WHERE id=$1 LIMIT 1", [payload.attachmentId]);
   if (existing && (existing.uploaded_by_user_id !== actor.id || existing.upload_status !== "PENDING")) throw new FileError("Эта загрузка уже использована.", 409);
   if (existing && (existing.storage_key !== expectedPath || existing.mime_type !== payload.mimeType || existing.original_filename !== payload.originalFilename || existing.transaction_id !== (payload.entityId ?? null) || existing.project_id !== (payload.projectId ?? null))) throw new FileError("Параметры загрузки не соответствуют подготовленному вложению.", 409);
   if (!existing && payload.category === "RECEIPT" && payload.entityId) throw new FileError("Сначала подготовьте вложение в финансовой операции.", 409);
@@ -241,7 +241,7 @@ export async function prepareAttachmentUpload(actor: AuthUser, pathname: string,
     maximumSizeInBytes: fileLimitBytes(payload.category),
     validUntil: Date.now() + 10 * 60 * 1000,
     addRandomSuffix: false,
-    allowOverwrite: false,
+    allowOverwrite: Number(existing?.metadata_json?.attemptCount ?? 1) > 1,
     cacheControlMaxAge: 60,
     tokenPayload: JSON.stringify({ attachmentId: payload.attachmentId, uploadedByUserId: actor.id }),
   };
