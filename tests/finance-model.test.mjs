@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { cashboxDelta, parseAmountKopecks, projectLedgerTotals, projectPurposeBalances, transferPreview, validateAllocations, validateExpense } from "../lib/finance-rules.ts";
+import { cashboxDelta, investmentBalance, investmentMovementDelta, parseAmountKopecks, projectLedgerTotals, projectPurposeBalances, transferPreview, validateAllocations, validateExpense, validateInvestmentRepayment } from "../lib/finance-rules.ts";
 
 const root = new URL("../", import.meta.url);
 const read = (path) => readFile(new URL(path, root), "utf8");
@@ -95,4 +95,44 @@ test("finance summary hides sensitive indicators without explicit permissions", 
   assert.match(finance, /depaProfitKopecks: access\.actions\["finance\.viewProfit"\]/);
   assert.match(finance, /purpose='OTHER'/);
   assert.match(finance, /project\.otherIncomeKopecks/);
+});
+
+test("investment balance is contributions minus repayments and never permits an ordinary overpayment", () => {
+  assert.equal(investmentMovementDelta("CONTRIBUTION") * 15_000_000, 15_000_000);
+  assert.equal(investmentMovementDelta("REPAYMENT") * 5_000_000, -5_000_000);
+  assert.equal(investmentBalance(15_000_000, 5_000_000), 10_000_000);
+  assert.equal(validateInvestmentRepayment(10_000_000, 10_000_000), null);
+  assert.match(validateInvestmentRepayment(10_000_000, 10_000_001), /превышает остаток инвестиции/i);
+  assert.equal(cashboxDelta("INVESTMENT_REPAYMENT") * 5_000_000, -5_000_000);
+});
+
+test("investment-funded expense and repayment use distinct linked records without double-counting expense", async () => {
+  const [finance, migration, schema, ui, permissions] = await Promise.all([
+    read("lib/finance.ts"), read("drizzle/postgres/0022_investment_accounts.sql"), read("db/schema.ts"), read("app/finance-ui.tsx"), read("lib/permission-definitions.ts"),
+  ]);
+  assert.match(migration, /CREATE TABLE investment_accounts/);
+  assert.match(migration, /id IN \('user_owner_denis','user_owner_pavel'\)/);
+  assert.doesNotMatch(migration, /ELSE 'Инвестиция ' \|\| split_part/);
+  assert.match(migration, /CREATE TABLE investment_movements/);
+  assert.match(migration, /ALTER COLUMN cashbox_id DROP NOT NULL/);
+  assert.match(migration, /investment_movements_transaction_unique/);
+  assert.match(schema, /export const investmentAccounts/);
+  assert.match(schema, /export const investmentMovements/);
+  assert.match(finance, /const sourceDelta = personalExpense \? 0/);
+  assert.match(finance, /INVESTMENT_REPAYMENT/);
+  assert.match(finance, /INSERT INTO investment_movements/);
+  assert.match(finance, /id IN \('user_owner_denis','user_owner_pavel'\)/);
+  assert.match(finance, /type='EXPENSE'/);
+  assert.doesNotMatch(finance, /type='EXPENSE'[^\n]*INVESTMENT_REPAYMENT/);
+  assert.match(ui, /Операции<\/button>.*Кассы<\/button>.*Инвестиции<\/button>/s);
+  assert.match(ui, /activeTab === "OPERATIONS" \? <div id="finance-operations-panel"[\s\S]*ClientPaymentInboxForm[\s\S]*Требует внимания[\s\S]*Все операции/);
+  assert.match(ui, /activeTab === "CASHBOXES" \? <CashboxWorkspace/);
+  assert.match(ui, /url\.pathname = "\/dashboard"/);
+  assert.match(ui, /url\.searchParams\.set\("tab", financeTabSlugs\[nextTab\]\)/);
+  assert.match(ui, /aria-expanded=\{account\.id === selectedId\}/);
+  assert.match(ui, /const \[selectedId, setSelectedId\] = useState\(""\)/);
+  assert.match(ui, /Дата<\/span><span>Тип<\/span><span>Описание<\/span><span>Связанный расход<\/span><span>Источник возврата<\/span><span>Сумма/);
+  assert.match(ui, /Личные средства \/ Инвестиция/);
+  assert.match(permissions, /finance\.viewInvestments/);
+  assert.match(permissions, /finance\.repayInvestments/);
 });

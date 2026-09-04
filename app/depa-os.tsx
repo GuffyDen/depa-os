@@ -64,11 +64,13 @@ function Sidebar({ section, onChange, open, onClose, user, access, onProfile, cr
 
 function Topbar({ title, onMenu, onAdd, onSearch }: { title: string; onMenu: () => void; onAdd?: () => void; onSearch?: () => void }) {
   return <header className="topbar">
-    <button className="icon-btn mobile-only" onClick={onMenu} aria-label="Открыть меню">☰</button>
-    <div><small>DEPA STROY · ВЛАДИВОСТОК</small><h1>{title}</h1></div>
-    <div className="top-actions">
-      {onSearch ? <button className="search" onClick={onSearch}><span>⌕</span><span className="search-label">Найти клиента, объект, операцию</span><kbd>⌘ K</kbd></button> : null}
-      {onAdd ? <button className="primary" onClick={onAdd}>＋ <span>Добавить</span></button> : null}
+    <div className="topbar-inner">
+      <button className="icon-btn mobile-only" onClick={onMenu} aria-label="Открыть меню">☰</button>
+      <div><small>DEPA STROY · ВЛАДИВОСТОК</small><h1>{title}</h1></div>
+      <div className="top-actions">
+        {onSearch ? <button className="search" onClick={onSearch}><span>⌕</span><span className="search-label">Найти клиента, объект, операцию</span><kbd>⌘ K</kbd></button> : null}
+        {onAdd ? <button className="primary" onClick={onAdd}>＋ <span>Добавить</span></button> : null}
+      </div>
     </div>
   </header>;
 }
@@ -131,7 +133,7 @@ function Dashboard({ onObject, onSection, onLead, onOrder, user }: { onObject: (
         <div className="panel-head"><div><span className="eyebrow">КАССЫ</span><h3>Персональные</h3></div><button className="link" onClick={() => onSection("finance")}>Подробнее →</button></div>
         {finance?.cashboxes.filter((box) => box.status === "ACTIVE").map((box, index) => <button className="cash-row" key={box.id} onClick={() => onSection("finance")}><span><i className={`dot ${index ? "gray" : ""}`} />{box.name}</span><b className={box.balanceKopecks < 0 ? "minus" : ""}>{money(box.balanceKopecks)}</b></button>)}
         {!finance?.cashboxes.filter((box) => box.status === "ACTIVE").length && <div className="finance-empty">Активных касс нет.</div>}
-        <div className="cash-note"><span>Итого в кассах</span><b>{finance ? money(finance.physicalTotalKopecks) : "—"} · физический остаток</b><span>Клиентские средства</span><b>{finance?.clientFundsKopecks != null ? money(finance.clientFundsKopecks) : "—"} · считаются отдельно</b></div>
+        <div className="cash-note"><span>Итого в кассах</span><b>{finance ? money(finance.physicalTotalKopecks) : "—"} · физический остаток</b><span>Инвестиции к возврату</span><b>{finance?.investmentOutstandingKopecks != null ? money(finance.investmentOutstandingKopecks) : "—"} · не входят в кассы</b><span>Клиентские средства</span><b>{finance?.clientFundsKopecks != null ? money(finance.clientFundsKopecks) : "—"} · считаются отдельно</b></div>
       </section>
     </div>
   </>;
@@ -145,6 +147,7 @@ function EmployeeDashboard({ user, access, onSection }: { user: AuthUser; access
     {access.modules.finance && access.actions["finance.view"] ? <Metric label={access.scopes.cashboxes === "ALL" ? "ДОСТУПНЫЕ КАССЫ" : "МОЯ КАССА"} value={finance ? money(finance.physicalTotalKopecks) : "—"} detail={access.scopes.cashboxes === "ALL" ? "Просмотр всех касс · операции только из своей" : "Баланс и история собственной кассы"} /> : null}
     {access.modules.projects ? <Metric label="ОБЪЕКТЫ" value={access.scopes.projects === "ALL" ? "Все" : "Назначенные"} detail="Доступ определяется Owner" /> : null}
     {access.actions["finance.viewClientFunds"] && finance?.clientFundsKopecks !== null ? <Metric label="СРЕДСТВА КЛИЕНТОВ" value={finance ? money(finance.clientFundsKopecks ?? 0) : "—"} detail="В доступной области" /> : null}
+    {access.actions["finance.viewInvestments"] && finance?.investmentOutstandingKopecks !== null ? <Metric label="ИНВЕСТИЦИИ К ВОЗВРАТУ" value={finance ? money(finance.investmentOutstandingKopecks ?? 0) : "—"} detail="Не входят в деньги касс" tone="orange" /> : null}
     {access.actions["finance.viewProfit"] && finance?.depaProfitKopecks !== null ? <Metric label="ПРИБЫЛЬ DEPA" value={finance ? money(finance.depaProfitKopecks ?? 0) : "—"} detail="Разрешено Owner" tone="orange" /> : null}
   </div><div className="panel employee-start"><div><span className="eyebrow">БЫСТРЫЙ ДОСТУП</span><h3>Рабочее пространство</h3><p>Прямые переходы и API также проверяют эти права.</p></div>{quickSections.map((section) => <button className={section === "finance" ? "primary" : "secondary"} key={section} onClick={() => onSection(section)}>{nav.flatMap((group) => group.items).find((item) => item.id === section)?.label}</button>)}</div></>;
 }
@@ -296,8 +299,8 @@ export function DepaOS({ currentUser, access, initialSection, accessDenied }: { 
   function openProjectFinance(mode: FinanceMode, project: { id: string; clientId: string }) { setFinanceContext({ projectId: project.id, clientId: project.clientId }); setFinanceMode(mode); setModal("finance"); }
   function openOrderPayment(order:Order){setFinanceContext({clientId:order.clientId,orderId:order.id,orderNumber:order.orderNumber,amount:String((order.remainingKopecks??0)/100),title:`Оплата по заказу ${order.orderNumber}`});setFinanceMode("INCOME");setModal("finance")}
   const firstAllowed = nav.flatMap((group) => group.items).find((item) => canOpenSection(access,item.id))?.id ?? "dashboard";
-  const financeAllowed = access.modules.finance && access.actions["finance.view"] && access.ownCashbox;
-  const allowedFinanceModes = { EXPENSE: financeAllowed && access.actions["finance.createExpense"], INCOME: financeAllowed && access.actions["finance.createIncome"], TRANSFER: financeAllowed && access.actions["finance.createTransfer"] };
+  const financeReadable = access.modules.finance && access.actions["finance.view"];
+  const allowedFinanceModes = { EXPENSE: financeReadable && access.actions["finance.createExpense"] && (access.ownCashbox || access.actions["finance.createInvestmentExpense"]), INCOME: financeReadable && access.ownCashbox && access.actions["finance.createIncome"], TRANSFER: financeReadable && access.ownCashbox && access.actions["finance.createTransfer"] };
   const canAddFinance = section === "finance" && Object.values(allowedFinanceModes).some(Boolean);
   return <div className="app-shell">
     <Sidebar section={section} onChange={select} open={menuOpen} onClose={()=>setMenuOpen(false)} user={currentUser} access={access} onProfile={()=>setModal("profile")} crmCount={crmCount}/>

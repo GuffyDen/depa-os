@@ -930,6 +930,29 @@ export const cashboxes = pgTable(
   ],
 );
 
+export const investmentAccounts = pgTable(
+  "investment_accounts",
+  {
+    id: text("id").primaryKey(),
+    ownerUserId: text("owner_user_id")
+      .notNull()
+      .references(() => users.id, {
+        onDelete: "restrict",
+        onUpdate: "cascade",
+      }),
+    name: text("name").notNull(),
+    currency: text("currency").notNull().default("RUB"),
+    status: text("status", { enum: ["ACTIVE", "INACTIVE"] })
+      .notNull()
+      .default("ACTIVE"),
+    ...timestamps,
+  },
+  (table) => [
+    unique("investment_accounts_owner_user_id_unique").on(table.ownerUserId),
+    index("idx_investment_accounts_status").on(table.status),
+  ],
+);
+
 export const financialTransactions = pgTable(
   "financial_transactions",
   {
@@ -937,7 +960,7 @@ export const financialTransactions = pgTable(
     amountKopecks: integer("amount_kopecks").notNull(),
     transactionDate: integer("transaction_date").notNull(),
     type: text("type", {
-      enum: ["INCOME", "EXPENSE", "TRANSFER", "REFUND", "OWNER_PAYOUT"],
+      enum: ["INCOME", "EXPENSE", "TRANSFER", "REFUND", "OWNER_PAYOUT", "INVESTMENT_REPAYMENT"],
     }).notNull(),
     expenseType: text("expense_type", { enum: ["PROJECT", "ADMIN"] }),
     authorUserId: text("author_user_id")
@@ -947,11 +970,14 @@ export const financialTransactions = pgTable(
         onUpdate: "cascade",
       }),
     cashboxId: text("cashbox_id")
-      .notNull()
       .references(() => cashboxes.id, {
         onDelete: "restrict",
         onUpdate: "cascade",
       }),
+    investmentAccountId: text("investment_account_id").references(
+      () => investmentAccounts.id,
+      { onDelete: "restrict", onUpdate: "cascade" },
+    ),
     destinationCashboxId: text("destination_cashbox_id").references(
       () => cashboxes.id,
       { onDelete: "restrict", onUpdate: "cascade" },
@@ -1000,6 +1026,10 @@ export const financialTransactions = pgTable(
       table.destinationCashboxId,
       table.transactionDate,
     ),
+    index("idx_transactions_investment_date").on(
+      table.investmentAccountId,
+      table.transactionDate,
+    ),
     index("idx_transactions_project_date").on(
       table.projectId,
       table.transactionDate,
@@ -1016,6 +1046,50 @@ export const financialTransactions = pgTable(
     index("idx_transactions_category_date").on(
       table.category,
       table.transactionDate,
+    ),
+  ],
+);
+
+export const investmentMovements = pgTable(
+  "investment_movements",
+  {
+    id: text("id").primaryKey(),
+    investmentAccountId: text("investment_account_id")
+      .notNull()
+      .references(() => investmentAccounts.id, {
+        onDelete: "restrict",
+        onUpdate: "cascade",
+      }),
+    financialTransactionId: text("financial_transaction_id")
+      .notNull()
+      .references(() => financialTransactions.id, {
+        onDelete: "restrict",
+        onUpdate: "cascade",
+      }),
+    type: text("type", { enum: ["CONTRIBUTION", "REPAYMENT"] }).notNull(),
+    amountKopecks: integer("amount_kopecks").notNull(),
+    transactionDate: integer("transaction_date").notNull(),
+    sourceCashboxId: text("source_cashbox_id").references(() => cashboxes.id, {
+      onDelete: "restrict",
+      onUpdate: "cascade",
+    }),
+    note: text("note"),
+    createdByUserId: text("created_by_user_id")
+      .notNull()
+      .references(() => users.id, {
+        onDelete: "restrict",
+        onUpdate: "cascade",
+      }),
+    ...timestamps,
+  },
+  (table) => [
+    unique("investment_movements_transaction_unique").on(table.financialTransactionId),
+    index("idx_investment_movements_account_date").on(table.investmentAccountId, table.transactionDate),
+    index("idx_investment_movements_source_cashbox").on(table.sourceCashboxId),
+    check("investment_movements_amount_check", sql`${table.amountKopecks} > 0`),
+    check(
+      "investment_movements_shape_check",
+      sql`(${table.type} = 'CONTRIBUTION' AND ${table.sourceCashboxId} IS NULL) OR (${table.type} = 'REPAYMENT' AND ${table.sourceCashboxId} IS NOT NULL)`,
     ),
   ],
 );

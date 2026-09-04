@@ -5,7 +5,8 @@ export const ADMIN_EXPENSE_CATEGORIES = FINANCE_CATEGORY_GROUPS.ADMIN.map((item)
 export const INCOME_PURPOSES = INCOME_PURPOSE_OPTIONS.map((item) => item.code);
 
 export type ExpenseKind = "PROJECT" | "ADMIN";
-export type FinanceOperationType = "INCOME" | "EXPENSE" | "TRANSFER" | "REFUND";
+export type FinanceOperationType = "INCOME" | "EXPENSE" | "TRANSFER" | "REFUND" | "INVESTMENT_REPAYMENT";
+export type InvestmentMovementType = "CONTRIBUTION" | "REPAYMENT";
 
 export function parseAmountKopecks(value: unknown) {
   if (typeof value !== "string" && typeof value !== "number") return null;
@@ -35,8 +36,21 @@ export function transferPreview(fromBalanceKopecks: number, toBalanceKopecks: nu
 
 export function cashboxDelta(type: FinanceOperationType, side: "SOURCE" | "DESTINATION" = "SOURCE") {
   if (type === "TRANSFER") return side === "SOURCE" ? -1 : 1;
-  if (type === "EXPENSE") return -1;
+  if (type === "EXPENSE" || type === "INVESTMENT_REPAYMENT") return -1;
   return 1;
+}
+
+export function investmentBalance(contributedKopecks: number, repaidKopecks: number) {
+  return contributedKopecks - repaidKopecks;
+}
+
+export function investmentMovementDelta(type: InvestmentMovementType) {
+  return type === "CONTRIBUTION" ? 1 : -1;
+}
+
+export function validateInvestmentRepayment(outstandingKopecks: number, amountKopecks: number) {
+  if (amountKopecks > outstandingKopecks) return "Сумма возврата превышает остаток инвестиции.";
+  return null;
 }
 
 export function projectLedgerTotals(incomeKopecks: number, expenseKopecks: number, refundKopecks: number) {

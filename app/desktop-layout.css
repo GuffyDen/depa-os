@@ -1,0 +1,336 @@
+/*
+ * DEPA OS adaptive desktop workspace
+ *
+ * The controls and type scale stay stable. Additional viewport space is spent
+ * on columns, context and visible rows; forms retain their readable widths.
+ */
+
+:root {
+  --workspace-gutter: 24px;
+  --workspace-max: none;
+  --workspace-gap: 16px;
+  --dense-row-height: 54px;
+  --dense-body-size: 10px;
+  --dense-meta-size: 9px;
+}
+
+.content {
+  width: 100%;
+  max-width: var(--workspace-max);
+  margin-inline: auto;
+  padding-inline: var(--workspace-gutter);
+}
+
+.topbar { padding-inline: 0; }
+.topbar-inner {
+  width: 100%;
+  max-width: var(--workspace-max);
+  height: 100%;
+  margin-inline: auto;
+  padding-inline: var(--workspace-gutter);
+  display: flex;
+  align-items: center;
+}
+
+.screen-section { min-width: 0; }
+.table-panel,
+.client-list-panel,
+.project-list-panel,
+.orders-table,
+.crm-list,
+.rc-list-panel,
+.data-table { min-width: 0; }
+
+/* Shared density and readable hierarchy. */
+.client-row,
+.project-real-row,
+.order-row,
+.crm-row,
+.rc-row,
+.data-row,
+.finance-operation-row {
+  min-height: var(--dense-row-height);
+  font-size: var(--dense-body-size);
+}
+
+.client-head,
+.project-real-row.head,
+.order-row.head,
+.crm-row.head,
+.rc-row.head,
+.data-head,
+.finance-operation-row.head {
+  min-height: 36px;
+  font-size: var(--dense-meta-size);
+}
+
+.client-name b,
+.project-real-name b,
+.finance-operation-title b { font-size: 11px; }
+.client-name small,
+.project-real-name small,
+.finance-operation-title small { font-size: 9px; line-height: 1.45; }
+
+/* Dashboard list renders six cells; tracks must match them exactly. */
+.object-row {
+  grid-template-columns: 40px minmax(220px, 1.55fr) minmax(140px, .75fr) minmax(120px, .65fr) minmax(160px, .85fr) 20px;
+}
+
+/* Compact laptop: keep the operational core visible without horizontal drift. */
+.client-col-source,
+.client-col-contact,
+.client-col-updated,
+.client-col-created { display: none; }
+.client-row {
+  min-width: 0;
+  grid-template-columns: minmax(220px, 1.5fr) minmax(125px, .8fr) minmax(86px, .55fr) minmax(145px, .85fr) minmax(60px, .35fr) 18px;
+  gap: 12px;
+}
+.client-row > span:last-child { display: block; text-align: right; }
+.client-row-action { color: var(--text-muted); font-size: 18px; }
+.client-row .client-status { font-size: 8px; }
+
+.project-col-complex,
+.project-col-area,
+.project-col-contract,
+.project-col-materials,
+.project-col-start,
+.project-col-forecast { display: none; }
+.project-real-row {
+  min-width: 0;
+  grid-template-columns: minmax(220px, 1.35fr) minmax(125px, .75fr) minmax(105px, .55fr) minmax(135px, .72fr) minmax(120px, .65fr) minmax(110px, .58fr) 18px;
+  gap: 12px;
+  padding-block: 9px;
+}
+.project-row-action { color: var(--text-muted); font-size: 18px; text-align: right; }
+
+.rc-col-inspections,
+.rc-col-designs,
+.rc-col-updated { display: none; }
+.rc-row {
+  grid-template-columns: minmax(230px, 1.55fr) minmax(120px, .65fr) minmax(155px, .9fr) minmax(72px, .4fr) minmax(100px, .55fr);
+  min-height: var(--dense-row-height);
+  padding-block: 9px;
+}
+
+/* Operations use a real table. Columns are progressively revealed below. */
+.finance-operation-table { width: 100%; overflow-x: auto; }
+.finance-operation-row {
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(250px, 1.65fr) minmax(120px, .72fr) minmax(150px, .9fr) minmax(135px, .75fr) 92px minmax(105px, .68fr) 24px;
+  gap: 12px;
+  align-items: center;
+  padding: 9px 16px;
+  border-top: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+}
+.finance-operation-row.head {
+  border-top: 0;
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: .55px;
+}
+.finance-operation-row > span { min-width: 0; overflow-wrap: anywhere; }
+.finance-operation-row > strong { color: var(--text-primary); text-align: right; white-space: nowrap; font-size: 11px; }
+.finance-operation-row > strong.plus { color: var(--green); }
+.finance-operation-row > strong.minus { color: var(--red); }
+.finance-operation-title { display: flex; align-items: center; gap: 10px; color: var(--text-primary); }
+.finance-operation-title > span,
+.finance-col-category { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
+.finance-operation-title b,
+.finance-operation-title small,
+.finance-col-category small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.finance-operation-title small,
+.finance-col-category small { color: var(--text-muted); }
+.finance-row-action { border: 0; background: transparent; color: var(--text-muted); font-size: 19px; cursor: pointer; }
+.finance-col-category,
+.finance-col-author,
+.finance-col-receipt { display: none; }
+.finance-col-receipt a { color: var(--text-primary); }
+
+.crm-lead-context { display: none; }
+
+/* Keep form surfaces deliberately readable on large monitors. */
+.client-drawer { width: min(660px, 100%); }
+.project-drawer { width: min(780px, 100%); }
+.crm-drawer { width: min(700px, 100%); }
+.finance-modal { width: min(720px, 100%); }
+
+@media (min-width: 1440px) {
+  :root { --workspace-gutter: 30px; }
+
+  .client-col-source { display: block; }
+  .client-row {
+    grid-template-columns: minmax(230px, 1.45fr) minmax(130px, .78fr) minmax(88px, .5fr) minmax(145px, .78fr) minmax(110px, .62fr) minmax(58px, .32fr) 18px;
+  }
+
+  .project-col-complex { display: block; }
+  .project-real-row {
+    grid-template-columns: minmax(230px, 1.35fr) minmax(125px, .7fr) minmax(105px, .5fr) minmax(135px, .7fr) minmax(120px, .62fr) minmax(135px, .7fr) minmax(110px, .55fr) 18px;
+  }
+}
+
+@media (min-width: 1600px) {
+  :root {
+    --workspace-gutter: clamp(32px, 2.2vw, 48px);
+    --workspace-gap: 18px;
+    --dense-row-height: 52px;
+  }
+
+  .content { padding-top: 24px; }
+  .welcome,
+  .screen-intro { margin-bottom: 20px; }
+  .search { width: clamp(340px, 22vw, 420px); }
+
+  .dashboard-grid { grid-template-columns: minmax(0, 2fr) minmax(320px, 1fr); gap: var(--workspace-gap); }
+  .dashboard-grid.lower { grid-template-columns: minmax(0, 3fr) minmax(360px, 2fr); }
+  .metrics-grid,
+  .dashboard-grid,
+  .objects-panel { margin-bottom: var(--workspace-gap); }
+
+  .client-col-created { display: block; }
+  .client-row {
+    grid-template-columns: minmax(240px, 1.35fr) minmax(135px, .72fr) minmax(90px, .45fr) minmax(150px, .75fr) minmax(115px, .55fr) minmax(62px, .3fr) minmax(105px, .5fr) 18px;
+  }
+
+  .project-col-area,
+  .project-col-start { display: block; }
+  .project-real-row {
+    grid-template-columns: minmax(240px, 1.3fr) minmax(130px, .65fr) minmax(105px, .48fr) minmax(135px, .65fr) minmax(120px, .58fr) minmax(140px, .65fr) minmax(75px, .34fr) minmax(96px, .46fr) minmax(105px, .48fr) 18px;
+  }
+
+  .finance-col-category,
+  .finance-col-author { display: flex; }
+  .finance-operation-row {
+    grid-template-columns: minmax(260px, 1.5fr) minmax(120px, .65fr) minmax(150px, .82fr) minmax(140px, .72fr) minmax(140px, .72fr) minmax(120px, .62fr) 94px minmax(105px, .58fr) 24px;
+  }
+
+  .crm-row { min-width: 0; grid-template-columns: 1.35fr .8fr .65fr .75fr .9fr 1.2fr .75fr; }
+  .crm-kanban { grid-template-columns: repeat(7, minmax(220px, 1fr)); }
+  .order-row { min-width: 0; grid-template-columns: .75fr 1.55fr 1fr 1fr .9fr .75fr .95fr .75fr; }
+  .estimate-list-row,
+  .contract-list-row { min-width: 0; }
+
+  .rc-col-inspections,
+  .rc-col-designs { display: block; }
+  .rc-row {
+    grid-template-columns: minmax(250px, 1.5fr) minmax(120px, .58fr) minmax(160px, .78fr) repeat(3, minmax(70px, .32fr)) minmax(105px, .48fr);
+  }
+
+  .clients-empty,
+  .orders-empty,
+  .crm-empty,
+  .estimates-empty,
+  .contracts-empty { min-height: clamp(190px, 18vh, 240px); padding-block: 28px; }
+  .projects-real-empty,
+  .project-tab-empty,
+  .rc-empty,
+  .production-empty { padding-block: 36px; }
+  .dashboard-grid .finance-empty,
+  .objects-panel .finance-empty { padding: 22px 24px; }
+}
+
+@media (min-width: 2200px) {
+  :root {
+    --workspace-gutter: clamp(44px, 2.2vw, 56px);
+    --workspace-max: 2920px;
+    --workspace-gap: 20px;
+    --dense-row-height: 50px;
+    --dense-body-size: 11px;
+  }
+
+  .search { width: 440px; }
+  .finance-filter-bar { grid-template-columns: minmax(250px, 1.7fr) repeat(8, minmax(120px, 1fr)); }
+
+  .client-col-contact,
+  .client-col-updated { display: block; }
+  .client-row {
+    grid-template-columns: minmax(260px, 1.35fr) minmax(140px, .68fr) minmax(92px, .42fr) minmax(155px, .72fr) minmax(120px, .52fr) minmax(100px, .42fr) minmax(65px, .28fr) minmax(110px, .48fr) minmax(110px, .48fr) 20px;
+  }
+
+  .project-col-contract,
+  .project-col-materials,
+  .project-col-forecast { display: block; }
+  .project-real-row {
+    grid-template-columns: minmax(260px, 1.25fr) minmax(135px, .58fr) minmax(105px, .42fr) minmax(140px, .58fr) minmax(125px, .52fr) minmax(150px, .62fr) minmax(75px, .3fr) minmax(115px, .46fr) minmax(115px, .46fr) minmax(98px, .4fr) minmax(105px, .42fr) minmax(105px, .42fr) 20px;
+  }
+
+  .finance-col-receipt { display: block; }
+  .finance-operation-row {
+    grid-template-columns: minmax(285px, 1.5fr) minmax(130px, .62fr) minmax(165px, .78fr) minmax(150px, .68fr) minmax(160px, .72fr) minmax(130px, .58fr) 96px 92px minmax(110px, .52fr) 24px;
+  }
+
+  .rc-col-updated { display: block; }
+  .rc-row {
+    grid-template-columns: minmax(270px, 1.45fr) minmax(125px, .55fr) minmax(180px, .75fr) repeat(3, minmax(75px, .3fr)) minmax(110px, .45fr) minmax(140px, .58fr);
+  }
+
+  .project-grid,
+  .team-member-grid,
+  .investment-account-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .crm-kanban { grid-template-columns: repeat(7, minmax(245px, 1fr)); gap: 12px; }
+  .crm-lead-context { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding-top: 8px; border-top: 1px solid var(--border-subtle); }
+  .crm-lead-context span { min-width: 0; overflow: hidden; color: var(--text-muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+  .crm-lead-card > small { min-height: 22px; font-size: 9px; }
+  .crm-lead-card footer b { font-size: 9px; }
+
+  .client-card-drawer { width: min(1220px, calc(100vw - var(--sidebar))); }
+  .project-card-drawer { width: min(1420px, calc(100vw - var(--sidebar))); }
+  .crm-card { width: min(1320px, calc(100vw - var(--sidebar))); }
+  .order-card { width: min(1320px, calc(100vw - var(--sidebar))); }
+  .client-overview { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(260px, .7fr); align-items: start; }
+  .client-overview .client-facts,
+  .client-overview .client-comment,
+  .client-overview .client-related-actions { grid-column: 1; }
+  .client-overview .client-kpis { grid-column: 2; grid-row: 1 / span 2; grid-template-columns: 1fr; }
+  .crm-card-body { grid-template-columns: minmax(0, 1fr) 340px; }
+}
+
+@media (min-width: 3000px) {
+  :root { --workspace-gap: 22px; --dense-row-height: 48px; }
+  .crm-column { min-height: calc(100vh - 270px); }
+  .crm-lead-card { padding: 14px; }
+  .finance-operation-row { padding-inline: 18px; }
+}
+
+@media (max-width: 1100px) {
+  .object-row { grid-template-columns: 40px minmax(180px, 1.4fr) minmax(120px, .8fr) minmax(110px, .7fr) minmax(140px, .8fr) 20px; }
+}
+
+@media (max-width: 780px) {
+  :root { --workspace-gutter: 15px; }
+  .topbar-inner { gap: 12px; }
+  .object-row { grid-template-columns: 35px minmax(0, 1fr) 20px; }
+
+  .finance-operation-row.head { display: none; }
+  .finance-operation-row { grid-template-columns: minmax(0, 1fr) auto 20px; padding: 12px; }
+  .finance-operation-row > :not(.finance-operation-title):not(strong):not(.finance-row-action) { display: none; }
+  .finance-operation-title small { white-space: normal; }
+
+  .rc-col-projects { display: none; }
+}
+
+@media (max-width: 680px) {
+  .client-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .client-row > span:not(.client-name):not(.client-row-action) { display: none; }
+  .client-row-action { display: block !important; }
+}
+
+@media (max-width: 600px) {
+  .project-real-row:not(.head) { grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: auto auto auto; }
+  .project-real-row:not(.head) > span { display: none; }
+  .project-real-row:not(.head) > span:nth-child(1),
+  .project-real-row:not(.head) > span:nth-child(2),
+  .project-real-row:not(.head) > span:nth-child(3),
+  .project-real-row:not(.head) > span:nth-child(4),
+  .project-real-row:not(.head) > span:nth-child(11),
+  .project-real-row:not(.head) > span:nth-child(13) { display: flex; }
+  .project-real-row:not(.head) > span:nth-child(1) { grid-column: 1; grid-row: 1; }
+  .project-real-row:not(.head) > span:nth-child(2) { grid-column: 1; grid-row: 2; }
+  .project-real-row:not(.head) > span:nth-child(3) { grid-column: 2; grid-row: 1; justify-self: end; }
+  .project-real-row:not(.head) > span:nth-child(4) { grid-column: 1; grid-row: 3; }
+  .project-real-row:not(.head) > span:nth-child(11) { grid-column: 2; grid-row: 3; }
+  .project-real-row:not(.head) > span:nth-child(13) { grid-column: 2; grid-row: 2; }
+}

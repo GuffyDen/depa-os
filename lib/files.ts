@@ -290,8 +290,8 @@ export async function cleanupUnlinkedAttachment(actor: AuthUser, attachmentId: s
 }
 
 export async function getAuthorizedAttachment(actor: AuthUser, attachmentId: string) {
-  const row = await first<AttachmentRow & { cashbox_id: string | null; expense_type: string | null }>(`SELECT a.*,
-    ft.cashbox_id,ft.expense_type
+  const row = await first<AttachmentRow & { cashbox_id: string | null; investment_account_id: string | null; expense_type: string | null }>(`SELECT a.*,
+    ft.cashbox_id,ft.investment_account_id,ft.expense_type
     FROM attachments a LEFT JOIN financial_transactions ft ON ft.id=a.transaction_id LEFT JOIN cashboxes cb ON cb.id=ft.cashbox_id
     WHERE a.id=$1 AND a.upload_status='LINKED' AND a.deleted_at IS NULL LIMIT 1`, [attachmentId]);
   if (!row) throw new FileError("Файл не найден.", 404);
@@ -303,8 +303,10 @@ export async function getAuthorizedAttachment(actor: AuthUser, attachmentId: str
         if (!claim || !(await canViewProject(actor, claim.project_id))) throw new FileError("Нет доступа к подтверждению оплаты.", 403);
       } else if (row.category === "RECEIPT") {
         await assertModuleAction(actor, "finance", "finance.view");
-        if (!row.cashbox_id || !(await canViewCashbox(actor, row.cashbox_id))) throw new FileError("Нет доступа к этому чеку.", 403);
-        if (row.expense_type === "ADMIN" && !(await getAccessProfile(actor)).actions["finance.viewAdministrativeExpenses"]) throw new FileError("Нет доступа к этому чеку.", 403);
+        const access = await getAccessProfile(actor);
+        const canReadSource = row.cashbox_id ? await canViewCashbox(actor, row.cashbox_id) : Boolean(row.investment_account_id && access.actions["finance.viewInvestments"]);
+        if (!canReadSource) throw new FileError("Нет доступа к этому чеку.", 403);
+        if (row.expense_type === "ADMIN" && !access.actions["finance.viewAdministrativeExpenses"]) throw new FileError("Нет доступа к этому чеку.", 403);
       } else if (row.category === "INSPECTION") {
         await assertModuleAction(actor, "orders", "orders.view");
         await assertInspectionFileAccess(actor, row.entity_type, row.entity_id);

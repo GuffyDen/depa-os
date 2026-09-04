@@ -26,7 +26,7 @@ export async function POST(request: Request) {
   try { body = await request.json() as CreateFinanceOperationInput; }
   catch (error) { log.failure("FINANCE_MUTATION_FAILURE", error, { errorCode: "INVALID_JSON" }); return log.json({ error: "Некорректные данные операции." }, { status: 400 }); }
   const transactionType = typeof body.type === "string" ? body.type : "UNKNOWN";
-  const details = { transactionType, projectId: typeof body.projectId === "string" ? body.projectId : null, clientId: typeof body.clientId === "string" ? body.clientId : null, cashboxId: typeof body.cashboxId === "string" ? body.cashboxId : null, originalTransactionId: typeof body.originalTransactionId === "string" ? body.originalTransactionId : null };
+  const details = { transactionType, projectId: typeof body.projectId === "string" ? body.projectId : null, clientId: typeof body.clientId === "string" ? body.clientId : null, cashboxId: typeof body.cashboxId === "string" ? body.cashboxId : null, investmentAccountId: typeof body.investmentAccountId === "string" ? body.investmentAccountId : null, originalTransactionId: typeof body.originalTransactionId === "string" ? body.originalTransactionId : null };
   log.start(`${transactionType}_START`, details);
   try { const operation = await createFinanceOperation(user, body); log.success(`${transactionType}_SUCCESS`, { ...details, entityId: operation.id }); return log.json({ operation }, { status: 201 }); }
   catch (error) {

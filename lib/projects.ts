@@ -213,13 +213,13 @@ async function visibleRow(actor: AuthUser, projectId: string) {
 
 function projectLedgerSql() {
   return `WITH project_ledger AS (
-    SELECT ft.id AS transaction_id,ft.type,ft.amount_kopecks,ft.transaction_date,ft.category,ft.purpose,ft.title,ft.cashbox_id,ft.author_user_id
+    SELECT ft.id AS transaction_id,ft.type,ft.amount_kopecks,ft.transaction_date,ft.category,ft.purpose,ft.title,ft.cashbox_id,ft.investment_account_id,ft.author_user_id
       FROM financial_transactions ft WHERE ft.project_id=$1 AND ft.type<>'EXPENSE'
     UNION ALL
-    SELECT ft.id,ft.type,ft.amount_kopecks,ft.transaction_date,ft.category,ft.purpose,ft.title,ft.cashbox_id,ft.author_user_id
+    SELECT ft.id,ft.type,ft.amount_kopecks,ft.transaction_date,ft.category,ft.purpose,ft.title,ft.cashbox_id,ft.investment_account_id,ft.author_user_id
       FROM financial_transactions ft WHERE ft.project_id=$1 AND ft.type='EXPENSE' AND ft.expense_type='PROJECT' AND NOT EXISTS (SELECT 1 FROM transaction_allocations ta WHERE ta.transaction_id=ft.id)
     UNION ALL
-    SELECT ft.id,ft.type,ta.amount_kopecks,ft.transaction_date,ft.category,ta.purpose,ft.title,ft.cashbox_id,ft.author_user_id
+    SELECT ft.id,ft.type,ta.amount_kopecks,ft.transaction_date,ft.category,ta.purpose,ft.title,ft.cashbox_id,ft.investment_account_id,ft.author_user_id
       FROM transaction_allocations ta JOIN financial_transactions ft ON ft.id=ta.transaction_id WHERE ta.project_id=$1 AND ft.type='EXPENSE' AND ft.expense_type='PROJECT'
   )`;
 }
@@ -242,9 +242,9 @@ export async function getProject(actor: AuthUser, projectId: string) {
       COALESCE(SUM(CASE WHEN type='INCOME' AND purpose='ADDITIONAL_WORKS' THEN amount_kopecks ELSE 0 END),0) AS additional_income,
       COALESCE(SUM(CASE WHEN type='EXPENSE' AND category='MATERIALS' THEN amount_kopecks ELSE 0 END),0) AS materials_expense,
       COALESCE(SUM(CASE WHEN type='EXPENSE' THEN amount_kopecks ELSE 0 END),0) AS object_expense FROM project_ledger`, [projectId]) : Promise.resolve(null),
-    canReadFinance && (canViewClientFunds || canViewCost) ? query<{ id: string; type: string; amountKopecks: number; transactionDate: number; category: string; categoryLabel: string; purpose: string | null; purposeLabel: string | null; title: string; cashboxName: string; authorName: string; attachmentId: string | null }>(`${ledger} SELECT pl.transaction_id AS id,pl.type,pl.amount_kopecks AS "amountKopecks",pl.transaction_date AS "transactionDate",pl.category,pl.purpose,pl.title,cb.name AS "cashboxName",u.display_name AS "authorName",
+    canReadFinance && (canViewClientFunds || canViewCost) ? query<{ id: string; type: string; amountKopecks: number; transactionDate: number; category: string; categoryLabel: string; purpose: string | null; purposeLabel: string | null; title: string; cashboxName: string; authorName: string; attachmentId: string | null }>(`${ledger} SELECT pl.transaction_id AS id,pl.type,pl.amount_kopecks AS "amountKopecks",pl.transaction_date AS "transactionDate",pl.category,pl.purpose,pl.title,COALESCE(cb.name,ia.name,'Личные средства') AS "cashboxName",u.display_name AS "authorName",
       (SELECT a.id FROM attachments a WHERE a.transaction_id=pl.transaction_id AND a.upload_status='LINKED' AND a.deleted_at IS NULL ORDER BY a.created_at LIMIT 1) AS "attachmentId"
-      FROM project_ledger pl JOIN cashboxes cb ON cb.id=pl.cashbox_id JOIN users u ON u.id=pl.author_user_id${operationTypes} ORDER BY pl.transaction_date DESC,pl.transaction_id DESC`, [projectId]).then((items) => items.map((item) => ({ ...item, categoryLabel: financeCategoryLabel(item.category), purposeLabel: item.purpose ? financePurposeLabel(item.purpose) : null }))) : Promise.resolve([]),
+      FROM project_ledger pl LEFT JOIN cashboxes cb ON cb.id=pl.cashbox_id LEFT JOIN investment_accounts ia ON ia.id=pl.investment_account_id JOIN users u ON u.id=pl.author_user_id${operationTypes} ORDER BY pl.transaction_date DESC,pl.transaction_id DESC`, [projectId]).then((items) => items.map((item) => ({ ...item, categoryLabel: financeCategoryLabel(item.category), purposeLabel: item.purpose ? financePurposeLabel(item.purpose) : null }))) : Promise.resolve([]),
     query<{ id: string; estimateId: string | null; version: number; status: string; totalKopecks: number; createdAt: number }>("SELECT id,estimate_id AS \"estimateId\",version,status,total_kopecks AS \"totalKopecks\",created_at AS \"createdAt\" FROM estimate_versions WHERE project_id=$1 OR id=$2 ORDER BY version DESC", [projectId, row.approved_estimate_version_id]),
     query<{ id: string; name: string; status: string; plannedStart: number | null; plannedEnd: number | null }>("SELECT id,name,status,planned_start AS \"plannedStart\",planned_end AS \"plannedEnd\" FROM project_stages WHERE project_id=$1 ORDER BY sort_order", [projectId]),
     query<{ id: string; reportDate: number; workCompleted: string; comment: string | null; authorName: string; photoCount: number }>(`SELECT dr.id,dr.report_date AS "reportDate",dr.work_completed AS "workCompleted",dr.comment,e.full_name AS "authorName",
