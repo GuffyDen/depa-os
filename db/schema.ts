@@ -1050,6 +1050,48 @@ export const financialTransactions = pgTable(
   ],
 );
 
+export const financeAttentionAcknowledgements = pgTable(
+  "finance_attention_acknowledgements",
+  {
+    id: text("id").primaryKey(),
+    transactionId: text("transaction_id")
+      .notNull()
+      .references(() => financialTransactions.id, {
+        onDelete: "restrict",
+        onUpdate: "cascade",
+      }),
+    issueType: text("issue_type").notNull(),
+    status: text("status", { enum: ["OPEN", "ACCEPTED"] }).notNull(),
+    previousStatus: text("previous_status", { enum: ["OPEN", "ACCEPTED"] }).notNull(),
+    acceptedByUserId: text("accepted_by_user_id")
+      .notNull()
+      .references(() => users.id, {
+        onDelete: "restrict",
+        onUpdate: "cascade",
+      }),
+    acceptedAt: integer("accepted_at").notNull(),
+    acceptanceComment: text("acceptance_comment"),
+    revertedByUserId: text("reverted_by_user_id").references(() => users.id, {
+      onDelete: "restrict",
+      onUpdate: "cascade",
+    }),
+    revertedAt: integer("reverted_at"),
+    ...timestamps,
+  },
+  (table) => [
+    unique("finance_attention_acknowledgements_transaction_issue_unique").on(table.transactionId, table.issueType),
+    index("idx_finance_attention_acknowledgements_transaction").on(table.transactionId),
+    index("idx_finance_attention_acknowledgements_status").on(table.status, table.issueType),
+    check("finance_attention_acknowledgements_status_check", sql`${table.status} IN ('OPEN','ACCEPTED')`),
+    check("finance_attention_acknowledgements_previous_status_check", sql`${table.previousStatus} IN ('OPEN','ACCEPTED')`),
+    check("finance_attention_acknowledgements_comment_check", sql`${table.acceptanceComment} IS NULL OR length(${table.acceptanceComment}) <= 1000`),
+    check(
+      "finance_attention_acknowledgements_state_check",
+      sql`(${table.status} = 'ACCEPTED' AND ${table.revertedByUserId} IS NULL AND ${table.revertedAt} IS NULL) OR (${table.status} = 'OPEN' AND ${table.revertedByUserId} IS NOT NULL AND ${table.revertedAt} IS NOT NULL)`,
+    ),
+  ],
+);
+
 export const investmentMovements = pgTable(
   "investment_movements",
   {

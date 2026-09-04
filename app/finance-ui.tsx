@@ -8,6 +8,8 @@ export type FinanceMode = "EXPENSE" | "INCOME" | "TRANSFER" | "REFUND";
 type FinanceTransactionType = FinanceMode | "INVESTMENT_REPAYMENT";
 type FinanceOperationKind = FinanceTransactionType | "INVESTMENT";
 type FinanceTab = "OPERATIONS" | "CASHBOXES" | "INVESTMENTS";
+type FinanceAttentionStatus = "OPEN" | "ACCEPTED" | "RESOLVED";
+type FinanceAttentionIssue = { type: string; title: string; status: FinanceAttentionStatus; acceptanceAllowed: boolean; acceptedAt: number | null; acceptedByUserId: string | null; acceptedByName: string | null; comment: string | null };
 
 const financeTabSlugs: Record<FinanceTab, string> = { OPERATIONS: "operations", CASHBOXES: "cashboxes", INVESTMENTS: "investments" };
 const FINANCE_TRANSACTION_TIMEOUT_MS = 20_000;
@@ -29,6 +31,7 @@ type FinanceTransaction = {
   authorUserId: string; authorName: string; createdAt: number; attachmentCount: number; attachmentId: string | null;
   attachments: { id: string; originalFilename: string; mimeType: string; sizeBytes: number; status: "PENDING" | "LINKED" | "FAILED"; createdAt: number }[];
   allocations: { id: string; projectId: string; projectName: string; amountKopecks: number; purpose: string }[];
+  attentionIssues: FinanceAttentionIssue[];
 };
 type InvestmentMovement = {
   id: string; type: "CONTRIBUTION" | "REPAYMENT"; amountKopecks: number; transactionDate: number; transactionId: string;
@@ -40,12 +43,12 @@ type InvestmentAccount = {
   id: string; ownerUserId: string; ownerName: string; name: string; status: "ACTIVE" | "INACTIVE"; contributedKopecks: number; repaidKopecks: number; outstandingKopecks: number; movements: InvestmentMovement[];
 };
 export type FinanceData = {
-  isOwner: boolean; currentUserId: string; capabilities: { createExpense: boolean; createIncome: boolean; createTransfer: boolean; editTransaction: boolean; viewClientFunds: boolean; viewProfit: boolean; viewAdministrativeExpenses: boolean; viewInvestments: boolean; createInvestmentExpense: boolean; repayInvestments: boolean; cashboxScope: "OWN" | "ALL"; hasOwnActiveCashbox: boolean };
+  isOwner: boolean; currentUserId: string; capabilities: { createExpense: boolean; createIncome: boolean; createTransfer: boolean; editTransaction: boolean; acceptAttentionIssues: boolean; viewClientFunds: boolean; viewProfit: boolean; viewAdministrativeExpenses: boolean; viewInvestments: boolean; createInvestmentExpense: boolean; repayInvestments: boolean; cashboxScope: "OWN" | "ALL"; hasOwnActiveCashbox: boolean };
   cashboxes: Cashbox[]; transferRecipients: { id: string; name: string; ownerName: string | null }[]; transactions: FinanceTransaction[]; projects: { id: string; name: string; clientId: string; incomeKopecks: number; expenseKopecks: number; refundKopecks: number; actualExpenseKopecks: number; clientBalanceKopecks: number; materialsIncomeKopecks: number; materialsExpenseKopecks: number; materialsBalanceKopecks: number; worksIncomeKopecks: number; worksExpenseKopecks: number; worksBalanceKopecks: number; additionalWorksIncomeKopecks: number; otherIncomeKopecks: number }[];
   clients: { id: string; name: string }[]; physicalTotalKopecks: number; clientFundsKopecks: number | null; depaProfitKopecks: number | null;
   investmentAccounts: InvestmentAccount[]; investmentOutstandingKopecks: number | null;
   summary: { todayIncomeKopecks: number; todayExpenseKopecks: number; todayTransferKopecks: number; monthProjectExpenseKopecks: number; monthAdminExpenseKopecks: number | null };
-  attentionItems: { type: string; severity: string; title: string; detail: string; cashboxId?: string; projectId?: string; transactionId?: string }[];
+  attentionItems: { type: string; status: "OPEN"; acceptanceAllowed: boolean; severity: string; title: string; detail: string; cashboxId?: string; projectId?: string; transactionId?: string }[];
   reconciliation: { ok: boolean; mismatchCount: number };
 };
 
@@ -91,12 +94,17 @@ function transactionSourceLabel(transaction: FinanceTransaction) {
   return transaction.investmentAccountName ?? transaction.cashboxName ?? transaction.source ?? "—";
 }
 
+function missingReceiptIssue(transaction: FinanceTransaction) {
+  return transaction.attentionIssues.find((issue) => issue.type === "MISSING_RECEIPT") ?? null;
+}
+
 function TransactionRow({ transaction, cashboxId, clientName, structured = false, onOpen }: { transaction: FinanceTransaction; cashboxId?: string; clientName?: string; structured?: boolean; onOpen?: () => void }) {
   const incomingTransfer = transaction.type === "TRANSFER" && transaction.destinationCashboxId === cashboxId;
   const positive = transaction.type === "INCOME" || transaction.type === "REFUND" || incomingTransfer;
   const neutral = transaction.type === "TRANSFER" && !cashboxId;
   const amount = neutral ? money(transaction.amountKopecks) : money(positive ? transaction.amountKopecks : -transaction.amountKopecks, true);
   const investment = transaction.operationKind === "INVESTMENT";
+  const receiptIssue = missingReceiptIssue(transaction);
   if (structured) {
     const project = transaction.projectName || transaction.allocations.map((item) => item.projectName).join(", ") || "—";
     const source = transactionSourceLabel(transaction);
@@ -108,14 +116,14 @@ function TransactionRow({ transaction, cashboxId, clientName, structured = false
       <span className="finance-col-source">{source}</span>
       <span className="finance-col-author">{transaction.authorName}</span>
       <span className="finance-col-date">{new Date(transaction.transactionDate * 1000).toLocaleDateString("ru-RU")}</span>
-      <span className="finance-col-receipt">{transaction.attachmentCount ? <a href={`/api/files/${transaction.attachmentId}`} target="_blank" rel="noreferrer">{transaction.attachmentCount > 1 ? `${transaction.attachmentCount} файла` : "Чек прикреплён"}</a> : transaction.attachments.some((item) => item.status === "PENDING") ? "Чек загружается…" : transaction.attachments.some((item) => item.status === "FAILED") ? "Ошибка загрузки — операция сохранена" : "Без чека"}</span>
+      <span className="finance-col-receipt">{transaction.attachmentCount ? <a href={`/api/files/${transaction.attachmentId}`} target="_blank" rel="noreferrer">{transaction.attachmentCount > 1 ? `${transaction.attachmentCount} файла` : "Чек прикреплён"}</a> : transaction.attachments.some((item) => item.status === "PENDING") ? "Чек загружается…" : transaction.attachments.some((item) => item.status === "FAILED") ? "Ошибка загрузки — операция сохранена" : receiptIssue?.status === "ACCEPTED" ? <span className="receipt-accepted">Без чека · принято</span> : "Без чека"}</span>
       <strong className={positive ? "plus" : neutral ? "" : "minus"}>{amount}</strong>
       {onOpen ? <button type="button" className="finance-row-action" aria-label={`Открыть операцию ${transaction.title}`} onClick={onOpen}>›</button> : <span className="finance-row-action" aria-hidden="true" />}
     </div>;
   }
   return <div className="transaction finance-transaction">
     <span className={`transaction-icon ${positive || investment ? "plus" : transaction.type === "TRANSFER" || transaction.type === "INVESTMENT_REPAYMENT" ? "transfer" : "minus"}`}>{transaction.type === "TRANSFER" || transaction.type === "INVESTMENT_REPAYMENT" ? "⇄" : investment ? "+" : positive ? "↓" : "↑"}</span>
-    <div><b>{transaction.title}</b><small>{transactionLabel(transaction)}{transaction.projectName ? ` · ${transaction.projectName}` : ""}{transaction.allocations.length ? ` · ${transaction.allocations.map((item) => `${item.projectName} ${money(item.amountKopecks)}`).join("; ")}` : ""}{transaction.purpose ? ` · ${financePurposeLabel(transaction.purpose)}` : ""}<br />{new Date(transaction.transactionDate * 1000).toLocaleDateString("ru-RU")} · {transaction.authorName}{transaction.attachmentCount ? <> · <a href={`/api/files/${transaction.attachmentId}`} target="_blank" rel="noreferrer">{transaction.attachmentCount > 1 ? `${transaction.attachmentCount} файла` : "чек приложен"}</a></> : transaction.attachments.some((item) => item.status === "PENDING") ? " · чек загружается" : " · без чека"}{onOpen && <> · <button type="button" className="inline-detail" onClick={onOpen}>подробнее</button></>}</small></div>
+    <div><b>{transaction.title}</b><small>{transactionLabel(transaction)}{transaction.projectName ? ` · ${transaction.projectName}` : ""}{transaction.allocations.length ? ` · ${transaction.allocations.map((item) => `${item.projectName} ${money(item.amountKopecks)}`).join("; ")}` : ""}{transaction.purpose ? ` · ${financePurposeLabel(transaction.purpose)}` : ""}<br />{new Date(transaction.transactionDate * 1000).toLocaleDateString("ru-RU")} · {transaction.authorName}{transaction.attachmentCount ? <> · <a href={`/api/files/${transaction.attachmentId}`} target="_blank" rel="noreferrer">{transaction.attachmentCount > 1 ? `${transaction.attachmentCount} файла` : "чек приложен"}</a></> : transaction.attachments.some((item) => item.status === "PENDING") ? " · чек загружается" : receiptIssue?.status === "ACCEPTED" ? " · без чека, принято" : " · без чека"}{onOpen && <> · <button type="button" className="inline-detail" onClick={onOpen}>подробнее</button></>}</small></div>
     <span className="person-pill">{transaction.investmentAccountName ?? transaction.cashboxName}</span><strong className={positive ? "plus" : neutral ? "" : "minus"}>{amount}</strong>
   </div>;
 }
@@ -299,6 +307,23 @@ export function FinanceScreen({ onNew }: { onNew: (mode: FinanceMode) => void })
     url.searchParams.set("tab", financeTabSlugs[nextTab]);
     window.history.pushState(null, "", `${url.pathname}${url.search}${url.hash}`);
   }, []);
+  const openAttentionItem = useCallback((item: FinanceData["attentionItems"][number]) => {
+    if (item.transactionId) {
+      const target = data?.transactions.find((transaction) => transaction.id === item.transactionId);
+      if (target) setSelectedTransaction(target);
+      return;
+    }
+    if (item.cashboxId) {
+      setCashboxFilter(item.cashboxId);
+      selectTab("CASHBOXES");
+      return;
+    }
+    if (item.projectId) {
+      setProjectFilter(item.projectId);
+      selectTab("OPERATIONS");
+      requestAnimationFrame(() => document.querySelector(".finance-operation-table")?.scrollIntoView({ block: "start" }));
+    }
+  }, [data, selectTab]);
   const filteredTransactions = (data?.transactions ?? []).filter((item) => {
     const haystack = `${item.title} ${item.comment ?? ""} ${item.projectName ?? ""} ${item.authorName} ${item.source ?? ""} ${item.allocations.map((allocation) => allocation.projectName).join(" ")}`.toLocaleLowerCase("ru-RU");
     const day = new Date(item.transactionDate * 1000).toISOString().slice(0, 10);
@@ -327,10 +352,10 @@ export function FinanceScreen({ onNew }: { onNew: (mode: FinanceMode) => void })
     {data && (activeTab === "OPERATIONS" ? <div id="finance-operations-panel" className="finance-view" role="tabpanel" aria-label="Операции">
       <ClientPaymentInboxForm cashboxes={data.cashboxes} onChanged={refresh}/>
       <div className="metrics-grid finance-metrics finance-summary"><div className="metric"><div className="metric-top"><span>{data.capabilities.cashboxScope === "OWN" ? "МОЯ КАССА" : "ФИЗИЧЕСКИ В КАССАХ"}</span><i>↗</i></div><strong className={data.physicalTotalKopecks < 0 ? "minus" : ""}>{money(data.physicalTotalKopecks)}</strong><small>{data.cashboxes.filter((box) => box.status === "ACTIVE").length} активные кассы в доступной области</small></div>{data.capabilities.viewInvestments && data.investmentOutstandingKopecks !== null ? <div className="metric"><div className="metric-top"><span>ИНВЕСТИЦИИ · К ВОЗВРАТУ</span><i className="orange">↗</i></div><strong>{money(data.investmentOutstandingKopecks)}</strong><small>{data.investmentAccounts.map((account) => `${account.ownerName.split(" ")[0]}: ${money(account.outstandingKopecks)}`).join(" · ")}</small></div> : null}{data.capabilities.viewClientFunds && data.clientFundsKopecks !== null ? <div className="metric"><div className="metric-top"><span>СРЕДСТВА КЛИЕНТОВ</span><i>↗</i></div><strong>{money(data.clientFundsKopecks)}</strong><small>Текущий остаток клиентских средств</small></div> : null}{data.capabilities.viewProfit && data.depaProfitKopecks !== null ? <div className="metric"><div className="metric-top"><span>ПРИБЫЛЬ DEPA</span><i>↗</i></div><strong>{money(data.depaProfitKopecks)}</strong><small>Управленческий показатель</small></div> : null}</div>
-      {data.attentionItems.length > 0 && <div className="panel finance-attention"><div className="table-toolbar"><strong>Требует внимания</strong><small>{data.attentionItems.length}</small></div>{data.attentionItems.slice(0, 8).map((item, index) => <div className="finance-attention-row" key={`${item.type}-${item.transactionId ?? item.projectId ?? item.cashboxId ?? index}`}><i>!</i><span><b>{item.title}</b><small>{item.detail}</small></span></div>)}</div>}
+      {data.attentionItems.length > 0 && <div className="panel finance-attention"><div className="table-toolbar"><strong>Требует внимания</strong><small>{data.attentionItems.length}</small></div>{data.attentionItems.slice(0, 8).map((item, index) => <button type="button" className="finance-attention-row" aria-label={`Открыть: ${item.title}. ${item.detail}`} onClick={() => openAttentionItem(item)} key={`${item.type}-${item.transactionId ?? item.projectId ?? item.cashboxId ?? index}`}><i>!</i><span><b>{item.title}</b><small>{item.detail}</small></span><em aria-hidden="true">›</em></button>)}</div>}
       <div className="panel table-panel"><div className="table-toolbar"><strong>Все операции</strong><small>{filteredTransactions.length} из {data.transactions.length}</small></div><div className="finance-filter-bar"><input aria-label="Поиск операций" placeholder="Комментарий, клиент, объект" value={query} onChange={(event) => setQuery(event.target.value)} /><select aria-label="Тип" value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}><option value="">Все типы</option><option value="INCOME">Доход</option><option value="EXPENSE">Расход</option><option value="TRANSFER">Перевод</option><option value="INVESTMENT">Инвестиция</option><option value="INVESTMENT_REPAYMENT">Возврат инвестиции</option></select><select aria-label="Касса" value={cashboxFilter} onChange={(event) => setCashboxFilter(event.target.value)}><option value="">Все кассы</option>{data.cashboxes.map((box) => <option value={box.id} key={box.id}>{box.name}</option>)}</select><select aria-label="Категория" value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}><option value="">Все категории</option>{categoryOptions.map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}</select><select aria-label="Объект" value={projectFilter} onChange={(event) => setProjectFilter(event.target.value)}><option value="">Все объекты</option>{data.projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select><select aria-label="Автор" value={authorFilter} onChange={(event) => setAuthorFilter(event.target.value)}><option value="">Все авторы</option>{authors.map(([id, name]) => <option key={id} value={id}>{name}</option>)}</select><select aria-label="Чек" value={receiptFilter} onChange={(event) => setReceiptFilter(event.target.value)}><option value="">Чек: любой</option><option value="YES">Есть чек</option><option value="NO">Нет чека</option></select><input aria-label="Дата от" type="date" value={dateFrom} onChange={(event) => setDateFrom(event.target.value)} /><input aria-label="Дата до" type="date" value={dateTo} onChange={(event) => setDateTo(event.target.value)} /></div>{filteredTransactions.length ? <div className="finance-operation-table"><div className="finance-operation-row head"><span>Операция</span><span className="finance-col-client">Клиент</span><span className="finance-col-project">Объект</span><span className="finance-col-category">Категория</span><span className="finance-col-source">Касса / источник</span><span className="finance-col-author">Автор</span><span className="finance-col-date">Дата</span><span className="finance-col-receipt">Документ</span><span>Сумма</span><span aria-hidden="true" /></div>{filteredTransactions.map((item) => <TransactionRow key={item.id} transaction={item} structured clientName={data.clients.find((client) => client.id === item.clientId)?.name} onOpen={() => setSelectedTransaction(item)} />)}</div> : <div className="finance-empty">По выбранным фильтрам операций нет.</div>}</div>
     </div> : activeTab === "CASHBOXES" ? <CashboxWorkspace data={data} onOpen={data.capabilities.editTransaction ? setSelectedTransaction : () => undefined} /> : <InvestmentWorkspace data={data} onOpen={setSelectedTransaction} />)}
-    {selectedTransaction && <TransactionDetailModal key={`${selectedTransaction.id}-${selectedTransaction.attachments.map((item) => `${item.id}:${item.status}`).join(",")}`} transaction={selectedTransaction} canEdit={data?.capabilities.editTransaction === true} onClose={() => setSelectedTransaction(null)} onSaved={async () => { setSelectedTransaction(null); await refresh(); }} onAttachmentsChanged={async () => { const next = await refresh(); setSelectedTransaction(next?.transactions.find((item) => item.id === selectedTransaction.id) ?? null); }} />}
+    {selectedTransaction && <TransactionDetailModal key={`${selectedTransaction.id}-${selectedTransaction.attachments.map((item) => `${item.id}:${item.status}`).join(",")}`} transaction={selectedTransaction} canEdit={data?.capabilities.editTransaction === true} canAcceptAttention={data?.capabilities.acceptAttentionIssues === true} onClose={() => setSelectedTransaction(null)} onSaved={async () => { setSelectedTransaction(null); await refresh(); }} onAttachmentsChanged={async () => { const next = await refresh(); setSelectedTransaction(next?.transactions.find((item) => item.id === selectedTransaction.id) ?? null); }} onAttentionChanged={async () => { const next = await refresh(); setSelectedTransaction(next?.transactions.find((item) => item.id === selectedTransaction.id) ?? null); }} />}
   </section>;
 }
 
@@ -339,12 +364,33 @@ function fileSize(value: number) {
   return value >= 1024 * 1024 ? `${(value / 1024 / 1024).toFixed(1)} МБ` : `${Math.ceil(value / 1024)} КБ`;
 }
 
-function TransactionDetailModal({ transaction, canEdit, onClose, onSaved, onAttachmentsChanged }: { transaction: FinanceTransaction; canEdit: boolean; onClose: () => void; onSaved: () => void; onAttachmentsChanged: () => void }) {
+function TransactionDetailModal({ transaction, canEdit, canAcceptAttention, onClose, onSaved, onAttachmentsChanged, onAttentionChanged }: { transaction: FinanceTransaction; canEdit: boolean; canAcceptAttention: boolean; onClose: () => void; onSaved: () => void; onAttachmentsChanged: () => void | Promise<void>; onAttentionChanged: () => void | Promise<void> }) {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadNotice, setUploadNotice] = useState("");
   const [attachments, setAttachments] = useState(transaction.attachments);
+  const [confirmAcceptance, setConfirmAcceptance] = useState(false);
+  const [acceptanceComment, setAcceptanceComment] = useState("");
+  const [attentionLoading, setAttentionLoading] = useState(false);
+  const [attentionError, setAttentionError] = useState("");
+  const acceptanceCommentRef = useRef<HTMLTextAreaElement>(null);
+  const acceptanceTriggerRef = useRef<HTMLButtonElement>(null);
+  const receiptIssue = missingReceiptIssue(transaction);
+
+  const closeAcceptanceDialog = useCallback(() => {
+    if (attentionLoading) return;
+    setConfirmAcceptance(false);
+    requestAnimationFrame(() => acceptanceTriggerRef.current?.focus());
+  }, [attentionLoading]);
+
+  useEffect(() => {
+    if (!confirmAcceptance) return;
+    acceptanceCommentRef.current?.focus();
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") closeAcceptanceDialog(); };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [closeAcceptanceDialog, confirmAcceptance]);
 
   async function addAttachments(files: File[]) {
     if (!files.length || uploading) return;
@@ -382,12 +428,27 @@ function TransactionDetailModal({ transaction, canEdit, onClose, onSaved, onAtta
     if (!response.ok) { setError(result.error ?? "Не удалось обновить операцию."); setLoading(false); return; }
     onSaved();
   }
-  return <div className="modal-wrap" onMouseDown={(event) => { if (event.target === event.currentTarget && !uploading) onClose(); }}><section className="modal finance-detail-modal" role="dialog" aria-modal="true" aria-labelledby="transaction-detail-title"><div className="modal-head"><div><span className="eyebrow">ФИНАНСОВАЯ ОПЕРАЦИЯ</span><h3 id="transaction-detail-title">{transactionLabel(transaction)}</h3></div><button onClick={onClose} aria-label="Закрыть">×</button></div><div className="transaction-facts"><span>Сумма <b>{money(transaction.amountKopecks)}</b></span><span>Дата <b>{new Date(transaction.transactionDate * 1000).toLocaleDateString("ru-RU")}</b></span><span>Источник <b>{transactionSourceLabel(transaction)}</b></span><span>Автор <b>{transaction.authorName}</b></span></div>{transaction.allocations.length > 0 && <div className="detail-allocations">{transaction.allocations.map((item) => <span key={item.id}>{item.projectName}<b>{money(item.amountKopecks)}</b></span>)}</div>}
+
+  async function updateAttention(action: "ACCEPT" | "REOPEN") {
+    if (attentionLoading) return;
+    setAttentionLoading(true); setAttentionError("");
+    try {
+      const response = await fetch("/api/finance/attention", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ transactionId: transaction.id, issueType: "MISSING_RECEIPT", action, comment: action === "ACCEPT" ? acceptanceComment : null }) });
+      const result = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(result.error ?? "Не удалось изменить статус замечания.");
+      setConfirmAcceptance(false); setAcceptanceComment("");
+      await onAttentionChanged();
+    } catch (reason) { setAttentionError(reason instanceof Error ? reason.message : "Не удалось изменить статус замечания."); }
+    finally { setAttentionLoading(false); }
+  }
+
+  return <div className="modal-wrap" onMouseDown={(event) => { if (event.target === event.currentTarget && !uploading && !attentionLoading) onClose(); }}><section className="modal finance-detail-modal" role="dialog" aria-modal="true" aria-labelledby="transaction-detail-title" aria-hidden={confirmAcceptance || undefined} inert={confirmAcceptance}><div className="modal-head"><div><span className="eyebrow">ФИНАНСОВАЯ ОПЕРАЦИЯ</span><h3 id="transaction-detail-title">{transactionLabel(transaction)}</h3></div><button onClick={onClose} aria-label="Закрыть">×</button></div><div className="transaction-facts"><span>Описание <b>{transaction.title}</b></span><span>Сумма <b>{money(transaction.amountKopecks)}</b></span><span>Дата <b>{new Date(transaction.transactionDate * 1000).toLocaleDateString("ru-RU")}</b></span><span>Категория <b>{financeCategoryLabel(transaction.category)}</b></span><span>Источник <b>{transactionSourceLabel(transaction)}</b></span><span>Автор <b>{transaction.authorName}</b></span></div>{transaction.allocations.length > 0 && <div className="detail-allocations">{transaction.allocations.map((item) => <span key={item.id}>{item.projectName}<b>{money(item.amountKopecks)}</b></span>)}</div>}
+    {receiptIssue && receiptIssue.status !== "RESOLVED" ? <section className={`finance-receipt-attention ${receiptIssue.status === "ACCEPTED" ? "accepted" : "open"}`} aria-label="Статус чека"><div className="finance-receipt-attention-copy"><i>{receiptIssue.status === "ACCEPTED" ? "✓" : "!"}</i><span><b>Чек отсутствует</b>{receiptIssue.status === "ACCEPTED" ? <><small>Принято: {receiptIssue.acceptedByName ?? "пользователь"} · {receiptIssue.acceptedAt ? new Date(receiptIssue.acceptedAt * 1000).toLocaleString("ru-RU") : "дата не указана"}</small>{receiptIssue.comment ? <small>Причина: {receiptIssue.comment}</small> : null}</> : <small>Добавьте подтверждающий документ или примите расход без чека.</small>}</span></div><div className="finance-receipt-attention-actions"><label className="secondary finance-attachment-add"><input type="file" multiple accept={FINANCE_ATTACHMENT_ACCEPT} disabled={uploading} onChange={(event) => { void addAttachments(Array.from(event.target.files ?? [])); event.currentTarget.value = ""; }} />{uploading ? "Загружаем…" : "Добавить чек / фото"}</label>{receiptIssue.status === "OPEN" && receiptIssue.acceptanceAllowed && canAcceptAttention ? <button ref={acceptanceTriggerRef} type="button" className="secondary" onClick={() => setConfirmAcceptance(true)}>Принять без чека</button> : null}{receiptIssue.status === "ACCEPTED" && canAcceptAttention ? <button type="button" className="link" disabled={attentionLoading} onClick={() => void updateAttention("REOPEN")}>{attentionLoading ? "Возвращаем…" : "Вернуть в Требует внимания"}</button> : null}</div>{attentionError ? <div className="auth-error" role="alert"><i>!</i><span>{attentionError}</span></div> : null}</section> : null}
     <section className="finance-attachments"><header><div><span className="eyebrow">ДОКУМЕНТЫ / ВЛОЖЕНИЯ</span><b>{attachments.filter((item) => item.status === "LINKED").length} прикреплено</b></div><label className="secondary finance-attachment-add"><input type="file" multiple accept={FINANCE_ATTACHMENT_ACCEPT} disabled={uploading} onChange={(event) => { void addAttachments(Array.from(event.target.files ?? [])); event.currentTarget.value = ""; }} />{uploading ? "Загружаем…" : "＋ Добавить чек / фото"}</label></header>
       <div className="finance-attachment-list">{attachments.length ? attachments.map((attachment) => <article key={attachment.id}><i>{attachment.mimeType === "application/pdf" ? "PDF" : "IMG"}</i><span><b>{attachment.originalFilename}</b><small>{attachment.status === "PENDING" ? "Чек загружается…" : attachment.status === "FAILED" ? "Не удалось обработать фото. Операция сохранена без вложения." : `Чек прикреплён · ${fileSize(attachment.sizeBytes)}`}</small></span>{attachment.status === "LINKED" ? <a href={`/api/files/${attachment.id}`} target="_blank" rel="noreferrer">Открыть</a> : attachment.status === "FAILED" ? <label className="link finance-attachment-retry"><input type="file" accept={FINANCE_ATTACHMENT_ACCEPT} disabled={uploading} onChange={(event) => { void addAttachments(Array.from(event.target.files ?? [])); event.currentTarget.value = ""; }} />Повторить</label> : <em>Загрузка…</em>}</article>) : <p>Файлов пока нет. Операция сохранена без чека.</p>}</div>
       {uploadNotice && <div className={uploadNotice.includes("Не удалось") ? "auth-error" : "auth-success"} role="status"><i>{uploadNotice.includes("Не удалось") ? "!" : "✓"}</i><span>{uploadNotice}</span></div>}
     </section>
-    <form onSubmit={submit}><label><span>Название</span><input name="title" defaultValue={transaction.title} required disabled={!canEdit} /></label><label><span>Комментарий</span><textarea name="comment" defaultValue={transaction.comment ?? ""} disabled={!canEdit} /></label>{transaction.expenseType === "PROJECT" && <label className="toggle-row"><span><b>Показывать клиенту</b><small>Изменение будет записано в audit log</small></span><input name="showToClient" type="checkbox" defaultChecked={transaction.showToClient} disabled={!canEdit} /></label>}<div className="immutable-note">Добавление файлов не изменяет сумму, источник, категорию, объект или балансы.</div>{error && <div className="auth-error" role="alert"><i>!</i><span>{error}</span></div>}<div className="modal-actions"><button type="button" onClick={onClose}>Закрыть</button>{canEdit && <button className="primary" type="submit" disabled={loading}>{loading ? "Сохраняем…" : "Сохранить изменения"}</button>}</div></form></section></div>;
+    <form onSubmit={submit}><label><span>Название</span><input name="title" defaultValue={transaction.title} required disabled={!canEdit} /></label><label><span>Комментарий</span><textarea name="comment" defaultValue={transaction.comment ?? ""} disabled={!canEdit} /></label>{transaction.expenseType === "PROJECT" && <label className="toggle-row"><span><b>Показывать клиенту</b><small>Изменение будет записано в audit log</small></span><input name="showToClient" type="checkbox" defaultChecked={transaction.showToClient} disabled={!canEdit} /></label>}<div className="immutable-note">Статус замечания не изменяет сумму, источник, категорию, объект, кассу, инвестиции или балансы.</div>{error && <div className="auth-error" role="alert"><i>!</i><span>{error}</span></div>}<div className="modal-actions"><button type="button" onClick={onClose}>Закрыть</button>{canEdit && <button className="primary" type="submit" disabled={loading}>{loading ? "Сохраняем…" : "Сохранить изменения"}</button>}</div></form></section>{confirmAcceptance ? <div className="finance-acceptance-dialog-wrap" onMouseDown={(event) => { if (event.target === event.currentTarget) closeAcceptanceDialog(); }}><section className="modal finance-acceptance-dialog" role="alertdialog" aria-modal="true" aria-labelledby="finance-acceptance-title" aria-describedby="finance-acceptance-description"><div className="modal-head"><div><span className="eyebrow">ПОДТВЕРЖДЕНИЕ</span><h3 id="finance-acceptance-title">Принять расход без чека?</h3></div><button type="button" onClick={closeAcceptanceDialog} disabled={attentionLoading} aria-label="Закрыть">×</button></div><div className="finance-acceptance-body"><p id="finance-acceptance-description">Операция останется без чека, а замечание будет отмечено как принятое. Финансовые данные и балансы не изменятся.</p><label><span>Комментарий / причина <small>необязательно</small></span><textarea ref={acceptanceCommentRef} value={acceptanceComment} maxLength={1000} placeholder="Чек не выдавался" onChange={(event) => setAcceptanceComment(event.target.value)} /></label>{attentionError ? <div className="auth-error" role="alert"><i>!</i><span>{attentionError}</span></div> : null}<div className="modal-actions"><button type="button" onClick={closeAcceptanceDialog} disabled={attentionLoading}>Отмена</button><button type="button" className="primary" disabled={attentionLoading} onClick={() => void updateAttention("ACCEPT")}>{attentionLoading ? "Принимаем…" : "Принять без чека"}</button></div></div></section></div> : null}</div>;
 }
 
 export function OperationPickerModal({ onClose, onSelect, allowed }: { onClose: () => void; onSelect: (mode: FinanceMode) => void; allowed: Partial<Record<FinanceMode, boolean>> }) {

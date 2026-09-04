@@ -1,6 +1,7 @@
 import type { AuthUser } from "./auth";
 import { attachmentPath, confirmAttachmentUpload, FileError } from "./files";
 import { first, query, transaction } from "./postgres";
+import { deriveFinanceAttentionStatus, financeAttentionAcceptanceAllowed, isFinanceAttentionIssueType, type FinanceAttentionIssueType } from "./finance-attention";
 import { FINANCE_CATEGORY_GROUPS, categoryRequiresReceipt, financeCategoryLabel } from "./finance-categories";
 import { INCOME_PURPOSES, investmentBalance, parseAmountKopecks, projectLedgerTotals, transferPreview, validateAllocations, validateExpense, validateInvestmentRepayment, type ExpenseKind, type FinanceOperationType } from "./finance-rules";
 import { AccessError, assertActionPermission, assertModuleAction, canViewCashbox, getAccessProfile, getScope } from "./permissions";
@@ -47,6 +48,11 @@ type TransactionRow = {
   attachment_id: string | null;
   attachments_json: unknown;
   allocations_json: unknown;
+  attention_issue_status: "OPEN" | "ACCEPTED" | null;
+  attention_accepted_at: string | number | null;
+  attention_accepted_by_user_id: string | null;
+  attention_accepted_by_name: string | null;
+  attention_acceptance_comment: string | null;
 };
 
 type InvestmentAccountRow = {
@@ -239,15 +245,29 @@ function serializeCashbox(row: CashboxRow, transactions: TransactionRow[]) {
 
 function serializeTransaction(row: TransactionRow) {
   const operationKind = row.type === "INVESTMENT_REPAYMENT" ? "INVESTMENT_REPAYMENT" : row.type === "EXPENSE" && row.investment_account_id ? "INVESTMENT" : row.type;
+  const attachmentCount = number(row.attachment_count);
+  const receiptIssueApplies = row.type === "EXPENSE" && categoryRequiresReceipt(row.category);
+  const receiptIssueStatus = deriveFinanceAttentionStatus(receiptIssueApplies && attachmentCount === 0, row.attention_issue_status);
+  const attentionIssues = receiptIssueApplies ? [{
+    type: "MISSING_RECEIPT" as const,
+    title: "Расход без чека",
+    status: receiptIssueStatus,
+    acceptanceAllowed: financeAttentionAcceptanceAllowed("MISSING_RECEIPT"),
+    acceptedAt: receiptIssueStatus === "ACCEPTED" ? number(row.attention_accepted_at) : null,
+    acceptedByUserId: receiptIssueStatus === "ACCEPTED" ? row.attention_accepted_by_user_id : null,
+    acceptedByName: receiptIssueStatus === "ACCEPTED" ? row.attention_accepted_by_name : null,
+    comment: receiptIssueStatus === "ACCEPTED" ? row.attention_acceptance_comment : null,
+  }] : [];
   return {
     id: row.id, type: row.type, operationKind, expenseType: row.expense_type, amountKopecks: number(row.amount_kopecks), transactionDate: number(row.transaction_date),
     cashboxId: row.cashbox_id, cashboxName: row.cashbox_name ? professionalCashboxName(row.cashbox_name) : row.investment_account_name ?? "Личные средства", destinationCashboxId: row.destination_cashbox_id, destinationCashboxName: row.destination_cashbox_name ? professionalCashboxName(row.destination_cashbox_name) : null,
     investmentAccountId: row.investment_account_id, investmentAccountName: row.investment_account_name, investmentOwnerName: row.investment_owner_name,
     originalTransactionId: row.original_transaction_id, projectId: row.project_id, projectName: row.project_name, clientId: row.client_id,
     category: row.category, source: row.source, purpose: row.purpose, title: row.title, comment: row.comment, showToClient: Boolean(number(row.show_to_client)),
-    authorUserId: row.author_user_id, authorName: row.author_name, createdAt: number(row.created_at), attachmentCount: number(row.attachment_count), attachmentId: row.attachment_id,
+    authorUserId: row.author_user_id, authorName: row.author_name, createdAt: number(row.created_at), attachmentCount, attachmentId: row.attachment_id,
     attachments: parseAttachmentsJson(row.attachments_json),
     allocations: parseAllocationsJson(row.allocations_json),
+    attentionIssues,
   };
 }
 
@@ -322,11 +342,12 @@ export async function getFinanceOverview(actor: AuthUser) {
   const [boxes, transactions, projects, clients, projectEconomics, reconciliation, summaryRows] = await Promise.all([
     query<CashboxRow>(`SELECT c.*, u.display_name AS owner_name FROM cashboxes c LEFT JOIN users u ON u.id = c.owner_user_id ${boxCondition} ORDER BY c.status ASC, c.created_at ASC`, params),
     query<TransactionRow>(`SELECT ft.*, source_box.name AS cashbox_name, destination_box.name AS destination_cashbox_name, ia.name AS investment_account_name,iu.display_name AS investment_owner_name,p.name AS project_name, u.display_name AS author_name,
+      attention.status AS attention_issue_status,attention.accepted_at AS attention_accepted_at,attention.accepted_by_user_id AS attention_accepted_by_user_id,attention_user.display_name AS attention_accepted_by_name,attention.acceptance_comment AS attention_acceptance_comment,
       (SELECT COUNT(*) FROM attachments a WHERE a.transaction_id = ft.id AND a.upload_status='LINKED' AND a.deleted_at IS NULL) AS attachment_count,
       (SELECT a.id FROM attachments a WHERE a.transaction_id = ft.id AND a.upload_status='LINKED' AND a.deleted_at IS NULL ORDER BY a.created_at LIMIT 1) AS attachment_id,
       COALESCE((SELECT jsonb_agg(jsonb_build_object('id',a.id,'originalFilename',a.original_filename,'mimeType',a.mime_type,'sizeBytes',a.size_bytes,'status',CASE WHEN a.upload_status='PENDING' AND a.created_at < EXTRACT(EPOCH FROM now())::integer-600 THEN 'FAILED' ELSE a.upload_status END,'createdAt',a.created_at) ORDER BY a.created_at,a.id) FROM attachments a WHERE a.transaction_id=ft.id AND a.upload_status IN ('PENDING','LINKED','FAILED') AND a.deleted_at IS NULL),'[]'::jsonb) AS attachments_json,
       COALESCE((SELECT jsonb_agg(jsonb_build_object('id',ta.id,'projectId',ta.project_id,'projectName',ap.name,'amountKopecks',ta.amount_kopecks,'purpose',ta.purpose) ORDER BY ap.name) FROM transaction_allocations ta JOIN projects ap ON ap.id=ta.project_id WHERE ta.transaction_id=ft.id),'[]'::jsonb) AS allocations_json
-      FROM financial_transactions ft LEFT JOIN cashboxes source_box ON source_box.id = ft.cashbox_id LEFT JOIN cashboxes destination_box ON destination_box.id = ft.destination_cashbox_id LEFT JOIN investment_accounts ia ON ia.id=ft.investment_account_id LEFT JOIN users iu ON iu.id=ia.owner_user_id LEFT JOIN projects p ON p.id = ft.project_id JOIN users u ON u.id = ft.author_user_id ${transactionCondition} ORDER BY ft.transaction_date DESC, ft.created_at DESC LIMIT 200`, params),
+      FROM financial_transactions ft LEFT JOIN cashboxes source_box ON source_box.id = ft.cashbox_id LEFT JOIN cashboxes destination_box ON destination_box.id = ft.destination_cashbox_id LEFT JOIN investment_accounts ia ON ia.id=ft.investment_account_id LEFT JOIN users iu ON iu.id=ia.owner_user_id LEFT JOIN projects p ON p.id = ft.project_id JOIN users u ON u.id = ft.author_user_id LEFT JOIN finance_attention_acknowledgements attention ON attention.transaction_id=ft.id AND attention.issue_type='MISSING_RECEIPT' LEFT JOIN users attention_user ON attention_user.id=attention.accepted_by_user_id ${transactionCondition} ORDER BY ft.transaction_date DESC, ft.created_at DESC LIMIT 200`, params),
     allProjects
       ? query<{ id: string; name: string; client_id: string }>("SELECT id, name, client_id FROM projects WHERE status <> 'ARCHIVED' ORDER BY name")
       : query<{ id: string; name: string; client_id: string }>("SELECT DISTINCT p.id,p.name,p.client_id FROM projects p LEFT JOIN user_project_access a ON a.project_id=p.id AND a.user_id=$1 WHERE p.status<>'ARCHIVED' AND (p.responsible_user_id=$1 OR a.id IS NOT NULL OR p.manager_employee_id=$2 OR p.foreman_employee_id=$2) ORDER BY p.name", [actor.id, actor.employeeId]),
@@ -404,11 +425,11 @@ export async function getFinanceOverview(actor: AuthUser) {
     return { id: project.id, name: project.name, clientId: project.client_id, incomeKopecks, expenseKopecks, refundKopecks, ...projectLedgerTotals(incomeKopecks, expenseKopecks, refundKopecks), materialsIncomeKopecks, materialsExpenseKopecks, materialsBalanceKopecks: materialsIncomeKopecks - materialsExpenseKopecks, worksIncomeKopecks, worksExpenseKopecks, worksBalanceKopecks: worksIncomeKopecks - worksExpenseKopecks, additionalWorksIncomeKopecks: number(economics?.additional_works_income_kopecks), otherIncomeKopecks: number(economics?.other_income_kopecks) };
   });
   const attentionItems = [
-    ...boxes.filter((box) => box.status === "ACTIVE" && number(box.balance_kopecks) < 0).map((box) => ({ type: "NEGATIVE_CASHBOX", severity: "WARNING", title: "Отрицательная касса", detail: `${box.name}: ${number(box.balance_kopecks)} коп.`, cashboxId: box.id })),
-    ...serializedProjects.filter((project) => project.materialsBalanceKopecks < 0).map((project) => ({ type: "NEGATIVE_MATERIALS_BALANCE", severity: "WARNING", title: "Баланс материалов ниже нуля", detail: `${project.name}: долг клиента ${Math.abs(project.materialsBalanceKopecks)} коп.`, projectId: project.id })),
-    ...serializedTransactions.filter((item) => item.type === "EXPENSE" && categoryRequiresReceipt(item.category) && item.attachmentCount === 0).map((item) => ({ type: "MISSING_RECEIPT", severity: "WARNING", title: "Расход без чека", detail: `${item.title}: ${item.amountKopecks} коп.`, transactionId: item.id })),
-    ...serializedTransactions.filter((item) => item.type === "EXPENSE" && item.expenseType === "PROJECT" && !item.projectId && item.allocations.length === 0).map((item) => ({ type: "UNALLOCATED_EXPENSE", severity: "ERROR", title: "Нераспределённый объектный расход", detail: `${item.title}: ${item.amountKopecks} коп.`, transactionId: item.id })),
-    ...boxes.filter((box) => box.status === "INACTIVE" && number(box.balance_kopecks) !== 0).map((box) => ({ type: "INACTIVE_CASHBOX_BALANCE", severity: "WARNING", title: "Неактивная касса с остатком", detail: `${box.name}: ${number(box.balance_kopecks)} коп.`, cashboxId: box.id })),
+    ...boxes.filter((box) => box.status === "ACTIVE" && number(box.balance_kopecks) < 0).map((box) => ({ type: "NEGATIVE_CASHBOX" as const, status: "OPEN" as const, acceptanceAllowed: financeAttentionAcceptanceAllowed("NEGATIVE_CASHBOX"), severity: "WARNING", title: "Отрицательная касса", detail: `${box.name}: ${number(box.balance_kopecks)} коп.`, cashboxId: box.id })),
+    ...serializedProjects.filter((project) => project.materialsBalanceKopecks < 0).map((project) => ({ type: "NEGATIVE_MATERIALS_BALANCE" as const, status: "OPEN" as const, acceptanceAllowed: financeAttentionAcceptanceAllowed("NEGATIVE_MATERIALS_BALANCE"), severity: "WARNING", title: "Баланс материалов ниже нуля", detail: `${project.name}: долг клиента ${Math.abs(project.materialsBalanceKopecks)} коп.`, projectId: project.id })),
+    ...serializedTransactions.filter((item) => item.attentionIssues.some((issue) => issue.type === "MISSING_RECEIPT" && issue.status === "OPEN")).map((item) => ({ type: "MISSING_RECEIPT" as const, status: "OPEN" as const, acceptanceAllowed: financeAttentionAcceptanceAllowed("MISSING_RECEIPT"), severity: "WARNING", title: "Расход без чека", detail: `${item.title}: ${item.amountKopecks} коп.`, transactionId: item.id })),
+    ...serializedTransactions.filter((item) => item.type === "EXPENSE" && item.expenseType === "PROJECT" && !item.projectId && item.allocations.length === 0).map((item) => ({ type: "UNALLOCATED_EXPENSE" as const, status: "OPEN" as const, acceptanceAllowed: financeAttentionAcceptanceAllowed("UNALLOCATED_EXPENSE"), severity: "ERROR", title: "Нераспределённый объектный расход", detail: `${item.title}: ${item.amountKopecks} коп.`, transactionId: item.id })),
+    ...boxes.filter((box) => box.status === "INACTIVE" && number(box.balance_kopecks) !== 0).map((box) => ({ type: "INACTIVE_CASHBOX_BALANCE" as const, status: "OPEN" as const, acceptanceAllowed: financeAttentionAcceptanceAllowed("INACTIVE_CASHBOX_BALANCE"), severity: "WARNING", title: "Неактивная касса с остатком", detail: `${box.name}: ${number(box.balance_kopecks)} коп.`, cashboxId: box.id })),
   ];
   const reconciliationMismatches = reconciliation.filter((row) => number(row.stored_balance_kopecks) !== number(row.calculated_balance_kopecks));
   if (reconciliationMismatches.length) console.error("FINANCE_RECONCILIATION_MISMATCH", reconciliationMismatches);
@@ -425,6 +446,7 @@ export async function getFinanceOverview(actor: AuthUser) {
     capabilities: {
       createExpense: access.actions["finance.createExpense"], createIncome: access.actions["finance.createIncome"], createTransfer: access.actions["finance.createTransfer"],
       editTransaction: access.actions["finance.editTransaction"], viewClientFunds: access.actions["finance.viewClientFunds"], viewProfit: access.actions["finance.viewProfit"],
+      acceptAttentionIssues: access.actions["finance.editTransaction"],
       viewAdministrativeExpenses: access.actions["finance.viewAdministrativeExpenses"], viewInvestments: canViewInvestments,
       createInvestmentExpense: canViewInvestments && (actor.role === "OWNER" || access.actions["finance.createInvestmentExpense"]), repayInvestments: canViewInvestments && (actor.role === "OWNER" || access.actions["finance.repayInvestments"]),
       cashboxScope: access.scopes.cashboxes, hasOwnActiveCashbox: boxes.some((box) => box.owner_user_id === actor.id && box.status === "ACTIVE"),
@@ -505,6 +527,7 @@ export async function getCashboxHistory(actor: AuthUser, filters: CashboxHistory
   const limitParam = bind(limit + 1);
   const offsetParam = bind(offset);
   const rows = await query<TransactionRow>(`SELECT ft.*, source_box.name AS cashbox_name, destination_box.name AS destination_cashbox_name, ia.name AS investment_account_name,iu.display_name AS investment_owner_name,p.name AS project_name, u.display_name AS author_name,
+    attention.status AS attention_issue_status,attention.accepted_at AS attention_accepted_at,attention.accepted_by_user_id AS attention_accepted_by_user_id,attention_user.display_name AS attention_accepted_by_name,attention.acceptance_comment AS attention_acceptance_comment,
     (SELECT COUNT(*) FROM attachments a WHERE a.transaction_id=ft.id AND a.upload_status='LINKED' AND a.deleted_at IS NULL) AS attachment_count,
     (SELECT a.id FROM attachments a WHERE a.transaction_id=ft.id AND a.upload_status='LINKED' AND a.deleted_at IS NULL ORDER BY a.created_at LIMIT 1) AS attachment_id,
     COALESCE((SELECT jsonb_agg(jsonb_build_object('id',a.id,'originalFilename',a.original_filename,'mimeType',a.mime_type,'sizeBytes',a.size_bytes,'status',CASE WHEN a.upload_status='PENDING' AND a.created_at < EXTRACT(EPOCH FROM now())::integer-600 THEN 'FAILED' ELSE a.upload_status END,'createdAt',a.created_at) ORDER BY a.created_at,a.id) FROM attachments a WHERE a.transaction_id=ft.id AND a.upload_status IN ('PENDING','LINKED','FAILED') AND a.deleted_at IS NULL),'[]'::jsonb) AS attachments_json,
@@ -516,6 +539,8 @@ export async function getCashboxHistory(actor: AuthUser, filters: CashboxHistory
     LEFT JOIN users iu ON iu.id=ia.owner_user_id
     LEFT JOIN projects p ON p.id=ft.project_id
     JOIN users u ON u.id=ft.author_user_id
+    LEFT JOIN finance_attention_acknowledgements attention ON attention.transaction_id=ft.id AND attention.issue_type='MISSING_RECEIPT'
+    LEFT JOIN users attention_user ON attention_user.id=attention.accepted_by_user_id
     WHERE ${conditions.join(" AND ")}
     ORDER BY ft.transaction_date DESC,ft.created_at DESC,ft.id DESC
     LIMIT ${limitParam} OFFSET ${offsetParam}`, values);
@@ -816,6 +841,63 @@ export async function markFinanceAttachmentFailed(actor: AuthUser, input: { atta
     { text: "INSERT INTO audit_logs (id,actor_user_id,action,entity_type,entity_id,occurred_at,metadata_json) VALUES ($1,$2,'ATTACHMENT_UPLOAD_FAILED','Attachment',$3,$4,$5)", params: [crypto.randomUUID(), actor.id, attachmentId, timestamp, JSON.stringify({ transactionId: attachment.transaction_id })] },
   ]);
   return { ok: true, status: "FAILED" as const };
+}
+
+type FinanceAttentionActionInput = { transactionId?: unknown; issueType?: unknown; action?: unknown; comment?: unknown };
+
+async function financeTransactionForAttention(actor: AuthUser, transactionId: string) {
+  await assertFinanceAccess(actor);
+  try { await assertModuleAction(actor, "finance", "finance.editTransaction"); }
+  catch (error) { if (error instanceof AccessError) throw new FinanceError("Нет права принимать финансовые замечания.", 403); throw error; }
+  const row = await first<{ id: string; type: FinanceOperationType; category: string; cashbox_id: string | null; investment_account_id: string | null; expense_type: string | null; attachment_count: string | number; acknowledgement_status: string | null }>(`SELECT ft.id,ft.type,ft.category,ft.cashbox_id,ft.investment_account_id,ft.expense_type,
+    (SELECT COUNT(*) FROM attachments a WHERE a.transaction_id=ft.id AND a.upload_status='LINKED' AND a.deleted_at IS NULL) AS attachment_count,
+    acknowledgement.status AS acknowledgement_status
+    FROM financial_transactions ft
+    LEFT JOIN finance_attention_acknowledgements acknowledgement ON acknowledgement.transaction_id=ft.id AND acknowledgement.issue_type='MISSING_RECEIPT'
+    WHERE ft.id=$1 LIMIT 1`, [transactionId]);
+  if (!row) throw new FinanceError("Финансовая операция не найдена.", 404);
+  const access = await getAccessProfile(actor);
+  if (row.cashbox_id && !(await canViewCashbox(actor, row.cashbox_id))) throw new FinanceError("Операция недоступна.", 403);
+  if (row.investment_account_id && actor.role !== "OWNER" && !access.actions["finance.viewInvestments"]) throw new FinanceError("Операция недоступна.", 403);
+  if (row.expense_type === "ADMIN" && actor.role !== "OWNER" && !access.actions["finance.viewAdministrativeExpenses"]) throw new FinanceError("Операция недоступна.", 403);
+  return row;
+}
+
+export async function updateFinanceAttentionIssue(actor: AuthUser, input: FinanceAttentionActionInput) {
+  const transactionId = cleanText(input.transactionId, 100);
+  const rawIssueType = cleanText(input.issueType, 80);
+  const action = cleanText(input.action, 20);
+  const comment = cleanText(input.comment, 1000) || null;
+  if (!transactionId) throw new FinanceError("Не указана финансовая операция.");
+  if (!isFinanceAttentionIssueType(rawIssueType)) throw new FinanceError("Неизвестный тип замечания.");
+  const issueType: FinanceAttentionIssueType = rawIssueType;
+  if (!financeAttentionAcceptanceAllowed(issueType)) throw new FinanceError("Это замечание нельзя принять без исправления.", 409);
+  if (action !== "ACCEPT" && action !== "REOPEN") throw new FinanceError("Некорректное действие с замечанием.");
+  const row = await financeTransactionForAttention(actor, transactionId);
+  if (issueType !== "MISSING_RECEIPT" || row.type !== "EXPENSE" || !categoryRequiresReceipt(row.category)) throw new FinanceError("Замечание не относится к этой операции.", 409);
+  if (number(row.attachment_count) > 0) throw new FinanceError("Чек уже прикреплён — замечание закрыто.", 409);
+  if (action === "ACCEPT" && row.acknowledgement_status === "ACCEPTED") return { ok: true, transactionId, issueType, status: "ACCEPTED" as const, idempotent: true };
+  if (action === "REOPEN" && row.acknowledgement_status !== "ACCEPTED") throw new FinanceError("Замечание уже находится в списке требующих внимания.", 409);
+
+  const timestamp = nowSeconds();
+  const previousState = action === "ACCEPT" ? "OPEN" : "ACCEPTED";
+  const nextState = action === "ACCEPT" ? "ACCEPTED" : "OPEN";
+  const auditAction = action === "ACCEPT" ? "EXPENSE_WITHOUT_RECEIPT_ACCEPTED" : "EXPENSE_WITHOUT_RECEIPT_ACCEPTANCE_REVERTED";
+  const guardStatus = action === "ACCEPT" ? "(acknowledgement.id IS NULL OR acknowledgement.status='OPEN')" : "acknowledgement.status='ACCEPTED'";
+  const statements = action === "ACCEPT" ? [
+    { text: `WITH locked AS (SELECT ft.id FROM financial_transactions ft LEFT JOIN finance_attention_acknowledgements acknowledgement ON acknowledgement.transaction_id=ft.id AND acknowledgement.issue_type=$2 WHERE ft.id=$1 AND ft.type='EXPENSE' AND ${guardStatus} AND NOT EXISTS(SELECT 1 FROM attachments attachment WHERE attachment.transaction_id=ft.id AND attachment.upload_status='LINKED' AND attachment.deleted_at IS NULL) FOR UPDATE OF ft) SELECT 1/CASE WHEN COUNT(*)=1 THEN 1 ELSE 0 END attention_guard FROM locked`, params: [transactionId, issueType] },
+    { text: "INSERT INTO finance_attention_acknowledgements(id,transaction_id,issue_type,status,previous_status,accepted_by_user_id,accepted_at,acceptance_comment,reverted_by_user_id,reverted_at,created_at,updated_at) VALUES($1,$2,$3,'ACCEPTED','OPEN',$4,$5,$6,NULL,NULL,$5,$5) ON CONFLICT(transaction_id,issue_type) DO UPDATE SET status='ACCEPTED',previous_status='OPEN',accepted_by_user_id=EXCLUDED.accepted_by_user_id,accepted_at=EXCLUDED.accepted_at,acceptance_comment=EXCLUDED.acceptance_comment,reverted_by_user_id=NULL,reverted_at=NULL,updated_at=EXCLUDED.updated_at WHERE finance_attention_acknowledgements.status='OPEN'", params: [crypto.randomUUID(), transactionId, issueType, actor.id, timestamp, comment] },
+  ] : [
+    { text: `WITH locked AS (SELECT ft.id FROM financial_transactions ft JOIN finance_attention_acknowledgements acknowledgement ON acknowledgement.transaction_id=ft.id AND acknowledgement.issue_type=$2 WHERE ft.id=$1 AND ft.type='EXPENSE' AND ${guardStatus} AND NOT EXISTS(SELECT 1 FROM attachments attachment WHERE attachment.transaction_id=ft.id AND attachment.upload_status='LINKED' AND attachment.deleted_at IS NULL) FOR UPDATE OF ft) SELECT 1/CASE WHEN COUNT(*)=1 THEN 1 ELSE 0 END attention_guard FROM locked`, params: [transactionId, issueType] },
+    { text: "UPDATE finance_attention_acknowledgements SET status='OPEN',previous_status='ACCEPTED',reverted_by_user_id=$1,reverted_at=$2,updated_at=$2 WHERE transaction_id=$3 AND issue_type=$4 AND status='ACCEPTED'", params: [actor.id, timestamp, transactionId, issueType] },
+  ];
+  statements.push({ text: "INSERT INTO audit_logs(id,actor_user_id,action,entity_type,entity_id,occurred_at,metadata_json) VALUES($1,$2,$3,'FinancialTransaction',$4,$5,$6)", params: [crypto.randomUUID(), actor.id, auditAction, transactionId, timestamp, JSON.stringify({ transactionId, issueType, acceptedBy: action === "ACCEPT" ? actor.id : null, acceptedAt: action === "ACCEPT" ? timestamp : null, comment, previousState, nextState })] });
+  try { await transaction(statements); }
+  catch (error) {
+    if ((error as { code?: string }).code === "22012") throw new FinanceError("Состояние замечания уже изменилось. Обновите данные.", 409);
+    throw error;
+  }
+  return { ok: true, transactionId, issueType, status: nextState, idempotent: false };
 }
 
 export async function updateFinanceOperation(actor: AuthUser, input: { id?: unknown; title?: unknown; comment?: unknown; showToClient?: unknown }) {

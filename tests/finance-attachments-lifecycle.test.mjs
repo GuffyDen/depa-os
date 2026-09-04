@@ -80,8 +80,9 @@ test("existing operation card lists, opens, adds and retries attachments", async
   assert.match(ui, /href=\{`\/api\/files\/\$\{attachment\.id\}`\}/);
 });
 
-test("missing receipt alert still disappears only after a linked upload", async () => {
+test("missing receipt detector resolves only after a linked upload", async () => {
   const finance = await read("lib/finance.ts");
-  assert.match(finance, /categoryRequiresReceipt\(item\.category\) && item\.attachmentCount === 0/);
+  assert.match(finance, /receiptIssueApplies && attachmentCount === 0/);
+  assert.match(finance, /deriveFinanceAttentionStatus/);
   assert.match(finance, /a\.upload_status='LINKED'.*AS attachment_count/s);
 });
